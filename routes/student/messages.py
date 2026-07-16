@@ -182,7 +182,6 @@ def upload_message_resource(current_user):
 
 
 
-'''
 
 @messages_bp.route("/messages/analytics/<int:partner_id>", methods=["GET"])
 @token_required
@@ -283,8 +282,7 @@ def get_conversation_analytics(current_user, partner_id):
     except Exception as e:
         current_app.logger.error(f"Get analytics error: {str(e)}")
         return error_response("Failed to load analytics")
-'''
-'''
+
 @messages_bp.route("/messages/analytics/summary", methods=["GET"])
 @token_required
 def get_all_analytics_summary(current_user):
@@ -365,7 +363,7 @@ def get_all_analytics_summary(current_user):
         current_app.logger.error(f"Get summary analytics error: {str(e)}")
         return error_response("Failed to load analytics summary")
 
-'''
+
 
 # ============================================================================
 # HOMEWORK QUEUE

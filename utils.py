@@ -148,71 +148,7 @@ def get_app_url():
         url += '/'
     return url
 
-def decode_token(token):
-    """
-    Decode and verify a JWT token
-    
-    Args:
-        token (str): The JWT token to decode
-        
-    Returns:
-        dict: The decoded token payload
-        
-    Raises:
-        jwt.ExpiredSignatureError: If token has expired
-        jwt.InvalidTokenError: If token is invalid
-    """
-    try:
-        secret = os.environ.get("SECRET_KEY")
-        
-        if not secret:
-            current_app.logger.error("SECRET_KEY not found in environment")
-            raise jwt.InvalidTokenError("Server configuration error")
-        
-        # Decode and verify the token
-        payload = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"]
-        )
-        
-        return payload
-        
-    except jwt.ExpiredSignatureError:
-        current_app.logger.warning("Token has expired")
-        raise
-        
-    except jwt.InvalidTokenError as e:
-        current_app.logger.error(f"Invalid token: {str(e)}")
-        raise
-        
-    except Exception as e:
-        current_app.logger.error(f"Token decode error: {str(e)}")
-        raise jwt.InvalidTokenError(f"Failed to decode token: {str(e)}")
 
-
-
-def generate_tokens_for_user(user):
-    secret = os.environ.get("SECRET_KEY")
-
-    access_payload = {
-        "user_id": user.id,
-        "email": user.email,
-        "role": user.role,
-        "username": user.username,
-        "exp": datetime.utcnow() + timedelta(minutes=30)
-    }
-
-    refresh_payload = {
-        "user_id": user.id,
-        "email": user.email,
-        "exp": datetime.utcnow() + timedelta(days=30)
-    }
-
-    access_token = jwt.encode(access_payload, secret, algorithm="HS256")
-    refresh_token = jwt.encode(refresh_payload, secret, algorithm="HS256")
-
-    return access_token, refresh_token
 
 def generate_verification_token(email):
     """
@@ -232,27 +168,6 @@ def generate_verification_token(email):
         return None
 
 
-def verify_token(token):
-    """
-    Verify a JWT token and return the email if valid.
-    Handles expired or invalid tokens gracefully.
-    """
-    try:
-        secret_key = os.environ.get("SECRET_KEY")
-        decoded = jwt.decode(token, secret_key, algorithms=["HS256"])
-        return decoded.get("email")
-    
-    except jwt.ExpiredSignatureError:
-        # Token expired
-        return {"error": "Token has expired"}
-    
-    except jwt.InvalidTokenError:
-        # Token is tampered, invalid format, wrong signature, etc.
-        return {"error": "Invalid token"}
-    
-    except Exception as e:
-        # Any unexpected error
-        return {"error": f"Token verification failed: {str(e)}"}
 
 def send_password_reset(email, link):
     """Send password reset email"""

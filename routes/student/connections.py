@@ -351,7 +351,7 @@ def onboard_connect_all(email):
         db.session.rollback()
         current_app.logger.error(f"onboard_connect_all error: ", exc_info=True)
         return error_response("Failed to connect with all users")
-'''
+
 # ADD TO connections.py (after other endpoints)
 @connections_bp.route("/connections/help/broadcast", methods=["POST"])
 @token_required
@@ -627,7 +627,7 @@ def get_help_volunteers(current_user, request_id):
     except Exception as e:
         current_app.logger.error(f"Get volunteers error: ", exc_info=True)
         return error_response("Failed to get volunteers")
-'''
+
 
 @connections_bp.route("/connections/help/find", methods=["POST"])
 @token_required
@@ -1632,222 +1632,6 @@ def get_mutual_connections(current_user, user_id):
         return error_response("Failed to get mutual connections")
 
 
-# ============================================================================
-# 5. CONNECTION SUGGESTIONS - NO PAGINATION
-# ============================================================================
-# ============================================================================
-# COMPLETE FIXED SUGGESTIONS ENDPOINT
-# Replace lines 771-882 in your connections.py
-# ============================================================================
-'''
-@connections_bp.route("/connections/suggestions", methods=["GET"])
-@token_required
-def connection_suggestions(current_user):
-
-    """Get connection suggestions with study partners and mentors"""
-    try:
-        profile    = StudentProfile.query.filter_by(user_id=current_user.id).first()
-        onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
-
-        if not profile:
-            return error_response("Profile not found", 404)
-
-        # Build excluded IDs from existing connections
-        existing_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            )
-        ).all()
-
-        excluded_ids = {current_user.id}
-        for conn in existing_connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            excluded_ids.add(other_id)
-
-        # OPTIMIZED: Single 3-way join fetches all candidates with profiles and
-        # onboarding at once — replaces 2 per-candidate queries inside the loop.
-        candidates_data = (
-            db.session.query(User, StudentProfile, OnboardingDetails)
-            .join(StudentProfile, StudentProfile.user_id == User.id)
-            .join(OnboardingDetails, OnboardingDetails.user_id == User.id)
-            .filter(
-                User.id.notin_(excluded_ids),
-                User.status == "approved",
-            )
-            .limit(100)
-            .all()
-        )
-
-        if not candidates_data:
-            return jsonify({
-                "status": "success",
-                "data": {"study_partners": [], "mentors": [], "total": 0},
-            })
-
-        # OPTIMIZED: Pre-load current user's connections for mutual count computation.
-        # We compute mutuals in batch (2 queries total) for all qualifying candidates
-        # instead of 4 queries per candidate.
-        my_conns = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            ),
-            Connection.status == "accepted"
-        ).all()
-        my_conn_ids = {
-            c.receiver_id if c.requester_id == current_user.id else c.requester_id
-            for c in my_conns
-        }
-
-        class_hierarchy = {
-            "Freshman": 1, "Sophomore": 2, "Junior": 3, "Senior": 4,
-            "100 Level": 1, "200 Level": 2, "300 Level": 3, "400 Level": 4, "500 Level": 5,
-        }
-        current_level = class_hierarchy.get(profile.class_name, 0) if profile.class_name else 0
-
-        # First pass: score all candidates (no DB hits)
-        study_partners_raw = []
-        mentors_raw        = []
-
-        for candidate, cand_profile, cand_onboarding in candidates_data:
-            # ---- STUDY PARTNER SCORING ----
-            if onboarding:
-                sp_score   = 0
-                sp_reasons = []
-
-                if profile.department and cand_profile.department == profile.department:
-                    sp_score += 30
-                    sp_reasons.append(f"Same major: {profile.department}")
-
-                if profile.class_name and cand_profile.class_name == profile.class_name:
-                    sp_score += 10
-                    sp_reasons.append(f"Same class: {profile.class_name}")
-
-                if onboarding.subjects and cand_onboarding.subjects:
-                    common = (
-                        set(s.lower().strip() for s in onboarding.subjects)
-                        & set(s.lower().strip() for s in cand_onboarding.subjects)
-                    )
-                    if common:
-                        sp_score += min(len(common) * 8, 25)
-                        sp_reasons.append(f"Studying: {', '.join(list(common)[:2])}")
-
-                if (
-                    onboarding.learning_style
-                    and cand_onboarding.learning_style
-                    and onboarding.learning_style == cand_onboarding.learning_style
-                ):
-                    sp_score += 10
-                    sp_reasons.append("Similar learning style")
-
-                if sp_score >= 30:
-                    study_partners_raw.append((candidate, cand_profile, cand_onboarding, sp_score, sp_reasons))
-
-            # ---- MENTOR SCORING ----
-            if onboarding and current_level > 0:
-                cand_level = class_hierarchy.get(cand_profile.class_name, 0)
-                if (
-                    cand_level > current_level
-                    and cand_profile.department == profile.department
-                ):
-                    m_score   = 20
-                    m_reasons = [f"Same major: {profile.department}"]
-
-                    level_diff = cand_level - current_level
-                    m_score += min(level_diff * 15, 30)
-                    m_reasons.append(f"Higher class level: {cand_profile.class_name}")
-
-                    if onboarding.help_subjects and cand_onboarding.strong_subjects:
-                        helpful = (
-                            set(s.lower().strip() for s in onboarding.help_subjects)
-                            & set(s.lower().strip() for s in cand_onboarding.strong_subjects)
-                        )
-                        if helpful:
-                            m_score += min(len(helpful) * 10, 25)
-                            m_reasons.append(f"Can help with: {', '.join(list(helpful)[:2])}")
-
-                    if candidate.reputation >= 500:
-                        m_score += 10
-                        m_reasons.append("Highly rated")
-
-                    if m_score >= 40:
-                        mentors_raw.append((candidate, cand_profile, cand_onboarding, m_score, m_reasons))
-
-        # Sort early and limit before batch mutual-count lookup
-        study_partners_raw.sort(key=lambda x: x[3], reverse=True)
-        study_partners_raw = study_partners_raw[:10]
-
-        mentors_raw.sort(key=lambda x: x[3], reverse=True)
-        mentors_raw = mentors_raw[:10]
-
-        qualifying_ids = list({r[0].id for r in study_partners_raw + mentors_raw})
-
-        # OPTIMIZED: One query to get all connections for qualifying candidates
-        if qualifying_ids:
-            all_cand_conns = Connection.query.filter(
-                or_(
-                    Connection.requester_id.in_(qualifying_ids),
-                    Connection.receiver_id.in_(qualifying_ids)
-                ),
-                Connection.status == "accepted"
-            ).all()
-
-            cand_conn_ids_map = {}
-            for conn in all_cand_conns:
-                for uid in (conn.requester_id, conn.receiver_id):
-                    if uid in qualifying_ids:
-                        other = conn.receiver_id if conn.requester_id == uid else conn.requester_id
-                        cand_conn_ids_map.setdefault(uid, set()).add(other)
-        else:
-            cand_conn_ids_map = {}
-
-        def build_entry(candidate, cand_profile, cand_onboarding, score, reasons, category):
-            online_status = get_user_online_status(candidate.id)
-            their_ids     = cand_conn_ids_map.get(candidate.id, set())
-            mutual_count  = len(my_conn_ids & their_ids)
-            return {
-                "category": category,
-                "user": {
-                    "id":               candidate.id,
-                    "username":         candidate.username,
-                    "name":             candidate.name,
-                    "avatar":           candidate.avatar,
-                    "bio":              candidate.bio,
-                    "department":       cand_profile.department,
-                    "class_level":      cand_profile.class_name,
-                    "reputation":       candidate.reputation,
-                    "reputation_level": candidate.reputation_level,
-                    "is_online":        online_status["is_online"],
-                    "last_active":      online_status["last_active"],
-                },
-                "onboarding_details": {
-                    "subjects":    cand_onboarding.subjects[:5] if cand_onboarding.subjects else [],
-                    "study_style": cand_onboarding.learning_style,
-                },
-                "mutuals_count": mutual_count,
-                "match_score":   min(score, 100),
-                "reasons":       reasons[:4],
-            }
-
-        study_partners = [build_entry(*r, "study_partner") for r in study_partners_raw]
-        mentors        = [build_entry(*r, "mentor")        for r in mentors_raw]
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "study_partners": study_partners,
-                "mentors":        mentors,
-                "total":          len(study_partners) + len(mentors),
-            },
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Connection suggestions error: ", exc_info=True)
-        import traceback
-        current_app.logger.error(traceback.format_exc())
-        return error_response("Failed to load suggestions")
-'''
 
 @connections_bp.route("/connections/suggestions", methods=["GET"])
 @token_required
@@ -3056,22 +2840,13 @@ def get_recent_activity(user_id):
             "active_threads": 0,
             "popular_topics": []
         }
-"""
-FIXED: AI-Powered Connection Overview using your Learnora setup
-Add this to the TOP of your connections.py file (after other imports)
-"""
-
-# ============================================================================
-# ADD THESE IMPORTS AT THE TOP OF connections.py
-# ============================================================================
-
 
 
 # ============================================================================
 # REPLACE THE ENTIRE /connections/overview/<int:user_id> ENDPOINT
 # Starting around line 1117 in your connections.py
 # ============================================================================
-'''
+
 @connections_bp.route('/connections/overview/<int:user_id>', methods=['GET'])
 @token_required
 def get_connection_overview(current_user, user_id):
@@ -3423,11 +3198,6 @@ Begin your response now:"""
     
     return prompt
 
-
-# ============================================================================
-# FLASK ROUTES
-# ============================================================================
-'''
 
 """
 Online Connections Endpoint
@@ -4999,9 +4769,6 @@ def connection_status(current_user, user_id):
         return error_response("Failed to check connection status")
 
 
-# ============================================================================
-# SMART CONNECTION SUGGESTIONS
-# ============================================================================
 
 
 # ============================================================================
