@@ -50,6 +50,13 @@ from flask_socketio import emit, join_room, leave_room
 from flask import request, current_app
 from sqlalchemy import func
 
+# H-10 fix: reuse the shared, lock-protected rate limiter/typing tracker
+# instead of the ad hoc, unlocked module-level dicts that used to live in
+# this file (_send_buckets/_is_rate_limited and a bespoke ThreadTypingManager).
+# Both are genuinely mutated from multiple threads under async_mode='threading',
+# so an actual lock (which this shared implementation has) matters here.
+from services.websocket_rate_limiter import RateLimiter, TypingStatusManager
+
 from extensions import db
 from models import (
     User, Thread, ThreadMember, ThreadMessage,
@@ -93,8 +100,11 @@ _auto_reply_buckets: dict = {}
 _RATE_LIMIT_MAX    = int(os.environ.get("THREAD_MSG_RATE_MAX",    "30"))
 _RATE_LIMIT_WINDOW = int(os.environ.get("THREAD_MSG_RATE_WINDOW", "60"))  # seconds
 
-# In-memory sliding-window buckets  { user_id: [monotonic_timestamp, …] }
-_send_buckets: dict[int, list[float]] = {}
+# H-10 fix: thread-safe sliding-window limiter (was a plain, unlocked dict
+# mutated from multiple SocketIO worker threads — a real data race under
+# async_mode='threading'). One shared, namespaced key per user below keeps
+# this isolated from any other feature that also uses the same RateLimiter.
+_thread_msg_rate_limiter = RateLimiter()
 
 
 # ============================================================================
@@ -146,49 +156,48 @@ def _is_rate_limited(user_id: int) -> bool:
     Sliding-window rate limiter.
     Returns True (blocked) if the user has sent >= _RATE_LIMIT_MAX messages
     in the last _RATE_LIMIT_WINDOW seconds.
+
+    Backed by the shared, lock-protected RateLimiter (see H-10) instead of
+    a bare module-level dict — safe to call concurrently from multiple
+    SocketIO worker threads.
     """
-    now    = time.monotonic()
-    cutoff = now - _RATE_LIMIT_WINDOW
-    bucket = [ts for ts in _send_buckets.get(user_id, []) if ts > cutoff]
-    if len(bucket) >= _RATE_LIMIT_MAX:
-        _send_buckets[user_id] = bucket
-        return True
-    bucket.append(now)
-    _send_buckets[user_id] = bucket
-    return False
+    allowed, _remaining = _thread_msg_rate_limiter.check_rate_limit(
+        key=f"thread_msg_{user_id}",
+        limit=_RATE_LIMIT_MAX,
+        window=_RATE_LIMIT_WINDOW,
+    )
+    return not allowed
 
 
 # ============================================================================
 # THREAD TYPING MANAGER
 # ============================================================================
 
-class ThreadTypingManager:
+class ThreadTypingManager(TypingStatusManager):
     """
-    Tracks per-thread typing state for all active users.
-    Structure: { thread_id: { user_id: last_typed_at } }
-    Auto-expires after `timeout` seconds (3 s default).
+    Tracks per-thread typing state for all active users, keyed by thread_id
+    (used as the shared TypingStatusManager's "conversation_key").
+
+    H-10 fix: this used to be a standalone class mutating a plain
+    `{ thread_id: { user_id: last_typed_at } }` dict with no locking, even
+    though SocketIO event handlers can run concurrently on different
+    threads under async_mode='threading'. It's now a thin, backward-compatible
+    subclass of the shared, lock-protected TypingStatusManager — every
+    existing call site (`set_typing(thread_id, user_id)`, `stop_typing(...)`,
+    `cleanup_expired()`) keeps working unchanged.
     """
 
     def __init__(self, timeout: int = 3):
-        self.typing: dict[int, dict[int, datetime.datetime]] = {}
-        self.timeout = timeout
-
-    def set_typing(self, thread_id: int, user_id: int) -> None:
-        self.typing.setdefault(thread_id, {})[user_id] = datetime.datetime.utcnow()
+        super().__init__(timeout=timeout)
 
     def stop_typing(self, thread_id: int, user_id: int) -> None:
-        if thread_id in self.typing:
-            self.typing[thread_id].pop(user_id, None)
+        """Alias for remove_typing — keeps the pre-existing call sites working."""
+        self.remove_typing(thread_id, user_id)
 
-    def cleanup_expired(self) -> None:
-        """Called lazily on each typing event — removes stale indicators."""
-        now = datetime.datetime.utcnow()
-        for tid in list(self.typing):
-            for uid in list(self.typing[tid]):
-                if (now - self.typing[tid][uid]).total_seconds() > self.timeout:
-                    del self.typing[tid][uid]
-            if not self.typing[tid]:
-                del self.typing[tid]
+    def is_typing(self, thread_id: int, user_id: int) -> bool:
+        """Encapsulated membership check, replacing direct access to the
+        (now private/locked) internal typing_status dict."""
+        return user_id in self.get_typing_users(thread_id)
 
 
 # ============================================================================
@@ -541,8 +550,7 @@ class ThreadWebSocketManager:
                 return
 
             # Clear typing indicator
-            was_typing = (thread_id in self.typing_mgr.typing
-                          and user_id in self.typing_mgr.typing[thread_id])
+            was_typing = self.typing_mgr.is_typing(thread_id, user_id)
             self.typing_mgr.stop_typing(thread_id, user_id)
 
             # Clean up active thread tracking
@@ -2056,7 +2064,7 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
     with app.app_context():
         t_total_start = time.monotonic()
         try:
-            bot_user_id = 99999999999
+            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
 
             # Hard guard — skip entirely if bot not configured
             if not bot_user_id:
@@ -2231,7 +2239,7 @@ def _call_learnora_action(app, thread_id, message_id, action, target_lang, trigg
     }
 
     with app.app_context():
-        bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 99999999999)
+        bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
         if not bot_user_id:
             return
 

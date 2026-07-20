@@ -1,0 +1,34 @@
+ensure this is implemented properly : 
+### A-1: No service/domain layer — business logic lives entirely inside Flask view functions
+### A-2: Several blueprints have grown into "God files" mixing unrelated concerns
+
+
+under this section : 
+### A-3: The same feature is implemented two or three separate times in different files
+here are some instructions 
+refine search_users and _search_users_unified to single function am still yet to use the enspoints acutally so no frontend changes 
+youc can dlete thid teo endpoint i dont use thrm : reputation/leaderboard`, `/reputation/leaderboard/department  but keep this : `/reputation/rising-stars
+you can dlete any search users functionaity in these also because i didnt use them: posts and threads.
+make sure to resove this : scheduler.py::_take_snapshot` and `leaderboard.py::create_snapshot`
+
+avoid cleaning up comments 
+
+refine files in the project folder and 
+generate impleemetation document 
+
+avoid impllementing bookmark at all
+
+implemant rate ;imiting onnall routed 
+
+refin all files to well organized 
+undder this : 
+### A-1: Authorization pattern is inconsistent — decorator-based for regular users, ad-hoc inline checks for privileged actions
+delete the adminf endpont also refne every ther placr onlt ==y to allow users wuth  student role only 
+
+fix issue H-1
+
+
+fix this by implemwnting redis: 
+### C-4: No caching layer anywhere in the reviewed code
+
+refine studysessions 

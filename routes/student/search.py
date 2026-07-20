@@ -141,7 +141,10 @@ def _search_users_unified(current_user, query_str, args):
         skills_param = args.get("skills", "").strip()
         if skills_param:
             skills_list = [s.strip().lower() for s in skills_param.split(",")]
-            query = query.filter(User.skills.op('?|')(skills_list))
+            # H-7 fix: '?|' is a PostgreSQL JSONB-only operator, not valid for
+            # a plain db.JSON column (and not supported on SQLite at all).
+            # OR-ing .contains() checks is dialect-portable.
+            query = query.filter(or_(*[User.skills.contains([s]) for s in skills_list]))
         
         # Reputation filter
         rep_min = args.get("reputation_min", type=int)
@@ -266,7 +269,8 @@ def _search_posts_unified(current_user, query_str, args):
         tags_param = args.get("tags", "").strip()
         if tags_param:
             tags_list = [t.strip().lower() for t in tags_param.split(",")]
-            query = query.filter(Post.tags.op('?|')(tags_list))
+            # H-7 fix: see note above — '?|' is Postgres-JSONB-only.
+            query = query.filter(or_(*[Post.tags.contains([t]) for t in tags_list]))
         
         # Solved filter
         solved = args.get("solved")
@@ -692,8 +696,10 @@ def search_users(current_user):
         skills_param = request.args.get("skills", "").strip()
         if skills_param:
             skills_list = [s.strip().lower() for s in skills_param.split(",")]
-            # Filter users who have at least one matching skill
-            query = query.filter(User.skills.op('?|')(skills_list))
+            # Filter users who have at least one matching skill.
+            # H-7 fix: '?|' is a PostgreSQL JSONB-only operator; not valid
+            # for a plain db.JSON column and unsupported on SQLite.
+            query = query.filter(or_(*[User.skills.contains([s]) for s in skills_list]))
         
         # Reputation filter
         rep_min = request.args.get("reputation_min", type=int)

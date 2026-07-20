@@ -31,6 +31,11 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
+# H-8 fix: REPUTATION_LEVELS/get_reputation_level used to be duplicated here
+# (and independently in badges.py, leaderboard.py, and
+# models.py::User.update_reputation_level) — now imported from the single
+# shared module so all of them stay in sync.
+from routes.student.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 
 reputation_bp = Blueprint("student_reputation", __name__)
 
@@ -38,14 +43,6 @@ reputation_bp = Blueprint("student_reputation", __name__)
 # ============================================================================
 # REPUTATION CONSTANTS
 # ============================================================================
-
-REPUTATION_LEVELS = [
-    {"min": 0, "max": 50, "name": "Newbie", "icon": "🌱", "color": "#6B7280"},
-    {"min": 51, "max": 200, "name": "Learner", "icon": "📚", "color": "#3B82F6"},
-    {"min": 201, "max": 500, "name": "Contributor", "icon": "🎓", "color": "#8B5CF6"},
-    {"min": 501, "max": 1000, "name": "Expert", "icon": "🌟", "color": "#F59E0B"},
-    {"min": 1001, "max": 999999, "name": "Master", "icon": "👑", "color": "#EF4444"}
-]
 
 REPUTATION_ACTIONS = {
     "post_10_likes": {"points": 5, "description": "Post reached 10 likes"},
@@ -65,12 +62,6 @@ REPUTATION_ACTIONS = {
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-def get_reputation_level(reputation_points):
-    for level in REPUTATION_LEVELS:
-        if level["min"] <= reputation_points <= level["max"]:
-            return level
-    return REPUTATION_LEVELS[-1]
 
 def next_level(points):
     for idx, level in enumerate(REPUTATION_LEVELS):

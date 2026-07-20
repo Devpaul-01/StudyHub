@@ -8,10 +8,12 @@ from flask import Blueprint, request, jsonify, current_app,Response, stream_with
 import json
 from werkzeug.utils import secure_filename
 from sqlalchemy import or_, and_, func, desc
+from sqlalchemy.orm import aliased
 import datetime
 import re
 import os
 import time
+import traceback
 from routes.student.reputation import check_and_award_milestone
 from routes.student.badges import check_and_award_badge
 
@@ -21,6 +23,8 @@ from datetime import date, timedelta
 from collections import defaultdict
 import logging
 
+
+import random
 logger = logging.getLogger(__name__)
 
 # Add to model imports
@@ -177,55 +181,112 @@ def ask_learnora_about_post(current_user, post_id):
 @posts_bp.route("/posts/feed", methods=["GET"])
 @token_required
 def get_feed(current_user):
+    start_time = time.time()
+    request_id = request.headers.get("X-Request-Id") or f"feed_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
+    
+    current_app.logger.info(f"[FEED] {request_id} ⚡ START", extra={
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
+        "user_agent": request.headers.get("User-Agent"),
+        "request_id": request_id,
+    })
+
     try:
+        # ── Step 1: Parse request parameters ──────────────────────────────────
         filter_type = request.args.get("filter", "all")
         cursor_str  = request.args.get("cursor")
         limit       = min(request.args.get("limit", 10, type=int), 20)
         post_type   = request.args.get("post_type", "").strip()
 
+        current_app.logger.info(f"[FEED] {request_id} Parameters parsed", extra={
+            "filter_type": filter_type,
+            "cursor_str": cursor_str,
+            "limit": limit,
+            "post_type": post_type or "None",
+            "request_id": request_id,
+        })
+
+        # ── Step 2: Decode cursor ──────────────────────────────────────────────
         cursor_date = decode_cursor(cursor_str) if cursor_str else None
+        current_app.logger.debug(f"[FEED] {request_id} Cursor decoded", extra={
+            "cursor_date": cursor_date.isoformat() if cursor_date else None,
+            "request_id": request_id,
+        })
 
-        profile   = StudentProfile.query.filter_by(user_id=current_user.id).first()
+        # ── Step 3: Get user's department ──────────────────────────────────────
+        profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
         user_dept = profile.department if profile else None
+        current_app.logger.debug(f"[FEED] {request_id} User profile", extra={
+            "user_dept": user_dept,
+            "has_profile": bool(profile),
+            "request_id": request_id,
+        })
 
-        # ── Base query (unchanged) ─────────────────────────────────────────
+        # ── Step 4: Build base query ───────────────────────────────────────────
         if filter_type == "connections":
+            current_app.logger.info(f"[FEED] {request_id} Filter: connections", extra={"request_id": request_id})
+            
             conns = Connection.query.filter(
                 or_(
                     Connection.requester_id == current_user.id,
-                    Connection.receiver_id  == current_user.id
+                    Connection.receiver_id == current_user.id
                 ),
                 Connection.status == "accepted"
             ).all()
+
+            current_app.logger.debug(f"[FEED] {request_id} Connections found", extra={
+                "conn_count": len(conns),
+                "request_id": request_id,
+            })
+
             conn_ids = [
                 c.receiver_id if c.requester_id == current_user.id else c.requester_id
                 for c in conns
             ]
+
             if not conn_ids:
-                return jsonify({"status": "success", "data": {
-                    "posts": [], "filter": filter_type,
-                    "next_cursor": None, "has_more": False
-                }})
+                current_app.logger.info(f"[FEED] {request_id} No connections, returning empty", extra={"request_id": request_id})
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "posts": [],
+                        "filter": filter_type,
+                        "next_cursor": None,
+                        "has_more": False,
+                        "debug": {"request_id": request_id}
+                    }
+                })
             query = Post.query.filter(Post.student_id.in_(conn_ids))
 
         elif filter_type == "department":
+            current_app.logger.info(f"[FEED] {request_id} Filter: department", extra={"request_id": request_id})
             query = Post.query.filter(Post.department == user_dept)
 
         elif filter_type == "trending":
+            current_app.logger.info(f"[FEED] {request_id} Filter: trending", extra={"request_id": request_id})
             week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
             query = Post.query.filter(Post.posted_at >= week_ago)
 
         elif filter_type == "unsolved":
+            current_app.logger.info(f"[FEED] {request_id} Filter: unsolved", extra={"request_id": request_id})
             query = Post.query.filter(
                 Post.post_type.in_(["question", "problem"]),
                 Post.is_solved == False
             )
         else:
+            current_app.logger.info(f"[FEED] {request_id} Filter: all", extra={"request_id": request_id})
             query = Post.query
 
-        if post_type and post_type in ["question", "discussion", "announcement", "resource", "problem"]:
+        # ── Step 5: Apply post_type filter ─────────────────────────────────────
+        valid_types = ["question", "discussion", "announcement", "resource", "problem"]
+        if post_type and post_type in valid_types:
+            current_app.logger.debug(f"[FEED] {request_id} Filtering by post_type: {post_type}", extra={"request_id": request_id})
             query = query.filter(Post.post_type == post_type)
+        elif post_type:
+            current_app.logger.warning(f"[FEED] {request_id} Invalid post_type: {post_type}", extra={"request_id": request_id})
 
+        # ── Step 6: Apply ordering ─────────────────────────────────────────────
         if filter_type == "trending":
             query = query.order_by(
                 desc(Post.positive_reactions_count * 2 + Post.comments_count * 1.5 + Post.views_count / 10),
@@ -236,32 +297,58 @@ def get_feed(current_user):
 
         if cursor_date:
             query = query.filter(Post.posted_at < cursor_date)
+            current_app.logger.debug(f"[FEED] {request_id} Applied cursor filter", extra={
+                "cursor_date": cursor_date.isoformat(),
+                "request_id": request_id,
+            })
 
-        posts_raw  = query.limit(limit + 1).all()
-        has_more   = len(posts_raw) > limit
+        # ── Step 7: Execute query ──────────────────────────────────────────────
+        query_start = time.time()
+        posts_raw = query.limit(limit + 1).all()
+        query_elapsed = (time.time() - query_start) * 1000
+
+        current_app.logger.info(f"[FEED] {request_id} Query executed", extra={
+            "posts_found": len(posts_raw),
+            "limit": limit,
+            "query_elapsed_ms": round(query_elapsed, 2),
+            "request_id": request_id,
+        })
+
+        has_more = len(posts_raw) > limit
         posts_page = posts_raw[:limit]
-
         next_cursor = encode_cursor(posts_page[-1].posted_at) if has_more and posts_page else None
 
         if not posts_page:
-            return jsonify({"status": "success", "data": {
-                "posts": [], "filter": filter_type,
-                "next_cursor": None, "has_more": False
-            }})
+            current_app.logger.info(f"[FEED] {request_id} No posts found, returning empty", extra={"request_id": request_id})
+            return jsonify({
+                "status": "success",
+                "data": {
+                    "posts": [],
+                    "filter": filter_type,
+                    "next_cursor": None,
+                    "has_more": False,
+                    "debug": {"request_id": request_id}
+                }
+            })
 
         # ════════════════════════════════════════════════════════════════════
-        # BATCH LOAD EVERYTHING — zero per-post queries below this line
+        # BATCH LOAD EVERYTHING
         # ════════════════════════════════════════════════════════════════════
-        post_ids   = [p.id for p in posts_page]
-        author_ids = list({p.student_id for p in posts_page})  # deduplicated
+        batch_start = time.time()
+        post_ids = [p.id for p in posts_page]
+        author_ids = list({p.student_id for p in posts_page})
+
+        current_app.logger.debug(f"[FEED] {request_id} Batch loading", extra={
+            "post_count": len(post_ids),
+            "author_count": len(author_ids),
+            "request_id": request_id,
+        })
 
         # 1. Authors
-        authors_map: dict = {
-            u.id: u for u in User.query.filter(User.id.in_(author_ids)).all()
-        }
+        authors_map = {u.id: u for u in User.query.filter(User.id.in_(author_ids)).all()}
 
-        # 2. Current-user reactions (all posts at once)
-        reactions_map: dict = {
+        # 2. Current-user reactions
+        reactions_map = {
             r.post_id: r
             for r in PostReaction.query.filter(
                 PostReaction.post_id.in_(post_ids),
@@ -269,8 +356,8 @@ def get_feed(current_user):
             ).all()
         }
 
-        # 3. Current-user follows (all posts at once)
-        follows_map: dict = {
+        # 3. Current-user follows
+        follows_map = {
             f.post_id: f
             for f in PostFollow.query.filter(
                 PostFollow.post_id.in_(post_ids),
@@ -278,9 +365,9 @@ def get_feed(current_user):
             ).all()
         }
 
-        # 4. Connections — one query for all relevant authors
+        # 4. Connections
         other_author_ids = [aid for aid in author_ids if aid != current_user.id]
-        connections_map: dict = {}  # author_id -> status
+        connections_map = {}
         if other_author_ids:
             conns = Connection.query.filter(
                 or_(
@@ -294,11 +381,11 @@ def get_feed(current_user):
                 other = c.receiver_id if c.requester_id == current_user.id else c.requester_id
                 connections_map[other] = c.status
 
-        # 5. Threads (only for thread_enabled posts)
+        # 5. Threads
         thread_enabled_ids = [p.id for p in posts_page if p.thread_enabled]
-        threads_map: dict = {}          # post_id -> Thread
-        thread_join_map: dict = {}      # thread_id -> join request status
-        thread_member_set: set = set()  # thread_ids where user is member
+        threads_map = {}
+        thread_join_map = {}
+        thread_member_set = set()
 
         if thread_enabled_ids:
             threads = Thread.query.filter(Thread.post_id.in_(thread_enabled_ids)).all()
@@ -318,12 +405,7 @@ def get_feed(current_user):
                 ).all()
                 thread_member_set = {m.thread_id for m in members}
 
-        # 6. Top-2 comments per post — one query, ranked via window function
-        #    Fallback: simple per-post query if your DB doesn't support windows easily
-        from sqlalchemy import func
-        from sqlalchemy.orm import aliased
-
-        # Subquery: rank comments per post
+        # 6. Top-2 comments per post
         rank_col = func.row_number().over(
             partition_by=Comment.post_id,
             order_by=[Comment.is_solution.desc(), Comment.likes_count.desc()]
@@ -346,21 +428,19 @@ def get_feed(current_user):
             .all()
         )
 
-        # Group comments by post
-        from collections import defaultdict
-        comments_by_post: dict = defaultdict(list)
+        comments_by_post = defaultdict(list)
         for c in top_comments_all:
             comments_by_post[c.post_id].append(c)
 
         # Batch-load comment authors
         comment_author_ids = list({c.student_id for c in top_comments_all})
-        comment_authors_map: dict = {
+        comment_authors_map = {
             u.id: u for u in User.query.filter(User.id.in_(comment_author_ids)).all()
         } if comment_author_ids else {}
 
         # Batch-load comment likes
         all_comment_ids = [c.id for c in top_comments_all]
-        comment_liked_set: set = set()
+        comment_liked_set = set()
         if all_comment_ids:
             liked_rows = CommentLike.query.filter(
                 CommentLike.student_id == current_user.id,
@@ -368,20 +448,31 @@ def get_feed(current_user):
             ).all()
             comment_liked_set = {lk.comment_id for lk in liked_rows}
 
+        batch_elapsed = (time.time() - batch_start) * 1000
+        current_app.logger.debug(f"[FEED] {request_id} Batch load complete", extra={
+            "batch_elapsed_ms": round(batch_elapsed, 2),
+            "top_comments": len(top_comments_all),
+            "request_id": request_id,
+        })
+
         # ════════════════════════════════════════════════════════════════════
-        # ASSEMBLE PAYLOADS — pure dict building, no DB calls
+        # ASSEMBLE PAYLOADS
         # ════════════════════════════════════════════════════════════════════
         posts_data = []
         for post in posts_page:
             author = authors_map.get(post.student_id)
             if not author:
+                current_app.logger.warning(f"[FEED] {request_id} Author not found for post", extra={
+                    "post_id": post.id,
+                    "student_id": post.student_id,
+                    "request_id": request_id,
+                })
                 continue
 
             user_reacted = reactions_map.get(post.id)
             user_followed = follows_map.get(post.id)
             connection_status = connections_map.get(author.id) if author.id != current_user.id else None
 
-            # Thread info
             thread_id = None
             requested_thread = None
             is_member = False
@@ -392,7 +483,6 @@ def get_feed(current_user):
                     requested_thread = thread_join_map.get(thread.id)
                     is_member = thread.id in thread_member_set
 
-            # Comments preview
             comments_preview = []
             for c in comments_by_post.get(post.id, []):
                 c_author = comment_authors_map.get(c.student_id)
@@ -449,20 +539,40 @@ def get_feed(current_user):
                 }
             })
 
+        total_elapsed = (time.time() - start_time) * 1000
+        current_app.logger.info(f"[FEED] {request_id} ✅ SUCCESS", extra={
+            "posts_returned": len(posts_data),
+            "has_more": has_more,
+            "total_elapsed_ms": round(total_elapsed, 2),
+            "filter_type": filter_type,
+            "request_id": request_id,
+        })
+
         return jsonify({
             "status": "success",
             "data": {
                 "posts": posts_data,
                 "filter": filter_type,
                 "next_cursor": next_cursor,
-                "has_more": has_more
+                "has_more": has_more,
+                "debug": {
+                    "request_id": request_id,
+                    "response_time_ms": round(total_elapsed, 2)
+                }
             }
         })
 
     except Exception as e:
-        current_app.logger.error(f"Feed cursor error", exc_info=True)
+        total_elapsed = (time.time() - start_time) * 1000
+        current_app.logger.error(f"[FEED] {request_id} ❌ ERROR", extra={
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc(),
+            "total_elapsed_ms": round(total_elapsed, 2),
+            "request_id": request_id,
+            "args": request.args.to_dict(),
+        })
         return error_response("Failed to load feed")
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -842,9 +952,14 @@ def get_posts_by_type(current_user):
         
         if tags:
             tag_list = [t.strip() for t in tags.split(",")]
-            # Filter posts that have ANY of the specified tags
+            # Filter posts that have ANY of the specified tags.
+            # H-7 fix: '&&' is a PostgreSQL-array-only operator that doesn't
+            # exist for a plain db.JSON column (and would raise on SQLite).
+            # .contains() on each tag — ORed together — is dialect-portable
+            # and matches the pattern already used by get_posts_by_tag()
+            # elsewhere in this file.
             query = query.filter(
-                Post.tags.op('&&')(tag_list)  # PostgreSQL array overlap operator
+                or_(*[Post.tags.contains([t]) for t in tag_list])
             )
         
         # Order by most recent
@@ -1353,301 +1468,13 @@ def post_resources(current_user, post_id):
         current_app.logger.error(f"Post resources error: ", exc_info=True)
         return jsonify({"status": "error", "message": "Failed to load post resources"}), 500
         
-# [AI DISABLED] - This endpoint uses Learnora AI (provider_manager / StudyAssistant).
-# Route decorator removed so Flask will not register this URL.
-# To re-enable: restore the @posts_bp.route line below.
-#
-# @posts_bp.route("/posts/<int:post_id>/refine", methods=["POST"])
-@token_required
-def refine_post(current_user, post_id):
-    """
-    Refine post using AI with streaming response
-    Returns: SSE stream of refined content
-    """
-    try:
-        post = Post.query.get(post_id)
-        
-        if not post:
-            return error_response("Post not found", 404)
-        
-        if post.student_id != current_user.id:
-            return error_response("Only post author can refine post", 403)
-        
-        # Get refinement instructions
-        data = request.get_json(silent=True) or {}
-        instructions = data.get("instructions", "").strip()
-        
-        # Default refinement prompt if no custom instructions
-        if not instructions:
-            instructions = (
-                "Please refine this post to be clearer, more engaging, and better structured. "
-                "Improve grammar, add helpful formatting, and make it more effective for communication. "
-                "Keep the core message and intent the same."
-            )
-        
-        # Import AI helper
-        from routes.student.learnora import provider_manager, StudyAssistant
-        
-        # Get working provider
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        
-        if not provider:
-            return error_response("AI service temporarily unavailable. Please try again later.", 503)
-        
-        # Build refinement message
-        refinement_message = f"""
-**Task:** Refine the following post
-
-**Instructions:** {instructions}
-
-**Original Post:**
-Title: {post.title}
-
-Content:
-{post.text_content or '[No content]'}
-
-**Requirements:**
-- Return the refined content in JSON format
-- Include both refined title and content
-- Maintain the original message and key points
-- Improve clarity, grammar, and structure
-- Make it more engaging and professional
-- Format: {{"title": "...", "content": "..."}}
-"""
-
-        # Create assistant
-        assistant = StudyAssistant(provider, conversation_messages=[])
-        assistant.select_model(has_images=False)
-        
-        # Build messages
-        messages = [
-            {"role": "system", "content": "You are a professional writing assistant. Refine posts to be clearer and more effective."},
-            {"role": "user", "content": refinement_message}
-        ]
-        
-        # Stream response
-        def generate():
-            full_response = ""
-            error_occurred = False
-            retries = 0
-            max_retries = 2
-            
-            yield f"data: {json.dumps({'type': 'start', 'post_id': post_id})}\n\n"
-            
-            while retries < max_retries:
-                error_in_stream = False
-                
-                for chunk in assistant.stream_response(messages):
-                    yield chunk
-                    
-                    if chunk.startswith("data: "):
-                        try:
-                            chunk_data = json.loads(chunk[6:])
-                            
-                            if 'content' in chunk_data:
-                                full_response += chunk_data['content']
-                            elif 'error' in chunk_data:
-                                error_occurred = True
-                                
-                                if chunk_data.get('rate_limit') or chunk_data.get('timeout'):
-                                    error_in_stream = True
-                                    provider_manager.mark_provider_failed(provider['name'])
-                                    provider_manager.rotate()
-                                    next_provider = provider_manager.get_working_provider(needs_vision=False)
-                                    
-                                    if next_provider and retries < max_retries - 1:
-                                        provider = next_provider
-                                        assistant.provider = next_provider
-                                        assistant.select_model(has_images=False)
-                                        retries += 1
-                                        yield f"data: {json.dumps({'type': 'retry', 'attempt': retries})}\n\n"
-                                        break
-                        except:
-                            pass
-                
-                if not error_in_stream:
-                    break
-            
-            # Parse refined content
-            refined_data = None
-            if full_response and not error_occurred:
-                try:
-                    # Try to extract JSON from response
-                    import re
-                    json_match = re.search(r'\{[\s\S]*"title"[\s\S]*"content"[\s\S]*\}', full_response)
-                    
-                    if json_match:
-                        refined_data = json.loads(json_match.group())
-                    else:
-                        # Fallback: try to parse whole response
-                        refined_data = json.loads(full_response)
-                    
-                    # Validate structure
-                    if not isinstance(refined_data, dict) or 'title' not in refined_data or 'content' not in refined_data:
-                        refined_data = None
-                        
-                except Exception as e:
-                    logger.error(f"Failed to parse refinement: ", exc_info=True)
-                    refined_data = None
-            
-            done_payload = json.dumps({
-                'type': 'done',
-                'success': refined_data is not None,
-                'refined': refined_data,
-                'raw_response': full_response if not refined_data else None,
-                'error': 'Failed to parse refinement' if not refined_data and not error_occurred else None
-            })
-            yield f"data: {done_payload}\n\n"
-        
-        return Response(
-            stream_with_context(generate()),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no'
-            }
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Refine post error: ", exc_info=True)
-        return error_response("Failed to refine post")
-
-# [AI DISABLED] - This endpoint uses Learnora AI (provider_manager / StudyAssistant).
-# Route decorator removed so Flask will not register this URL.
-# To re-enable: restore the @posts_bp.route line below.
-#
-# @posts_bp.route("/posts/refine-draft", methods=["POST"])
-@token_required
-def draft_post(current_user):
-    try:
-        data = request.get_json()
-        title = data.get("title")
-        content = data.get("content")
-        instructions = data.get('instructions', '')
-        from routes.student.learnora import provider_manager, StudyAssistant
-        
-        # Get working provider
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        assistant = StudyAssistant(provider, conversation_messages=[])
-        assistant.select_model(has_images=False)
-        if not instructions:
-            instructions = (
-                "Please refine this post to be clearer, more engaging, and better structured. "
-                "Improve grammar, add helpful formatting, and make it more effective for communication. "
-                "Keep the core message and intent the same."
-            )
-      
-        refinement_message = f"""
-**Task:** Refine the following post
-
-**Instructions:** {instructions}
-
-**Original Post:**
-Title: {title}
-
-Content:
-{content or '[No content]'}
-
-**Requirements:**
-- Return the refined content in JSON format
-- Include both refined title and content
-- Maintain the original message and key points
-- Improve clarity, grammar, and structure
-- Make it more engaging and professional
-- Format: {{"title": "...", "content": "..."}}
-"""
-        messages = [
-            {"role": "system", "content": "You are a professional writing assistant. Refine posts to be clearer and more effective."},
-            {"role": "user", "content": refinement_message}
-        ]
-        def generate():
-            full_response = ""
-            error_occurred = False
-            retries = 0
-            max_retries = 2
-            
-            yield f"data: {json.dumps({'type': 'start'})}\n\n"
-            
-            while retries < max_retries:
-                error_in_stream = False
-                
-                for chunk in assistant.stream_response(messages):
-                    yield chunk
-                    
-                    if chunk.startswith("data: "):
-                        try:
-                            chunk_data = json.loads(chunk[6:])
-                            
-                            if 'content' in chunk_data:
-                                full_response += chunk_data['content']
-                            elif 'error' in chunk_data:
-                                error_occurred = True
-                                
-                                if chunk_data.get('rate_limit') or chunk_data.get('timeout'):
-                                    error_in_stream = True
-                                    provider_manager.mark_provider_failed(provider['name'])
-                                    provider_manager.rotate()
-                                    next_provider = provider_manager.get_working_provider(needs_vision=False)
-                                    
-                                    if next_provider and retries < max_retries - 1:
-                                        provider = next_provider
-                                        assistant.provider = next_provider
-                                        assistant.select_model(has_images=False)
-                                        retries += 1
-                                        yield f"data: {json.dumps({'type': 'retry', 'attempt': retries})}\n\n"
-                                        break
-                        except:
-                            pass
-                
-                if not error_in_stream:
-                    break
-            
-            # Parse refined content
-            refined_data = None
-            if full_response and not error_occurred:
-                try:
-                    # Try to extract JSON from response
-                    import re
-                    json_match = re.search(r'\{[\s\S]*"title"[\s\S]*"content"[\s\S]*\}', full_response)
-                    
-                    if json_match:
-                        refined_data = json.loads(json_match.group())
-                    else:
-                        # Fallback: try to parse whole response
-                        refined_data = json.loads(full_response)
-                    
-                    # Validate structure
-                    if not isinstance(refined_data, dict) or 'title' not in refined_data or 'content' not in refined_data:
-                        refined_data = None
-                        
-                except Exception as e:
-                    logger.error(f"Failed to parse refinement: ", exc_info=True)
-                    refined_data = None
-            
-            done_payload = json.dumps({
-                'type': 'done',
-                'success': refined_data is not None,
-                'refined': refined_data,
-                'raw_response': full_response if not refined_data else None,
-                'error': 'Failed to parse refinement' if not refined_data and not error_occurred else None
-            })
-            yield f"data: {done_payload}\n\n"
-        
-        return Response(
-            stream_with_context(generate()),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no'
-            }
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Refine post error: ", exc_info=True)
-        return error_response("Failed to refine post")
-        
+# C-5 fix: removed ~300 lines of dead code here (the AI-assisted
+# refine_post/draft_post endpoints — their @posts_bp.route decorators
+# had already been manually commented out, but the full function bodies
+# were still shipping in this file). If AI-assisted post refinement is
+# still wanted, re-implement it as a tracked feature using the same
+# provider_manager/StudyAssistant pattern as ask_learnora_about_post()
+# above, rather than restoring this block.
 @posts_bp.route("/posts/<int:post_id>/apply-refinement", methods=["PATCH"])
 @token_required
 def apply_refinement(current_user, post_id):
@@ -2294,19 +2121,24 @@ def edit_post(current_user, post_id):
 def delete_post(current_user, post_id):
     """
     Delete your own post
-    
-    Cascade deletes:
+
+    Cascade deletes (via SQLAlchemy relationship cascade="all, delete-orphan"):
     - All comments
     - All reactions/likes
     - All bookmarks
     - Associated threads
+
+    Manually cleaned up here (H-3 fix — these are NOT covered by the ORM
+    cascades above, so they used to be left behind as orphaned rows
+    referencing a post_id that no longer exists):
+    - PostView / PostFollow: real foreign keys to posts.id, but neither
+      relationship on Post declares a cascade.
+    - Mention: mentioned_in_id is a plain Integer (it's polymorphic — a
+      mention can point at a post, a comment, or a thread message), so it
+      can never be a real ForeignKey and can never be cleaned up by the
+      database automatically. We remove mentions for the post itself AND
+      for every comment that's about to be cascade-deleted with it.
     """
-    resource_type_map = {
-            "image": "image",
-            "video": "video",
-            "document": "raw"
-        }
-    
     try:
         post = Post.query.get(post_id)
         
@@ -2316,10 +2148,25 @@ def delete_post(current_user, post_id):
         # Verify ownership
         if post.student_id != current_user.id:
             return error_response("You can only delete your own posts", 403)
-        
-        # Delete associated file if exists
-        
-                
+
+        # H-3 fix: clean up rows that aren't covered by ORM/FK cascades.
+        comment_ids = [
+            row[0] for row in
+            db.session.query(Comment.id).filter_by(post_id=post_id).all()
+        ]
+
+        PostView.query.filter_by(post_id=post_id).delete(synchronize_session=False)
+        PostFollow.query.filter_by(post_id=post_id).delete(synchronize_session=False)
+
+        mention_clauses = [
+            and_(Mention.mentioned_in_type == "post", Mention.mentioned_in_id == post_id)
+        ]
+        if comment_ids:
+            mention_clauses.append(
+                and_(Mention.mentioned_in_type == "comment", Mention.mentioned_in_id.in_(comment_ids))
+            )
+        Mention.query.filter(or_(*mention_clauses)).delete(synchronize_session=False)
+
         db.session.delete(post)
         
         # Update user stats

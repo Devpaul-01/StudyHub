@@ -55,15 +55,35 @@ def _slice_by_cursor(items, cursor, limit):
     """
     Given a fully sorted list of ORM objects (each with an `.id`), return:
       (page, has_more, next_cursor)
+
+    H-4 (partial fix): finding the cursor's position used to be an O(n)
+    linear scan over `items` on every single page request (including page
+    1, which doesn't even need it). It's now an O(1) dict lookup built once
+    per call.
+
+    This does NOT solve the deeper architectural issue H-4 also flags: for
+    `sort=priority`, the "full matching set" still has to be loaded and
+    sorted in Python before pagination can happen at all, because priority
+    is a time-dependent value (due-date urgency decays continuously) that
+    isn't persisted per-request (see the H-5 fix in get_my_assignments/
+    get_homework_feed — we deliberately stopped writing it to the database
+    on every read). True DB-level keyset pagination for priority order would
+    require either persisting a periodically-refreshed snapshot column and
+    accepting slightly-stale ordering, or moving priority computation into
+    SQL itself — both are larger, behavior-changing architecture decisions
+    that are intentionally out of scope for this fix. The `due_date` and
+    `created_at` sort modes, by contrast, sort on plain persisted columns
+    and would be straightforward to migrate to real SQL-level keyset
+    pagination (`WHERE id > :cursor ORDER BY <col>, id LIMIT :limit`) in a
+    follow-up — flagged here rather than done silently.
     """
     start_index = 0
     if cursor:
         try:
             cursor_id = int(cursor)
-            for i, item in enumerate(items):
-                if item.id == cursor_id:
-                    start_index = i + 1
-                    break
+            id_to_index = {item.id: i for i, item in enumerate(items)}
+            if cursor_id in id_to_index:
+                start_index = id_to_index[cursor_id] + 1
         except (TypeError, ValueError):
             start_index = 0
 
@@ -504,10 +524,17 @@ def get_my_assignments(current_user):
         # and for deterministic sorting (priority score depends on "now").
         assignments = query.all()
         
-        # Recalculate priorities
+        # Recalculate priorities for sorting/display purposes only.
+        # H-5 fix: this used to call db.session.commit() here too, meaning
+        # simply *viewing* your assignment list wrote to the database on
+        # every request (a GET with a side effect, and needless write
+        # amplification for what should be the cheapest, most cacheable
+        # endpoint in this feature). calculate_priority() still updates the
+        # in-memory priority_score used below for sorting/serialization —
+        # we just never persist it. Any priority_score in the response is
+        # accurate as of "now"; it simply isn't written back to the row.
         for assignment in assignments:
             assignment.calculate_priority()
-        db.session.commit()
         
         # Sort
         sort_by = request.args.get("sort", "priority")
@@ -883,10 +910,13 @@ def get_homework_feed(current_user):
         
         homework_items = query.all()
         
-        # Recalculate priorities
+        # Recalculate priorities for sorting/display purposes only.
+        # H-5 fix: see get_my_assignments() above — this is a GET request,
+        # so it should not write to the database as a side effect. The
+        # freshly computed priority_score is still used for sorting/display
+        # below; it just isn't persisted.
         for hw in homework_items:
             hw.calculate_priority()
-        db.session.commit()
         
         # Sort
         sort_by = request.args.get("sort", "urgency")

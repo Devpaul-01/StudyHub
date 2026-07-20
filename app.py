@@ -3,9 +3,11 @@
 # IMPORTANT: Load environment variables FIRST before any other imports
 # ============================================================================
 from dotenv import load_dotenv
+import random
 
 from flask import Flask, render_template, request, jsonify
 from flask_migrate import Migrate
+from sqlalchemy import text
 from services.websocket_messages import init_message_websocket
 from services.websocket_threads import thread_ws_manager
 from extensions import db, mail
@@ -13,6 +15,8 @@ import os
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
+from config import get_config
+from errors import AppError
 
 from waitlist import waitlist_bp
 import logging
@@ -26,98 +30,35 @@ os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 
 # ============================================================================
-# Configuration Class
+# Configuration
 # ============================================================================
+# Phase 0 refactor: the Config class that used to be defined inline here now
+# lives in config.py as a small hierarchy (Config / DevelopmentConfig /
+# TestingConfig / ProductionConfig), selected via FLASK_ENV / APP_ENV. This
+# is the fix for the previously-flagged "debug=True hardcoded in __main__
+# contradicts Config.DEBUG=False" inconsistency (see the __main__ block
+# below) — DEBUG now comes from whichever config tier is actually selected,
+# not a hardcoded literal.
 migrate = Migrate()
-
-
-class Config:
-    """Production-ready configuration"""
-    
-    # Flask Core
-    SECRET_KEY = os.environ.get('SECRET_KEY')
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is not set!")
-    
-    FLASK_ENV = os.environ.get('FLASK_ENV', 'production')
-    DEBUG = False  # Always False in production
-    TESTING = False
-    
-    # Database
-    DATABASE_URL = os.environ.get('DATABASE_NEW_URL')
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL environment variable is not set!")
-    
-    # Fix for Heroku/Railway postgres:// vs postgresql://
-    if DATABASE_URL.startswith('postgres://'):
-        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    
-    SQLALCHEMY_DATABASE_URI = DATABASE_URL
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    
-    # Flask-Mail Configuration (Gmail with App Password)
-    MAIL_SERVER = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
-    MAIL_PORT = int(os.environ.get('MAIL_PORT', 587))
-    MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'True').lower() == 'true'
-    MAIL_USE_SSL = os.environ.get('MAIL_USE_SSL', 'False').lower() == 'true'
-    MAIL_USERNAME = os.environ.get('MAIL_USERNAME')
-    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')
-    MAIL_DEFAULT_SENDER = os.environ.get('MAIL_DEFAULT_SENDER')
-    
-    # Email reliability settings for production
-    MAIL_MAX_EMAILS = 50
-    MAIL_TIMEOUT = 5
-    MAIL_DEBUG = False
-    
-    # Suppress SSL warnings in production
-    MAIL_SUPPRESS_SEND = False
-    MAIL_ASCII_ATTACHMENTS = False
-    
-    if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("⚠️  WARNING: Email credentials not configured!")
-    else:
-        print(f"✅ Email configured: {MAIL_USERNAME}")
-    
-    # Application Settings
-    CURRENT_URL = os.environ.get('CURRENT_URL', 'http://127.0.0.1:5001/')
-    UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'static/upload')
-    
-    # Mailchimp (Optional)
-    MAILCHIMP_API_KEY = os.environ.get('MAILCHIMP_API_KEY')
-    MAILCHIMP_LIST_ID = os.environ.get('MAILCHIMP_LIST_ID')
-    
-    # Security Settings
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max upload
-    JSON_SORT_KEYS = False
-    JSONIFY_PRETTYPRINT_REGULAR = False
-    
-    # Session Security
-    SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'False').lower() == 'true'
-    SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = 'Lax'
-    PERMANENT_SESSION_LIFETIME = 3600  # 1 hour
-
-    # FIX: was hardcoded to string "name" which broke Learnora.
-    # Now reads from env as int; defaults to 0 (disabled) if not set.
-    LEARNORA_BOT_USER_ID = int(os.environ.get('LEARNORA_BOT_USER_ID', 0))
-
-    # ── Scheduler ─────────────────────────────────────────────────────────────
-    # Set SCHEDULER_ENABLED=false in .env to disable the scheduler entirely
-    # (useful in staging environments or when running multiple workers).
-    # With threading mode, multiple Gunicorn workers are fine but each will
-    # run its own scheduler — use SCHEDULER_ENABLED=false on extra workers.
-    SCHEDULER_ENABLED = os.environ.get('SCHEDULER_ENABLED', 'true').lower() == 'true'
-    
 
 
 # ============================================================================
 # Application Factory
 # ============================================================================
 
-def create_app(config_class=Config):
+def create_app(config_class=None):
     """Create and configure the Flask application"""
+    config_class = config_class or get_config()
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    # Startup diagnostic (moved here from the old inline Config class body,
+    # where it ran once per config subclass at import time rather than once
+    # per actual app instance — same message, better-scoped side effect).
+    if not app.config.get('MAIL_USERNAME') or not app.config.get('MAIL_PASSWORD'):
+        print("⚠️  WARNING: Email credentials not configured!")
+    else:
+        print(f"✅ Email configured: {app.config.get('MAIL_USERNAME')}")
     
     # Initialize extensions
     db.init_app(app)
@@ -125,6 +66,12 @@ def create_app(config_class=Config):
     migrate.init_app(app, db)
     
     # ========================================================================
+    # H-11: this app currently assumes a SINGLE process (see the
+    # 'Keep -w 1' note further down for the scheduler-specific case,
+    # and ARCHITECTURE_NOTES.md at the repo root for the full picture -
+    # websocket presence/typing state and the Learnora multi-provider
+    # failover state are ALSO in-process-only today, not just the
+    # scheduler).
     # WebSocket Initialization (CRITICAL - must be in correct order)
     # ========================================================================
     # Step 1: Initialize base message WebSocket (creates socketio instance).
@@ -162,7 +109,24 @@ def create_app(config_class=Config):
     # ========================================================================
     # Error Handlers
     # ========================================================================
-    
+
+    @app.errorhandler(AppError)
+    def handle_app_error(err):
+        """
+        Centralized handler for the new typed-exception hierarchy (errors.py).
+        Produces the exact same {"status": "error", "message": ...} response
+        shape the rest of the app already returns via error_response(), so
+        no API contract changes for any existing caller — this just gives
+        services/routes a `raise SomeError(...)` alternative to manually
+        building that dict inline.
+        """
+        if err.status_code >= 500:
+            app.logger.error(f"{type(err).__name__}: {err}", exc_info=True)
+        payload = {"status": "error", "message": str(err)}
+        if err.details:
+            payload["errors"] = err.details
+        return jsonify(payload), err.status_code
+
     @app.errorhandler(400)
     def bad_request(error):
         app.logger.error(f"400 Bad Request: {error}")
@@ -245,7 +209,7 @@ def create_app(config_class=Config):
         """Health check endpoint for monitoring"""
         try:
             # Check database connection
-            db.session.execute('SELECT 1')
+            db.session.execute(text('SELECT 1'))
             
             # Check email configuration
             email_status = bool(
@@ -380,9 +344,12 @@ if __name__ == "__main__":
     # Run with SocketIO (socketio already has all handlers registered)
     # NOTE: use_reloader=False is required — prevents scheduler double-start
     #       and avoids the threading WebSocket handler being registered twice.
+    # Phase 0 fix: debug is now sourced from the environment-tiered config
+    # (config.py) instead of a hardcoded True that contradicted
+    # Config.DEBUG=False in every other context.
     socketio.run(
         app,
-        debug=True,
+        debug=app.config.get("DEBUG", False),
         host=host,
         port=port,
         use_reloader=False,

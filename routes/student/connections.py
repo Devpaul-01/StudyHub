@@ -19,7 +19,8 @@ from models import (
 )
 from extensions import db
 from routes.student.helpers import (
-    token_required, success_response, error_response
+    token_required, success_response, error_response,
+    block_connection, unblock_connection,
 )
 from utils import get_user_online_status
 
@@ -569,7 +570,7 @@ def volunteer_for_help(current_user, request_id):
 
         # Emit websocket event to requester if they're online
         try:
-            from websocket_events import ws_manager
+            from services.websocket_events import ws_manager
             ws_manager.emit_to_user(requester.id, 'help_volunteer_joined', {
                 'help_request_id': request_id,
                 'volunteer': {
@@ -2911,7 +2912,16 @@ def get_connection_overview(current_user, user_id):
         # ========================================================================
         # ✅ FIX: Use your multi-provider system from learnora.py
         # ========================================================================
-        
+
+        # C-5 fix: this endpoint referenced provider_manager/StudyAssistant
+        # without importing them (it was previously dead/commented-out code —
+        # audit finding C-5 — and the import was never added when it was
+        # re-enabled). Imported lazily, matching the same pattern already
+        # used by posts.py's AI endpoints, so this module doesn't pay
+        # learnora.py's import-time provider-discovery network cost unless
+        # this specific AI feature is actually used.
+        from routes.student.learnora import provider_manager, StudyAssistant
+
         # Get working provider (no vision needed for text chat)
         provider = provider_manager.get_working_provider(needs_vision=False)
         
@@ -4422,12 +4432,15 @@ def list_blocked_users_detailed(current_user):
     Returns user details in the same format as connections list
     """
     try:
-        # Get all blocked connections where current user is the blocker
+        # Get all blocked connections where current user is the blocker.
+        # C-3 fix: filter on blocked_by_id — receiver_id no longer implies
+        # "the blocker" (that assumption depended on block_user() swapping
+        # IDs, which it no longer does).
         blocked_connections = Connection.query.filter_by(
-            receiver_id=current_user.id,
+            blocked_by_id=current_user.id,
             status="blocked"
         ).all()
-        
+
         if not blocked_connections:
             return jsonify({
                 "status": "success",
@@ -4436,13 +4449,16 @@ def list_blocked_users_detailed(current_user):
                     "total": 0
                 }
             })
-        
-        # Extract blocked user IDs
-        blocked_ids = [conn.requester_id for conn in blocked_connections]
-        
+
+        # The blocked user is whichever side of the row isn't current_user.
+        def _other_user_id(conn):
+            return conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
+
+        blocked_ids = [_other_user_id(conn) for conn in blocked_connections]
+
         # Create a map of connection_id and blocked_at for later use
         connection_map = {
-            conn.requester_id: {
+            _other_user_id(conn): {
                 "connection_id": conn.id,
                 "blocked_at": conn.responded_at
             }
@@ -4806,44 +4822,25 @@ def block_user(current_user, user_id):
     - Sending connection requests
     - Viewing your profile (if private)
     - Messaging you
-    
-    This also removes any existing connection
+
+    This also removes any existing connection.
+
+    C-3 fix: delegates to helpers.block_connection(), which tracks "who
+    blocked whom" via Connection.blocked_by_id instead of swapping
+    requester_id/receiver_id on the row (that used to corrupt the original
+    connection-request history — see audit finding C-3).
     """
     try:
         if user_id == current_user.id:
             return error_response("Cannot block yourself")
-        
+
         target_user = User.query.get(user_id)
         if not target_user:
             return error_response("User not found")
-        
-        # Check if connection exists
-        existing = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            )
-        ).first()
-        
-        if existing:
-            # Update existing connection to blocked
-            existing.status = "blocked"
-            existing.responded_at = datetime.datetime.utcnow()
-            # Make sure current user is always the blocker
-            if existing.receiver_id != current_user.id:
-                # Swap to make current user the "receiver" (blocker)
-                existing.requester_id, existing.receiver_id = existing.receiver_id, existing.requester_id
-        else:
-            # Create new block record
-            block = Connection(
-                requester_id=user_id,  # The blocked user
-                receiver_id=current_user.id,  # The blocker
-                status="blocked"
-            )
-            db.session.add(block)
-        
+
+        block_connection(current_user.id, user_id)
         db.session.commit()
-        
+
         return success_response(
             "User blocked successfully",
             data={
@@ -4854,7 +4851,7 @@ def block_user(current_user, user_id):
                 }
             }
         )
-        
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Block user error: ", exc_info=True)
@@ -4865,31 +4862,26 @@ def block_user(current_user, user_id):
 @token_required
 def unblock_user(current_user, user_id):
     """
-    Unblock a previously blocked user
+    Unblock a previously blocked user.
+
+    C-3 fix: delegates to helpers.unblock_connection(), which authorizes
+    against Connection.blocked_by_id (unambiguous) instead of assuming the
+    blocker is always receiver_id. Deletes the connection row — matches
+    this endpoint's original behaviour, letting the two users reconnect
+    from scratch with a fresh request.
     """
     try:
-        # Find block record
-        block = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            ),
-            Connection.status == "blocked"
-        ).first()
-        
-        if not block:
-            return error_response("User is not blocked", 404)
-        
-        # Verify current user is the blocker
-        if block.receiver_id != current_user.id and block.requester_id != current_user.id:
-            return error_response("Not authorized", 403)
-        
-        # Remove block — delete the record so both users can reconnect freely
-        db.session.delete(block)
+        success, error_message = unblock_connection(
+            current_user.id, user_id, restore_to_accepted=False
+        )
+
+        if not success:
+            status_code = 403 if error_message == "Not authorized" else 404
+            return error_response(error_message, status_code)
+
         db.session.commit()
-        
         return success_response("User unblocked successfully")
-        
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Unblock user error: ", exc_info=True)
@@ -4903,15 +4895,18 @@ def list_blocked_users(current_user):
     Get list of all blocked users
     """
     try:
-        # Find all users blocked by current user    
+        # Find all users blocked by current user.
+        # C-3 fix: filter on blocked_by_id (unambiguous) instead of assuming
+        # receiver_id always identifies the blocker.
         blocked = Connection.query.filter(
-            Connection.receiver_id == current_user.id,
+            Connection.blocked_by_id == current_user.id,
             Connection.status == "blocked"
         ).all()
         
         blocked_data = []
         for block in blocked:
-            user = User.query.get(block.requester_id)
+            other_user_id = block.receiver_id if block.requester_id == current_user.id else block.requester_id
+            user = User.query.get(other_user_id)
             if user:
                 profile = StudentProfile.query.filter_by(user_id=user.id).first()
                 blocked_data.append({

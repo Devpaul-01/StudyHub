@@ -38,7 +38,7 @@ TEMPLATE_DEFAULTS = {
 def _emit(event, data, room):
     """Emit a WebSocket event safely — always after a commit."""
     try:
-        from websocket_events import ws_manager
+        from services.websocket_events import ws_manager
         ws_manager.socketio.emit(event, data, room=room)
     except Exception as exc:
         current_app.logger.warning(f"WS emit '{event}' failed: {exc}")
@@ -47,7 +47,7 @@ def _emit(event, data, room):
 def _partner_online(session_obj, current_user_id):
     """Return partner_id if they are online, else None."""
     try:
-        from websocket_events import ws_manager
+        from services.websocket_events import ws_manager
         partner_id = (
             session_obj.user2_id
             if session_obj.user1_id == current_user_id

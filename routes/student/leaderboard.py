@@ -35,6 +35,10 @@ from models import (
 )
 from extensions import db
 from routes.student.helpers import token_required, success_response, error_response
+# H-8 fix: REPUTATION_LEVELS used to be duplicated here (and independently
+# in badges.py, reputation.py, and models.py::User.update_reputation_level)
+# — now imported from the single shared module.
+from routes.student.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 
 leaderboard_bp = Blueprint("student_leaderboard", __name__)
 
@@ -50,14 +54,6 @@ MAX_LIMIT     = 50
 DEFAULT_NEARBY_RANGE = 3
 MAX_NEARBY_RANGE     = 10
 
-REPUTATION_LEVELS = [
-    {"min": 0,    "max": 50,     "name": "Newbie",      "icon": "🌱", "color": "#6B7280"},
-    {"min": 51,   "max": 200,    "name": "Learner",     "icon": "📚", "color": "#3B82F6"},
-    {"min": 201,  "max": 500,    "name": "Contributor", "icon": "🎓", "color": "#8B5CF6"},
-    {"min": 501,  "max": 1000,   "name": "Expert",      "icon": "🌟", "color": "#F59E0B"},
-    {"min": 1001, "max": 999999, "name": "Master",      "icon": "👑", "color": "#EF4444"},
-]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PURE HELPERS  (no DB calls – fast, testable)
@@ -70,11 +66,14 @@ def _period_start(period: str):
 
 
 def _rep_level(reputation: int) -> dict:
-    """Return reputation-level dict for a reputation value."""
-    for lvl in REPUTATION_LEVELS:
-        if lvl["min"] <= reputation <= lvl["max"]:
-            return lvl
-    return REPUTATION_LEVELS[-1]
+    """
+    Return reputation-level dict for a reputation value.
+
+    Thin local alias over the shared get_reputation_level() (H-8) — kept so
+    every existing call site in this file (_rep_level(...)) didn't need to
+    be touched.
+    """
+    return get_reputation_level(reputation)
 
 
 def _validate_period(period: str):

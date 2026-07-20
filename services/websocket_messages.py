@@ -21,38 +21,14 @@ from extensions import db
 from sqlalchemy import or_, and_
 import bleach
 
-# ============================================================================
-# TYPING STATUS MANAGER (Keeping this as requested)
-# ============================================================================
-
-class TypingStatusManager:
-    """Manages typing indicators with auto-expiration"""
-    
-    def __init__(self, timeout=3):
-        self.typing_users = {}  # {receiver_id: {sender_id: timestamp}}
-        self.timeout = timeout
-    
-    def set_typing(self, sender_id, receiver_id):
-        """Mark user as typing"""
-        if receiver_id not in self.typing_users:
-            self.typing_users[receiver_id] = {}
-        self.typing_users[receiver_id][sender_id] = datetime.now(timezone.utc)
-    
-    def stop_typing(self, sender_id, receiver_id):
-        """Stop typing indicator"""
-        if receiver_id in self.typing_users:
-            self.typing_users[receiver_id].pop(sender_id, None)
-    
-    def cleanup_expired(self):
-        """Remove expired typing indicators"""
-        now = datetime.now(timezone.utc)
-        for receiver_id in list(self.typing_users.keys()):
-            for sender_id in list(self.typing_users[receiver_id].keys()):
-                if (now - self.typing_users[receiver_id][sender_id]).seconds > self.timeout:
-                    self.typing_users[receiver_id].pop(sender_id, None)
-            
-            if not self.typing_users[receiver_id]:
-                del self.typing_users[receiver_id]
+# H-10 fix: the typing-indicator tracker used to be a hand-rolled, unlocked
+# class defined right here. Under async_mode='threading' that dict was being
+# mutated from multiple real OS threads with no synchronization at all — a
+# genuine data race. services.websocket_rate_limiter already ships a
+# thread-safe (lock-protected) TypingStatusManager that does the same job;
+# we use that single, shared implementation instead of maintaining a second,
+# unsynchronized copy here.
+from services.websocket_rate_limiter import TypingStatusManager
 
 # ============================================================================
 # MESSAGE WEBSOCKET MANAGER
@@ -406,14 +382,16 @@ class MessageWebSocketManager:
                 
                 user = User.query.get(current_user_id)
                 
+                conversation_key = self.create_conversation_key(current_user_id, receiver_id)
+
                 if is_typing:
-                    self.typing_manager.set_typing(current_user_id, receiver_id)
+                    self.typing_manager.set_typing(conversation_key, current_user_id)
                     self.emit_to_user(receiver_id, 'typing_started', {
                         'user_id': current_user_id,
                         'user_name': user.name if user else 'Someone'
                     })
                 else:
-                    self.typing_manager.stop_typing(current_user_id, receiver_id)
+                    self.typing_manager.remove_typing(conversation_key, current_user_id)
                     self.emit_to_user(receiver_id, 'typing_stopped', {
                         'user_id': current_user_id
                     })

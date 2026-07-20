@@ -29,7 +29,8 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT,
-    get_reaction_emoji, get_reaction_summary
+    get_reaction_emoji, get_reaction_summary,
+    is_user_blocked, block_connection, unblock_connection,
 )
 
 messages_bp = Blueprint("student_messages", __name__)
@@ -46,21 +47,16 @@ def _utc_iso(dt):
         return dt.isoformat() + 'Z'
     return dt.isoformat().replace('+00:00', 'Z')
 def is_blocked_check(current_user_id, partner_id):
-  """Returns (is_blocked_by_me, blocked_by_partner)"""
-  from sqlalchemy import or_, and_
-  block_by_me = Connection.query.filter(
-    Connection.requester_id == current_user_id,
-    Connection.receiver_id == partner_id,
-    Connection.status == 'blocked'
-  ).first()
-  
-  block_by_them = Connection.query.filter(
-    Connection.requester_id == partner_id,
-    Connection.receiver_id == current_user_id,
-    Connection.status == 'blocked'
-  ).first()
-  
-  return bool(block_by_me), bool(block_by_them)
+  """
+  Returns (is_blocked_by_me, blocked_by_partner)
+
+  C-3 fix: delegates to helpers.is_user_blocked(), the single shared
+  "who blocked whom" check (backed by Connection.blocked_by_id). This used
+  to independently re-derive blocking direction from requester_id/receiver_id
+  positions, which did not actually agree with how connections.py's
+  block_user() decided who the blocker was.
+  """
+  return is_user_blocked(current_user_id, partner_id)
 
 def can_message(sender_id, receiver_id):
     """
@@ -182,188 +178,13 @@ def upload_message_resource(current_user):
 
 
 
-
-@messages_bp.route("/messages/analytics/<int:partner_id>", methods=["GET"])
-@token_required
-def get_conversation_analytics(current_user, partner_id):
-    """
-    Get analytics for conversation with a specific user
-    
-    Returns study patterns, subject breakdown, response times, etc.
-    """
-    try:
-        if not can_message(current_user.id, partner_id):
-            return error_response("Must be connected to view analytics", 403)
-        
-        # Create conversation key
-        sorted_ids = sorted([current_user.id, partner_id])
-        conv_key = f"{sorted_ids[0]}-{sorted_ids[1]}"
-        
-        # Get or compute analytics
-        analytics = ConversationAnalytics.query.filter_by(
-            conversation_key=conv_key
-        ).first()
-        
-        if not analytics:
-            # Trigger initial computation
-            from routes.student.message_ai_helpers import update_conversation_analytics
-            first_message = Message.query.filter(
-                or_(
-                    and_(Message.sender_id == current_user.id, Message.receiver_id == partner_id),
-                    and_(Message.sender_id == partner_id, Message.receiver_id == current_user.id)
-                )
-            ).order_by(Message.sent_at.asc()).first()
-            
-            if first_message:
-                update_conversation_analytics(current_user.id, partner_id, first_message)
-                analytics = ConversationAnalytics.query.filter_by(conversation_key=conv_key).first()
-        
-        if not analytics:
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "has_analytics": False,
-                    "message": "No conversation history yet"
-                }
-            })
-        
-        # Get study sessions count
-        study_sessions = LiveStudySession.query.filter(
-            or_(
-                and_(LiveStudySession.user1_id == current_user.id, LiveStudySession.user2_id == partner_id),
-                and_(LiveStudySession.user1_id == partner_id, LiveStudySession.user2_id == current_user.id)
-            )
-        ).count()
-        
-        # Get partner info
-        partner = User.query.get(partner_id)
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "has_analytics": True,
-                "partner": {
-                    "id": partner.id,
-                    "username": partner.username,
-                    "name": partner.name,
-                    "avatar": partner.avatar
-                } if partner else None,
-                "stats": {
-                    "total_messages": analytics.total_messages,
-                    "messages_this_week": analytics.messages_this_week,
-                    "messages_last_week": analytics.messages_last_week,
-                    "trend": "up" if analytics.messages_this_week > analytics.messages_last_week else "down" if analytics.messages_this_week < analytics.messages_last_week else "stable"
-                },
-                "subjects": {
-                    "top_subjects": analytics.top_subjects or [],
-                    "all_subjects": analytics.subjects_discussed or {},
-                    "most_discussed": analytics.top_subjects[0] if analytics.top_subjects else None
-                },
-                "timeline": {
-                    "first_message": analytics.first_message_at.isoformat() if analytics.first_message_at else None,
-                    "last_message": analytics.last_message_at.isoformat() if analytics.last_message_at else None,
-                    "days_active": (analytics.last_message_at - analytics.first_message_at).days if analytics.first_message_at and analytics.last_message_at else 0,
-                    "most_active_day": analytics.most_active_day,
-                    "most_active_hour": analytics.most_active_hour
-                },
-                "study_sessions": {
-                    "total_sessions": study_sessions,
-                    "total_hours": analytics.total_study_time_hours
-                },
-                "engagement": {
-                    "engagement_score": round(analytics.engagement_score, 2),
-                    "learning_score": round(analytics.learning_score, 2),
-                    "avg_response_time_minutes": round(analytics.avg_response_time_minutes, 1)
-                },
-                "last_updated": analytics.last_computed_at.isoformat()
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Get analytics error: {str(e)}")
-        return error_response("Failed to load analytics")
-
-@messages_bp.route("/messages/analytics/summary", methods=["GET"])
-@token_required
-def get_all_analytics_summary(current_user):
-    """
-    Get summary analytics across ALL conversations
-    Shows user's overall study patterns
-    """
-    try:
-        # Get all analytics where user is involved
-        all_analytics = ConversationAnalytics.query.filter(
-            or_(
-                ConversationAnalytics.user1_id == current_user.id,
-                ConversationAnalytics.user2_id == current_user.id
-            )
-        ).all()
-        
-        if not all_analytics:
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "has_data": False,
-                    "message": "No conversation analytics yet"
-                }
-            })
-        
-        # Aggregate data
-        total_messages = sum(a.total_messages for a in all_analytics)
-        total_study_hours = sum(a.total_study_time_hours for a in all_analytics)
-        
-        # Aggregate subjects
-        all_subjects = {}
-        for analytics in all_analytics:
-            if analytics.subjects_discussed:
-                for subject, count in analytics.subjects_discussed.items():
-                    all_subjects[subject] = all_subjects.get(subject, 0) + count
-        
-        top_subjects = sorted(all_subjects.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        # Get most active conversations
-        most_active = sorted(all_analytics, key=lambda x: x.total_messages, reverse=True)[:5]
-        most_active_data = []
-        
-        for analytics in most_active:
-            other_user_id = analytics.user2_id if analytics.user1_id == current_user.id else analytics.user1_id
-            other_user = User.query.get(other_user_id)
-            
-            if other_user:
-                most_active_data.append({
-                    "user": {
-                        "id": other_user.id,
-                        "username": other_user.username,
-                        "name": other_user.name,
-                        "avatar": other_user.avatar
-                    },
-                    "total_messages": analytics.total_messages,
-                    "top_subject": analytics.top_subjects[0] if analytics.top_subjects else None
-                })
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "has_data": True,
-                "overview": {
-                    "total_conversations": len(all_analytics),
-                    "total_messages": total_messages,
-                    "total_study_hours": round(total_study_hours, 1),
-                    "avg_messages_per_conversation": round(total_messages / len(all_analytics), 1)
-                },
-                "subjects": {
-                    "top_subjects": [{"subject": s[0], "count": s[1]} for s in top_subjects],
-                    "total_subjects": len(all_subjects)
-                },
-                "most_active_conversations": most_active_data
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Get summary analytics error: {str(e)}")
-        return error_response("Failed to load analytics summary")
-
-
+# C-5 fix: removed ~185 lines of dead code here — two full endpoint
+# implementations (per-partner and summary conversation analytics) that
+# were left as inert triple-quoted string literals. Both depended on a
+# ConversationAnalytics model that this file never actually imports, so
+# they could not have run even if accidentally re-enabled. If
+# conversation analytics are still wanted, they should be re-built as a
+# tracked feature with a real import and route, not restored from here.
 
 # ============================================================================
 # HOMEWORK QUEUE
@@ -798,11 +619,16 @@ def get_conversations(current_user):
                     )
                 )
             ).all()
+            # C-3 fix: classify by blocked_by_id (unambiguous) rather than by
+            # requester_id position — the requester of the original
+            # connection request is not necessarily the one who later
+            # blocked the other side.
             for bc in blocked_connections:
-                if bc.requester_id == current_user.id:
-                    blocked_by_me_set.add(bc.receiver_id)
-                else:
-                    blocked_by_partner_set.add(bc.requester_id)
+                other_id = bc.receiver_id if bc.requester_id == current_user.id else bc.requester_id
+                if bc.blocked_by_id == current_user.id:
+                    blocked_by_me_set.add(other_id)
+                elif bc.blocked_by_id == other_id:
+                    blocked_by_partner_set.add(other_id)
 
         # 3. First pass: find the last visible message per partner
         last_msg_by_partner = {}
@@ -1034,12 +860,17 @@ def get_conversation_messages(current_user, partner_id):
         })
         db.session.commit()
         
-        # Notify sender via WebSocket that messages were read
-        from websocket_events import ws_manager
-        if partner_id in ws_manager.online_users:
+        # Notify sender via WebSocket that messages were read.
+        # H-item-5: this is messaging functionality, so it now goes through
+        # the active message_ws_manager (services.websocket_messages) rather
+        # than the legacy websocket_events manager — that manager is being
+        # kept for non-messaging functionality only (e.g. Homework activity
+        # tracking), per the messaging-ownership split.
+        from services.websocket_messages import message_ws_manager
+        if partner_id in message_ws_manager.online_users:
             unread_msg_ids = [m['id'] for m in messages_data if not m['is_read'] and not m['from_me']]
             if unread_msg_ids:
-                ws_manager.socketio.emit(
+                message_ws_manager.socketio.emit(
                     'messages_read',
                     {
                         'reader_id': current_user.id,
@@ -1320,32 +1151,21 @@ def check_can_message(current_user, user_id):
 @messages_bp.route("/messages/block/<int:user_id>", methods=["POST"])
 @token_required
 def block_user_messaging(current_user, user_id):
+    """
+    C-3 fix: delegates to the same helpers.block_connection() used by
+    connections.py::block_user, instead of independently re-owning the row
+    by swapping requester_id/receiver_id. Blocking a user via /messages/block
+    and via /connections/block now always produce the identical result.
+    """
     try:
         if user_id == current_user.id:
             return error_response("Cannot block yourself")
 
-        # Find any existing connection between the two users regardless of direction
-        connection = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            )
-        ).first()
+        target_user = User.query.get(user_id)
+        if not target_user:
+            return error_response("User not found")
 
-        if connection:
-            # Re-own the record so is_blocked_check() correctly reads it as blocked_by_me
-            connection.requester_id = current_user.id
-            connection.receiver_id  = user_id
-            connection.status       = "blocked"
-        else:
-            # No prior connection — create a fresh block record owned by the blocker
-            connection = Connection(
-                requester_id = current_user.id,
-                receiver_id  = user_id,
-                status       = "blocked"
-            )
-            db.session.add(connection)
-
+        block_connection(current_user.id, user_id)
         db.session.commit()
         return success_response("User blocked from messaging")
 
@@ -1358,21 +1178,22 @@ def block_user_messaging(current_user, user_id):
 @messages_bp.route("/messages/unblock/<int:user_id>", methods=["POST"])
 @token_required
 def unblock_user_messaging(current_user, user_id):
+    """
+    C-3 fix: delegates to the shared helpers.unblock_connection(). Restores
+    status to "accepted" (restore_to_accepted=True) rather than deleting the
+    row — that is what can_message() checks for, and matches this
+    endpoint's original behaviour of restoring messaging immediately with
+    no new connection request needed.
+    """
     try:
-        connection = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            ),
-            Connection.status == "blocked"
-        ).first()
+        success, error_message = unblock_connection(
+            current_user.id, user_id, restore_to_accepted=True
+        )
 
-        if not connection:
-            return error_response("User is not blocked", 404)
+        if not success:
+            status_code = 403 if error_message == "Not authorized" else 404
+            return error_response(error_message, status_code)
 
-        # ⭐ Must be "accepted" — that is what can_message() checks for.
-        # Setting to "connected" left can_message() returning False → 403.
-        connection.status = "accepted"
         db.session.commit()
         return success_response("User unblocked")
 

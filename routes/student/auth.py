@@ -15,10 +15,12 @@ import os
 
 from models import User, StudentProfile, Notification, OnboardingDetails, Connection, UserActivity
 from extensions import db
-# generate_tokens_for_user is imported from .helpers below; removed duplicate from utils
-from utils import generate_verification_token, send_password_reset, send_verification_email, verify_token, decode_token
+# Token issuance/verification (generate_tokens_for_user, decode_token, verify_token)
+# lives exclusively in .helpers now — utils.py no longer duplicates these, so
+# everything JWT-related is imported from a single source of truth here.
+from utils import generate_verification_token, send_password_reset, send_verification_email
 from .helpers import (
-    generate_tokens_for_user, token_required,
+    generate_tokens_for_user, decode_token, verify_token, token_required,
     success_response, error_response,
 )
 

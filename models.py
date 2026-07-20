@@ -485,17 +485,24 @@ class User(UserMixin, db.Model):
         return str(self.id)
 
     def update_reputation_level(self):
-        """Calculate and update reputation level."""
-        if self.reputation < 51:
-            self.reputation_level = "Newbie"
-        elif self.reputation < 201:
-            self.reputation_level = "Learner"
-        elif self.reputation < 501:
-            self.reputation_level = "Contributor"
-        elif self.reputation < 1000:
-            self.reputation_level = "Expert"
-        else:
-            self.reputation_level = "Master"
+        """
+        Calculate and update reputation level.
+
+        H-8 fix: previously reimplemented the reputation-tier boundaries
+        independently of badges.py/leaderboard.py/reputation.py (all three
+        of which are now consolidated into routes.student.reputation_levels).
+        This used strict "<" comparisons where the other three used an
+        inclusive min/max range table, and they disagreed at exactly
+        reputation == 1000 (this method said "Master"; the shared table says
+        "Expert", since Expert's range is 501-1000 inclusive). Delegating to
+        the shared table removes that discrepancy for good.
+
+        Imported locally (not at module level) to avoid a circular import —
+        routes/student/*.py imports models.py, so models.py can't import
+        routes.student.reputation_levels at module scope.
+        """
+        from routes.student.reputation_levels import get_reputation_level_name
+        self.reputation_level = get_reputation_level_name(self.reputation)
 
     def __repr__(self):
         return f"<User @{self.username or self.email}>"
@@ -604,6 +611,15 @@ class Post(db.Model):
     threads   = db.relationship("Thread",        backref="post", lazy="dynamic", cascade="all, delete-orphan")
     reactions = db.relationship("PostReaction",  backref="post", lazy="dynamic", cascade="all, delete-orphan")
     bookmarks = db.relationship("Bookmark",      backref="post", lazy="dynamic", cascade="all, delete-orphan")
+    # H-3 fix: these were previously undeclared, so an ORM-level
+    # db.session.delete(post) never cascaded to them and they were left as
+    # orphaned rows referencing a deleted post_id. (routes/student/posts.py's
+    # delete_post() also explicitly bulk-deletes these for the same reason —
+    # that explicit cleanup remains in place as a safety net for any bulk
+    # `.query.filter(...).delete()` code path that bypasses the ORM cascade
+    # below entirely.)
+    views     = db.relationship("PostView",      backref="post", lazy="dynamic", cascade="all, delete-orphan")
+    follows   = db.relationship("PostFollow",     backref="post", lazy="dynamic", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Post {self.id}: {self.title[:30]}>"
@@ -1069,6 +1085,16 @@ class Connection(db.Model):
     requester_notes  = db.Column(db.Text)
     receiver_notes   = db.Column(db.Text)
 
+    # C-3 fix: explicit "who blocked whom" column. Previously block_user()
+    # swapped requester_id/receiver_id on an existing row so that
+    # "receiver_id" would always mean "the blocker" — that corrupted the
+    # original connection-request history and disagreed with at least two
+    # other independently-written "is this blocked" checks elsewhere in the
+    # codebase. blocked_by_id is the single, unambiguous source of truth for
+    # that question; requester_id/receiver_id are never mutated to express
+    # blocking anymore. NULL unless status == "blocked".
+    blocked_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+
     __table_args__ = (
         db.UniqueConstraint('requester_id', 'receiver_id', name='unique_connection'),
         db.CheckConstraint('requester_id != receiver_id', name='no_self_connection')
@@ -1462,7 +1488,18 @@ class UserActivity(db.Model):
 
 
 class SearchIndex(db.Model):
-    """Full-text search index for faster queries."""
+    """
+    Full-text search index for faster queries.
+
+    H-6 note: this table is currently NEVER populated or queried anywhere
+    in the codebase — every search in routes/student/search.py uses
+    unindexed `ILIKE '%term%'` against the live tables instead. Left in
+    place (not dropped) for this pass, since removing it is a destructive
+    schema change that needs a real migration and a product decision on
+    whether full-text search is still planned — flagged in the
+    implementation summary rather than silently deleted or silently wired
+    up as a guess.
+    """
     __tablename__ = "search_index"
 
     id              = db.Column(db.Integer, primary_key=True)
