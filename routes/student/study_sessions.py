@@ -17,30 +17,22 @@ from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
 )
-
-# Document 1 §2.4: ai_ask_in_session used to hardcode a single OpenRouter
-# key/model with no fallback — the one call site named explicitly in the
-# audit as needing to join the shared multi-provider system. It keeps its
-# streaming (SSE) behavior, now driven through StudyAssistant.stream_response()
-# instead of a hand-rolled requests.post(..., stream=True) loop, so it gets
-# provider rotation/retry on failure without losing the live-token UX.
-from services.ai_provider_service import provider_manager, StudyAssistant
+from services import study_session_service
 
 study_sessions_bp = Blueprint("study_sessions", __name__)
 
 
 # ============================================================================
 # HELPERS
+#
+# Template catalogue and proposed-time validation now live in
+# services/study_session_service.py (pure functions, Document 2 §2). The
+# WebSocket-emit helpers below stay here — they're Flask-SocketIO-context
+# concerns, not business logic.
 # ============================================================================
 
-VALID_TEMPLATE_IDS = {"exam_prep", "homework_help", "concept_review", "quick_study"}
-
-TEMPLATE_DEFAULTS = {
-    "exam_prep":    {"duration": 120, "goal": "Review 3 chapters and solve practice problems"},
-    "homework_help":{"duration": 60,  "goal": "Complete homework problems"},
-    "concept_review":{"duration": 90, "goal": "Master key concepts"},
-    "quick_study":  {"duration": 30,  "goal": "Quick review or solve 5 problems"},
-}
+VALID_TEMPLATE_IDS = study_session_service.VALID_TEMPLATE_IDS
+TEMPLATE_DEFAULTS = study_session_service.TEMPLATE_DEFAULTS
 
 
 def _emit(event, data, room):
@@ -69,20 +61,8 @@ def _partner_online(session_obj, current_user_id):
 
 
 def _validate_proposed_times(times_list, max_times=10):
-    """Parse and validate a list of ISO time strings. Returns (validated_list, error_str)."""
-    if not times_list:
-        return [], "At least one proposed time required"
-    if len(times_list) > max_times:
-        return [], f"Maximum {max_times} proposed times allowed"
-    validated = []
-    for ts in times_list:
-        try:
-            validated.append(datetime.datetime.fromisoformat(str(ts).replace('Z', '+00:00')))
-        except (ValueError, TypeError):
-            pass
-    if not validated:
-        return [], "Invalid time format — use ISO 8601"
-    return validated, None
+    """Route-layer wrapper over study_session_service.validate_proposed_times."""
+    return study_session_service.validate_proposed_times(times_list, max_times=max_times)
 
 
 # ============================================================================
@@ -297,45 +277,10 @@ def start_break(current_user, session_id):
 @token_required
 def get_session_templates(current_user):
     """Get pre-made session templates."""
-    templates = [
-        {
-            "id": "exam_prep",
-            "name": "Exam Prep Session",
-            "description": "Review concepts and practice problems for upcoming exam",
-            "duration_minutes": 120,
-            "default_goal": "Review 3 chapters and solve practice problems",
-            "suggested_structure": "Review → Practice → Q&A",
-            "icon": "📚",
-        },
-        {
-            "id": "homework_help",
-            "name": "Homework Help",
-            "description": "Work through assignment together",
-            "duration_minutes": 60,
-            "default_goal": "Complete homework problems",
-            "suggested_structure": "Work together → Review answers",
-            "icon": "✍️",
-        },
-        {
-            "id": "concept_review",
-            "name": "Concept Review",
-            "description": "Deep dive into understanding concepts",
-            "duration_minutes": 90,
-            "default_goal": "Master key concepts",
-            "suggested_structure": "Explain → Examples → Practice",
-            "icon": "🎯",
-        },
-        {
-            "id": "quick_study",
-            "name": "Quick Study Sprint",
-            "description": "Short focused session",
-            "duration_minutes": 30,
-            "default_goal": "Quick review or solve 5 problems",
-            "suggested_structure": "Focus → Quick review",
-            "icon": "⚡",
-        },
-    ]
-    return jsonify({"status": "success", "data": {"templates": templates}})
+    return jsonify({
+        "status": "success",
+        "data": {"templates": study_session_service.SESSION_TEMPLATES}
+    })
 
 
 @study_sessions_bp.route("/study-session/schedule-with-template", methods=["POST"])
@@ -377,7 +322,8 @@ def schedule_session_with_template(current_user):
         db.session.commit()
 
         # Notification record
-        notification = Notification(
+        from services import notification_service
+        notification_service.notify(
             user_id=partner_id,
             title="Study Session Request",
             body=f"{current_user.name} wants to schedule a {template_id.replace('_', ' ')} session",
@@ -385,7 +331,6 @@ def schedule_session_with_template(current_user):
             related_type="study_session",
             related_id=session.id,
         )
-        db.session.add(notification)
         db.session.commit()
 
         # Emit AFTER commit
@@ -548,10 +493,8 @@ def edit_study_session(current_user, session_id):
                 return error_response(err)
 
             new_time_strs = [t.isoformat() for t in validated_times]
-            old_set = set(session.proposed_times or [])
-            new_set = set(new_time_strs)
 
-            if old_set != new_set:
+            if study_session_service.times_changed(session.proposed_times, new_time_strs):
                 times_changed = True
                 session.proposed_times = new_time_strs
                 if session.status == "confirmed":
@@ -776,20 +719,9 @@ def confirm_study_session(current_user, session_id):
             return error_response("Invalid time format — use ISO 8601")
 
         # Validate that the chosen time is one of the proposed times
-        proposed = session.proposed_times or []
-        proposed_normalized = []
-        for p in proposed:
-            try:
-                proposed_normalized.append(
-                    datetime.datetime.fromisoformat(str(p).replace('Z', '+00:00'))
-                )
-            except (ValueError, TypeError):
-                pass
-
-        # Compare ignoring timezone-naive vs aware by comparing isoformat date strings
-        confirmed_str = confirmed_time.strftime("%Y-%m-%dT%H:%M")
-        proposed_strs = [p.strftime("%Y-%m-%dT%H:%M") for p in proposed_normalized]
-        if proposed_normalized and confirmed_str not in proposed_strs:
+        if not study_session_service.confirmed_time_matches_proposed(
+            confirmed_time, session.proposed_times or []
+        ):
             return error_response("confirmed_time must be one of the proposed times")
 
         session.confirmed_time = confirmed_time
@@ -1291,12 +1223,8 @@ def ai_ask_in_session(current_user, session_id):
         if len(question) > 2000:
             return error_response("Question too long (max 2000 characters)")
 
-        # Document 1 §2.4: no longer a single hardcoded OpenRouter key with
-        # no fallback — goes through the same provider_manager every other
-        # AI-adjacent endpoint uses, so a failed/rate-limited provider
-        # rotates instead of failing the whole request.
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        if not provider:
+        api_key = os.getenv("OPENROUTER_API_KEY_1")
+        if not api_key:
             return error_response("AI service not configured", 503)
 
         ai_messages = list(session.ai_messages or [])
@@ -1321,51 +1249,51 @@ def ai_ask_in_session(current_user, session_id):
 
         partner_id = session.user2_id if session.user1_id == current_user.id else session.user1_id
 
-        assistant = StudyAssistant(provider, conversation_messages=[])
-        assistant.select_model(has_images=False)
-
         def generate():
+            import requests as _requests
             import json as _json
 
-            nonlocal provider
             full_response = ""
+            try:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://learnora-study.com",
+                    "X-Title": "Learnora Study Assistant",
+                }
+                payload = {
+                    "model": "google/gemini-2.0-flash-exp:free",
+                    "messages": messages_for_api,
+                    "stream": True,
+                }
+                resp = _requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=60,
+                )
 
-            # StudyAssistant.stream_response() already handles model-level
-            # fallback within a provider; if the whole provider is exhausted
-            # (assistant._provider_exhausted), rotate to the next one and
-            # retry once — mirrors the pattern used by learnora.py's own
-            # /api/chat and connections.py's SSE overview endpoint.
-            max_provider_retries = 2
-            attempt = 0
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    text = line.decode("utf-8")
+                    if text.startswith("data: "):
+                        text = text[6:]
+                    if text == "[DONE]":
+                        break
+                    try:
+                        chunk = _json.loads(text)
+                        content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                        if content:
+                            full_response += content
+                            yield f"data: {_json.dumps({'content': content})}\n\n"
+                    except _json.JSONDecodeError:
+                        continue
 
-            while attempt <= max_provider_retries:
-                for chunk in assistant.stream_response(messages_for_api, has_images=False):
-                    if chunk.startswith("data: "):
-                        try:
-                            chunk_data = _json.loads(chunk[6:])
-                            if "content" in chunk_data:
-                                full_response += chunk_data["content"]
-                                yield f"data: {_json.dumps({'content': chunk_data['content']})}\n\n"
-                        except _json.JSONDecodeError:
-                            pass
-
-                if not getattr(assistant, "_provider_exhausted", False) or full_response:
-                    break
-
-                # Provider exhausted with nothing recovered — rotate and retry
-                provider_manager.mark_provider_failed(provider["name"], "exhausted in live session AI ask")
-                provider_manager.rotate()
-                next_provider = provider_manager.get_working_provider(needs_vision=False)
-                if not next_provider:
-                    break
-                provider = next_provider
-                assistant.provider = next_provider
-                assistant.select_model(has_images=False)
-                assistant._provider_exhausted = False
-                attempt += 1
-
-            if not full_response:
-                current_app.logger.error("AI stream request failed — no provider produced a response")
+            except Exception:
+                # Do NOT log exception details that could include the API key
+                current_app.logger.error("AI stream request failed")
                 yield f"data: {_json.dumps({'error': 'AI request failed'})}\n\n"
                 return
 

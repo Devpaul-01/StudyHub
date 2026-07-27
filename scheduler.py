@@ -4,11 +4,13 @@ StudyHub – Background Scheduler
 
 Uses APScheduler's BackgroundScheduler.
 
-⚠️  EVENTLET COMPATIBILITY NOTE:
-     This app runs socketio with eventlet, which monkey-patches the stdlib
-     (including threading). BackgroundScheduler uses ThreadPoolExecutor which
-     runs on eventlet green threads after monkey-patching — this is safe and
-     intentional. Do NOT use GeventScheduler or AsyncIOScheduler here.
+⚠️  THREADING COMPATIBILITY NOTE:
+     This app runs socketio with async_mode='threading' (see
+     services/websocket_messages.py::init_app) — BackgroundScheduler's
+     ThreadPoolExecutor runs on ordinary OS threads under this mode, which
+     is safe and intentional. (Corrected from a prior "eventlet" docstring
+     that no longer matched the actual async_mode in use — Document 1 §5's
+     file-by-file note flagged this exact staleness.)
 
      use_reloader=False is already set in socketio.run(), so the scheduler
      will never double-start. atexit handles clean shutdown.
@@ -19,10 +21,19 @@ Install dependency:
 Jobs registered here:
     • weekly_leaderboard_snapshot  – every Sunday 00:05 UTC
     • monthly_leaderboard_snapshot – 1st of every month 00:10 UTC
+
+SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
+    The actual snapshot computation used to be duplicated here (as
+    _take_snapshot) and, separately, in leaderboard.py's manual
+    POST /leaderboard/snapshot admin endpoint — with two slightly
+    different implementations. services/leaderboard_service.take_snapshot()
+    is now the SOLE implementation (this file's version was kept as the
+    "template" since it already had the one-per-day idempotency guard and
+    the cleaner two-query department-rank computation). Both this
+    scheduler and leaderboard.py's admin route now call the same function.
 """
 
 import atexit
-import datetime
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -43,118 +54,29 @@ scheduler = BackgroundScheduler(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CORE JOB: Leaderboard Snapshot
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _take_snapshot(app, snapshot_type: str = "weekly") -> dict:
-    """
-    Core snapshot logic — called by both scheduled jobs and the manual
-    POST /leaderboard/snapshot admin endpoint.
-
-    Runs inside an explicit app context so SQLAlchemy works correctly from
-    a background thread.
-
-    Returns a summary dict: {"created": N, "skipped": bool, "users_ranked": N}
-    """
-    with app.app_context():
-        from extensions import db
-        from models import User, StudentProfile, LeaderboardSnapshot
-        from sqlalchemy import desc, asc, func
-
-        now = datetime.datetime.utcnow()
-
-        # ── Guard: one snapshot per type per day ──────────────────────────────
-        already_ran = (
-            db.session.query(LeaderboardSnapshot)
-            .filter(
-                LeaderboardSnapshot.snapshot_type == snapshot_type,
-                func.date(LeaderboardSnapshot.created_at) == now.date(),
-            )
-            .first()
-        )
-        if already_ran:
-            logger.info(
-                "[Scheduler] %s snapshot already exists for %s — skipping",
-                snapshot_type, now.date(),
-            )
-            return {"created": 0, "skipped": True, "users_ranked": 0}
-
-        try:
-            # ── 1. Global all-time rankings (order by reputation DESC) ─────────
-            ranked = (
-                db.session.query(User.id, User.reputation)
-                .filter(User.status == "approved")
-                .order_by(desc(User.reputation), asc(User.id))
-                .all()
-            )
-
-            if not ranked:
-                logger.warning("[Scheduler] No approved users found — snapshot skipped")
-                return {"created": 0, "skipped": True, "users_ranked": 0}
-
-            # ── 2. Department ranks in a single pass ──────────────────────────
-            dept_rows = (
-                db.session.query(User.id, StudentProfile.department)
-                .join(StudentProfile, StudentProfile.user_id == User.id)
-                .filter(
-                    User.status == "approved",
-                    StudentProfile.department.isnot(None),
-                )
-                .order_by(
-                    StudentProfile.department,
-                    desc(User.reputation),
-                    asc(User.id),
-                )
-                .all()
-            )
-
-            dept_rank_map: dict[int, int] = {}
-            dept_counters: dict[str, int] = {}
-            for uid, dept in dept_rows:
-                dept_counters[dept] = dept_counters.get(dept, 0) + 1
-                dept_rank_map[uid] = dept_counters[dept]
-
-            # ── 3. Bulk-insert snapshots ──────────────────────────────────────
-            snapshots = [
-                LeaderboardSnapshot(
-                    user_id=uid,
-                    snapshot_type=snapshot_type,
-                    global_rank=global_rank,
-                    department_rank=dept_rank_map.get(uid),
-                    score=reputation,
-                    created_at=now,
-                )
-                for global_rank, (uid, reputation) in enumerate(ranked, start=1)
-            ]
-
-            db.session.bulk_save_objects(snapshots)
-            db.session.commit()
-
-            n = len(snapshots)
-            logger.info(
-                "[Scheduler] ✅ %s snapshot done — %d users ranked at %s",
-                snapshot_type, n, now.isoformat(),
-            )
-            return {"created": n, "skipped": False, "users_ranked": n}
-
-        except Exception as exc:
-            db.session.rollback()
-            logger.error("[Scheduler] ❌ %s snapshot failed: %s", snapshot_type, exc)
-            raise  # re-raise so APScheduler marks the job as errored
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # JOB WRAPPERS  (APScheduler calls these — they receive the app via closure)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _job_weekly(app):
     logger.info("[Scheduler] ▶ Running weekly leaderboard snapshot job")
-    _take_snapshot(app, "weekly")
+    with app.app_context():
+        from services.leaderboard_service import take_snapshot
+        result = take_snapshot("weekly")
+        logger.info(
+            "[Scheduler] ✅ weekly snapshot done — created=%s skipped=%s total_ranked=%s",
+            result["created"], result["skipped"], result["total_ranked"],
+        )
 
 
 def _job_monthly(app):
     logger.info("[Scheduler] ▶ Running monthly leaderboard snapshot job")
-    _take_snapshot(app, "monthly")
+    with app.app_context():
+        from services.leaderboard_service import take_snapshot
+        result = take_snapshot("monthly")
+        logger.info(
+            "[Scheduler] ✅ monthly snapshot done — created=%s skipped=%s total_ranked=%s",
+            result["created"], result["skipped"], result["total_ranked"],
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,8 +91,8 @@ def _job_listener(event):
         )
     else:
         logger.info(
-            "[Scheduler] Job '%s' completed successfully (retval=%s)",
-            event.job_id, event.retval,
+            "[Scheduler] Job '%s' completed successfully",
+            event.job_id,
         )
 
 
@@ -183,7 +105,7 @@ def init_scheduler(app) -> None:
     Wire APScheduler into the Flask app.
 
     Call this ONCE at the end of create_app(), after all extensions and
-    blueprints are registered.  Safe to call in production and dev alike
+    blueprints are registered. Safe to call in production and dev alike
     because use_reloader=False prevents double-invocation.
 
     Schedule (UTC):

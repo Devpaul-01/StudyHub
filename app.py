@@ -23,7 +23,7 @@ import logging
 from routes.student import student_bp
 from routes.student.auth import google_bp
 from logging.handlers import RotatingFileHandler
-load_dotenv()
+loaded = load_dotenv()
 
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
@@ -320,6 +320,10 @@ if __name__ == "__main__":
             if j.next_run_time
         ]
         next_runs = "\n" + "\n".join(lines)
+    print("Loaded:", loaded)
+    print("DATABASE_URL:", os.getenv("DATABASE_URL"))
+
+
 
     print("\n" + "="*60)
     print("🚀 StudyHub Starting...")

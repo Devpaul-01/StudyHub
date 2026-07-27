@@ -12,6 +12,13 @@ Selection is via FLASK_ENV / APP_ENV (checked in that order), defaulting to
 deployment continues to behave exactly as it does today.
 """
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from the same directory as this file
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+
 
 
 class Config:
