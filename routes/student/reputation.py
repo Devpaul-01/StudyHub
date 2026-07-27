@@ -37,26 +37,21 @@ from routes.student.helpers import (
 # shared module so all of them stay in sync.
 from routes.student.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 
+# Document 2 §3.1: REPUTATION_ACTIONS, award_reputation, and
+# check_and_award_milestone moved to services/reputation_service.py —
+# imported here at the same names so every existing call site in this file
+# (and in posts.py, which imports these from routes.student.reputation)
+# keeps working. NOTE: award_reputation() no longer commits internally
+# (Document 2 §5) — award_reputation_endpoint below was updated to commit
+# explicitly, since it previously relied on the internal commit.
+from services.reputation_service import (
+    REPUTATION_ACTIONS,
+    ReputationAction,
+    award_reputation,
+    check_and_award_milestone,
+)
+
 reputation_bp = Blueprint("student_reputation", __name__)
-
-
-# ============================================================================
-# REPUTATION CONSTANTS
-# ============================================================================
-
-REPUTATION_ACTIONS = {
-    "post_10_likes": {"points": 5, "description": "Post reached 10 likes"},
-    "post_50_likes": {"points": 20, "description": "Post reached 50 likes"},
-    "post_100_likes": {"points": 50, "description": "Post reached 100 likes"},
-    "comment_marked_solution": {"points": 15, "description": "Comment marked as solution"},
-    "comment_marked_helpful": {"points": 3, "description": "Comment marked helpful"},
-    "post_marked_helpful": {"points": 5, "description": "Post marked helpful"},
-    "post_disliked": {"points": -2, "description": "Post received dislike"},
-    "content_reported": {"points": -10, "description": "Content reported"},
-    "helpful_streak_7": {"points": 10, "description": "7 helpful reactions in a week"},
-    "thread_created": {"points": 3, "description": "Created study thread"},
-    "thread_completed": {"points": 10, "description": "Thread reached 10+ members"},
-}
 
 
 # ============================================================================
@@ -69,65 +64,6 @@ def next_level(points):
             if idx + 1 < len(REPUTATION_LEVELS):
                 return REPUTATION_LEVELS[idx + 1]
     return None
-
-
-def award_reputation(user_id, action_key, related_type=None, related_id=None, custom_points=None):
-    user = User.query.get(user_id)
-    if not user:
-        return None
-
-    action = REPUTATION_ACTIONS.get(action_key)
-    if not action and not custom_points:
-        return None
-
-    points_change = custom_points if custom_points else action["points"]
-    description = action["description"] if action else f"Custom: {points_change} points"
-
-    reputation_before = user.reputation
-    user.reputation += points_change
-    user.reputation = max(0, user.reputation)
-    user.update_reputation_level()
-
-    history = ReputationHistory(
-        user_id=user_id,
-        action=action_key if action_key else "custom",
-        points_change=points_change,
-        related_type=related_type,
-        related_id=related_id,
-        reputation_before=reputation_before,
-        reputation_after=user.reputation
-    )
-    db.session.add(history)
-
-    old_level = get_reputation_level(reputation_before)
-    new_level = get_reputation_level(user.reputation)
-
-    if old_level["name"] != new_level["name"]:
-        from models import Notification
-        notification = Notification(
-            user_id=user_id,
-            title=f"Level Up! You're now a {new_level['name']}!",
-            body=f"You've reached {user.reputation} reputation points {new_level['icon']}",
-            notification_type="reputation_level_up",
-            related_type="user",
-            related_id=user_id
-        )
-        db.session.add(notification)
-
-    db.session.commit()
-    return history
-
-
-def check_and_award_milestone(user_id, post_id=None, comment_id=None):
-    if post_id:
-        post = Post.query.get(post_id)
-        if post and post.student_id == user_id:
-            if post.positive_reactions_count == 10:
-                award_reputation(user_id, "post_10_likes", "post", post_id)
-            elif post.positive_reactions_count == 50:
-                award_reputation(user_id, "post_50_likes", "post", post_id)
-            elif post.positive_reactions_count == 100:
-                award_reputation(user_id, "post_100_likes", "post", post_id)
 
 
 # ============================================================================
@@ -738,6 +674,12 @@ def award_reputation_endpoint(current_user):
 
         if not history:
             return error_response("Failed to award reputation")
+
+        # Document 2 §5 fix: award_reputation() no longer commits internally
+        # (services don't commit — that's the route's job). This route
+        # previously relied entirely on that internal commit; added
+        # explicitly here so the reputation change is actually persisted.
+        db.session.commit()
 
         user = User.query.get(user_id)
 

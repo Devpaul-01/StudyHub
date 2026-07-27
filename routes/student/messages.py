@@ -33,6 +33,14 @@ from routes.student.helpers import (
     is_user_blocked, block_connection, unblock_connection,
 )
 
+# Document 2 §3.4/§4: can_message() moved to services/connection_service.py
+# — it's a pure connection-status predicate with no HTTP dependency,
+# conceptually about connections rather than messages, same reasoning as
+# is_user_blocked/block_connection/unblock_connection above (which already
+# arrive via the routes.student.helpers shim). Imported here at the same
+# name so every existing call site in this file keeps working unchanged.
+from services.connection_service import can_message
+
 messages_bp = Blueprint("student_messages", __name__)
 
 
@@ -46,44 +54,6 @@ def _utc_iso(dt):
     if dt.tzinfo is None:
         return dt.isoformat() + 'Z'
     return dt.isoformat().replace('+00:00', 'Z')
-def is_blocked_check(current_user_id, partner_id):
-  """
-  Returns (is_blocked_by_me, blocked_by_partner)
-
-  C-3 fix: delegates to helpers.is_user_blocked(), the single shared
-  "who blocked whom" check (backed by Connection.blocked_by_id). This used
-  to independently re-derive blocking direction from requester_id/receiver_id
-  positions, which did not actually agree with how connections.py's
-  block_user() decided who the blocker was.
-  """
-  return is_user_blocked(current_user_id, partner_id)
-
-def can_message(sender_id, receiver_id):
-    """
-    Check if sender can message receiver
-    
-    Rules:
-    1. Must have accepted connection, OR
-    2. System message exception
-    
-    Note: Thread members CANNOT DM - must connect first
-    """
-    if sender_id == receiver_id:
-        return False
-    
-    # Check for accepted connection
-    connection = Connection.query.filter(
-        or_(
-            and_(Connection.requester_id == sender_id, Connection.receiver_id == receiver_id),
-            and_(Connection.requester_id == receiver_id, Connection.receiver_id == sender_id)
-        ),
-        Connection.status == "accepted"
-    ).first()
-    
-    if connection:
-        return True
-    
-    return False
 
 
 def get_conversation_partner(conversation, current_user_id):
@@ -761,7 +731,10 @@ def get_conversation_messages(current_user, partner_id):
     - since: ISO timestamp (for polling - only get new messages)
     """
     try:
-        is_blocked_by_me, blocked_by_partner = is_blocked_check(current_user.id, partner_id)
+        # Document 2 §3.4/§4: is_blocked_check() wrapper removed — it was a
+        # one-line pass-through to is_user_blocked() (already imported above
+        # via the routes.student.helpers shim), so this now calls it directly.
+        is_blocked_by_me, blocked_by_partner = is_user_blocked(current_user.id, partner_id)
         is_either_blocked = is_blocked_by_me or blocked_by_partner
 
         # If not connected AND not blocked — truly unauthorized

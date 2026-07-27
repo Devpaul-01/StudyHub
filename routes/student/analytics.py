@@ -29,6 +29,14 @@ from routes.student.helpers import (
 # and to eliminate the circular-import risk of a function-level import.
 from routes.student.badges import calculate_badge_progress
 
+# Document 2 §4: calculate_engagement_rate and get_activity_level are pure
+# functions of numeric inputs, moved to services/analytics_service.py.
+# generate_insights/get_average_user_stats stay here — see
+# services/analytics_service.py's module docstring for why (they do heavy
+# DB querying, and generate_insights depends on routes/student/badges.py,
+# which isn't a service yet).
+from services.analytics_service import calculate_engagement_rate, get_activity_level
+
 analytics_bp = Blueprint("student_analytics", __name__)
 
 # ---------------------------------------------------------------------------
@@ -44,29 +52,6 @@ _SQLITE_WEEKDAY_NAMES = [
 # Allowed values for the export endpoint's ?type= query parameter.
 _VALID_EXPORT_TYPES = {"activity", "reputation", "posts", "overview"}
 
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def calculate_engagement_rate(views, likes, comments):
-    """Calculate engagement rate as percentage"""
-    if views == 0:
-        return 0
-    total_engagement = likes + (comments * 2)  # Comments worth more
-    return round((total_engagement / views) * 100, 1)
-
-
-def get_activity_level(activity_score):
-    """Categorize activity level"""
-    if activity_score >= 50:
-        return {"level": "Very Active", "color": "#10B981", "emoji": "🔥"}
-    elif activity_score >= 30:
-        return {"level": "Active", "color": "#3B82F6", "emoji": "⚡"}
-    elif activity_score >= 10:
-        return {"level": "Moderate", "color": "#F59E0B", "emoji": "📊"}
-    else:
-        return {"level": "Low", "color": "#6B7280", "emoji": "💤"}
 
 
 def generate_insights(user_id):
