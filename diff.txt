@@ -1,0 +1,411 @@
+diff --git a/routes/student/connections.py b/routes/student/connections.py
+index 147b31c..c7132ea 100644
+--- a/routes/student/connections.py
++++ b/routes/student/connections.py
+@@ -24,6 +24,16 @@ from routes.student.helpers import (
+ )
+ from utils import get_user_online_status
+ 
++# Document 1 §2.4: provider_manager/StudyAssistant now live in
++# services/ai_provider_service.py (moved out of learnora.py so every
++# blueprint that needs AI access shares one canonical implementation).
++# This can be a normal module-level import — the Document 1 §5 fix means
++# importing this module no longer triggers a live network call (model
++# discovery is now an explicit app.py startup step via
++# provider_manager.warm_model_discovery()), so there's no import-time cost
++# to avoid by deferring this to a lazy in-function import anymore.
++from services.ai_provider_service import provider_manager, StudyAssistant
++
+ logger = logging.getLogger(__name__)
+ 
+ connections_bp = Blueprint('connections', __name__)
+@@ -2910,18 +2920,10 @@ def get_connection_overview(current_user, user_id):
+         compatibility_score = calculate_compatibility_score(compatibility_data)
+         
+         # ========================================================================
+-        # ✅ FIX: Use your multi-provider system from learnora.py
++        # Multi-provider AI system (services/ai_provider_service.py) —
++        # provider_manager/StudyAssistant imported at module level now, see top of file.
+         # ========================================================================
+ 
+-        # C-5 fix: this endpoint referenced provider_manager/StudyAssistant
+-        # without importing them (it was previously dead/commented-out code —
+-        # audit finding C-5 — and the import was never added when it was
+-        # re-enabled). Imported lazily, matching the same pattern already
+-        # used by posts.py's AI endpoints, so this module doesn't pay
+-        # learnora.py's import-time provider-discovery network cost unless
+-        # this specific AI feature is actually used.
+-        from routes.student.learnora import provider_manager, StudyAssistant
+-
+         # Get working provider (no vision needed for text chat)
+         provider = provider_manager.get_working_provider(needs_vision=False)
+         
+diff --git a/routes/student/posts.py b/routes/student/posts.py
+index 1b8c12f..f8f2520 100644
+--- a/routes/student/posts.py
++++ b/routes/student/posts.py
+@@ -39,6 +39,17 @@ from routes.student.helpers import (
+     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
+ )
+ 
++# Document 1 §2.3 / Document 2 §3.10: pure helper functions extracted to
++# services/post_service.py — imported here at the same names so every
++# existing call site in this file keeps working unchanged.
++from services.post_service import (
++    extract_public_id,
++    update_post_reaction_count,
++    detect_and_create_mentions,
++    check_spam,
++    update_user_activity,
++)
++
+ posts_bp = Blueprint("student_posts", __name__)
+ import cloudinary
+ 
+@@ -626,8 +637,14 @@ def react_to_post(current_user, post_id):
+                 try:
+                     from routes.student.reputation import check_and_award_milestone
+                     check_and_award_milestone(post.student_id, post_id=post_id)
++                    # Document 2 §5 fix: award_reputation() (called internally
++                    # by check_and_award_milestone) no longer commits on its
++                    # own — added explicitly here so a milestone-triggered
++                    # reputation award is actually persisted, not just
++                    # computed in memory and discarded.
++                    db.session.commit()
+                 except Exception:
+-                    pass
++                    db.session.rollback()
+ 
+             return jsonify({
+                 "status": "success",
+@@ -733,28 +750,20 @@ def upload_post_resource(current_user):
+             exc_info=True
+         )
+         return error_response("Failed to upload file")
+-def extract_public_id(url):
+-    # remove query params
+-    url = url.split("?")[0]
+-
+-    # remove extension (.jpg, .png, .mp4, etc)
+-    public_id = re.sub(r'\.[^.]+$', '', url)
+-
+-    # get everything after /upload/v123456/
+-    public_id = re.split(r'/upload/v\d+/', public_id)[-1]
+-
+-    return public_id
+-
+ 
+ # ============================================================================
+ # HELPER FUNCTIONS
++#
++# Document 1 §2.3 / Document 2 §3.10: extract_public_id,
++# update_post_reaction_count, detect_and_create_mentions, check_spam, and
++# update_user_activity moved to services/post_service.py (imported at the
++# top of this file). check_helpful_milestones stays here for now — it
++# calls check_and_award_badge, which currently lives in
++# routes/student/badges.py (not yet a service), so moving it into
++# post_service.py would make a service import from routes/*, violating
++# Document 2 §2's layering rule. Revisit once services/badge_service.py
++# exists.
+ # ============================================================================
+-def update_post_reaction_count(post, reaction_type, delta):
+-    """Update denormalized reaction counts on post"""
+-    if reaction_type in ["like", "love", "helpful", "insightful", "fire", "wow", "celebrate"]:
+-        post.positive_reactions_count = max(0, post.positive_reactions_count + delta)
+-    if reaction_type == "helpful":
+-        post.helpful_count += 1
+ def check_helpful_milestones(user_id):
+     """Check if user reached helpful count milestones"""
+     user = User.query.get(user_id)
+@@ -775,137 +784,6 @@ def check_helpful_milestones(user_id):
+         
+ 
+ 
+-def detect_and_create_mentions(text_content, created_by_id, content_type, content_id):
+-    """
+-    Detect @username mentions in text and create Mention records
+-    Also creates notifications for mentioned users
+-    
+-    Args:
+-        text_content: Text to scan for mentions
+-        created_by_id: ID of user who created the content
+-        content_type: "post", "comment", or "thread_message"
+-        content_id: ID of the content (post_id, comment_id, etc)
+-    """
+-    if not text_content:
+-        return []
+-    
+-    # Regex pattern to match @username (alphanumeric + underscore)
+-    mention_pattern = r'@([a-zA-Z0-9_]{3,20})'
+-    matches = re.finditer(mention_pattern, text_content)
+-    
+-    mentioned_users = []
+-    creator = User.query.get(created_by_id)
+-    
+-    for match in matches:
+-        username = match.group(1).lower()
+-        
+-        # Find user
+-        mentioned_user = User.query.filter_by(username=username).first()
+-        
+-        if mentioned_user and mentioned_user.id != created_by_id:
+-            # Check if mention already exists (prevent duplicates)
+-            existing_mention = Mention.query.filter_by(
+-                mentioned_in_type=content_type,
+-                mentioned_in_id=content_id,
+-                mentioned_user_id=mentioned_user.id,
+-                mentioned_by_user_id=created_by_id
+-            ).first()
+-            
+-            if not existing_mention:
+-                # Create mention record
+-                mention = Mention(
+-                    mentioned_in_type=content_type,
+-                    mentioned_in_id=content_id,
+-                    mentioned_user_id=mentioned_user.id,
+-                    mentioned_by_user_id=created_by_id
+-                )
+-                db.session.add(mention)
+-                
+-                # Create notification
+-                content_link = f"{content_type}/{content_id}"
+-                notification = Notification(
+-                    user_id=mentioned_user.id,
+-                    title=f"{creator.name} mentioned you",
+-                    body=f"{creator.name} mentioned you in a {content_type}",
+-                    notification_type="mention",
+-                    related_type=content_type,
+-                    related_id=content_id
+-                )
+-                db.session.add(notification)
+-                
+-                mentioned_users.append(mentioned_user.id)
+-    
+-    return mentioned_users
+-
+-
+-def check_spam(user_id, content_type="post"):
+-    """
+-    Simple spam detection - rate limiting
+-    
+-    Returns: (is_spam: bool, reason: str)
+-    """
+-    now = datetime.datetime.utcnow()
+-    hour_ago = now - datetime.timedelta(hours=1)
+-    
+-    # Check posts in last hour
+-    if content_type == "post":
+-        recent_posts = Post.query.filter(
+-            Post.student_id == user_id,
+-            Post.posted_at >= hour_ago
+-        ).count()
+-        
+-        if recent_posts >= 10:  # Max 10 posts per hour
+-            return True, "Too many posts in short time"
+-    
+-    # Check comments in last hour
+-    elif content_type == "comment":
+-        recent_comments = Comment.query.filter(
+-            Comment.student_id == user_id,
+-            Comment.posted_at >= hour_ago
+-        ).count()
+-        
+-        if recent_comments >= 30:  # Max 30 comments per hour
+-            return True, "Too many comments in short time"
+-    
+-    return False, None
+-
+-
+-
+-def update_user_activity(user_id, activity_type):
+-    """
+-    Update or create daily activity record for user
+-    Used for activity heatmap and streak tracking
+-    """
+-    today = datetime.date.today()
+-    
+-    activity = UserActivity.query.filter_by(
+-        user_id=user_id,
+-        activity_date=today
+-    ).first()
+-    
+-    if not activity:
+-        activity = UserActivity(
+-            user_id=user_id,
+-            activity_date=today,
+-            posts_created=0,      # ← ADD THIS
+-            comments_created=0,   # ← ADD THIS
+-            threads_joined=0,     # ← ADD THIS
+-            messages_sent=0,      # ← ADD THIS
+-            helpful_count=0,      # ← ADD THIS
+-            activity_score=0      # ← ADD THIS
+-        )
+-        db.session.add(activity)
+-    
+-    # Increment counters (now safe because we initialized them)
+-    if activity_type == "post":
+-        activity.posts_created = (activity.posts_created or 0) + 1
+-        activity.activity_score = (activity.activity_score or 0) + 5
+-    elif activity_type == "comment":
+-        activity.comments_created = (activity.comments_created or 0) + 1
+-        activity.activity_score = (activity.activity_score or 0) + 2
+-    
+-    return activity
+-
+ # ============================================================================
+ # POST CRUD OPERATIONS
+ # ============================================================================
+@@ -2328,6 +2206,11 @@ def mark_solution(current_user, post_id):
+         commenter = User.query.get(comment.student_id)
+         if commenter and commenter.id != current_user.id:
+             from routes.student.reputation import award_reputation
++            # Document 2 §5: award_reputation() no longer commits internally.
++            # Safe here without an immediate commit — this route's own
++            # db.session.commit() a few lines below covers this change too,
++            # as one transaction alongside the solution-marking and
++            # notification writes.
+             award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
+             
+             # ✅ Check badge milestones
+@@ -2573,6 +2456,15 @@ def mark_comment_helpful(current_user, comment_id):
+         # ✅ Award reputation to commenter
+         from routes.student.reputation import award_reputation
+         award_reputation(comment.student_id, "comment_marked_helpful", "comment", comment_id)
++
++        # Document 2 §5 fix: award_reputation() no longer commits internally
++        # (moved to services/reputation_service.py, which follows the
++        # "services don't commit" convention). This call site previously
++        # relied entirely on that internal commit — added explicitly here so
++        # the reputation change is actually persisted (this was a real,
++        # silent bug: without this, the point award and any level-up
++        # notification were computed in memory and never saved).
++        db.session.commit()
+         
+         return success_response(
+             "Comment marked as helpful",
+diff --git a/routes/student/study_sessions.py b/routes/student/study_sessions.py
+index 7eb2ca5..b6afc38 100644
+--- a/routes/student/study_sessions.py
++++ b/routes/student/study_sessions.py
+@@ -18,6 +18,14 @@ from routes.student.helpers import (
+     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
+ )
+ 
++# Document 1 §2.4: ai_ask_in_session used to hardcode a single OpenRouter
++# key/model with no fallback — the one call site named explicitly in the
++# audit as needing to join the shared multi-provider system. It keeps its
++# streaming (SSE) behavior, now driven through StudyAssistant.stream_response()
++# instead of a hand-rolled requests.post(..., stream=True) loop, so it gets
++# provider rotation/retry on failure without losing the live-token UX.
++from services.ai_provider_service import provider_manager, StudyAssistant
++
+ study_sessions_bp = Blueprint("study_sessions", __name__)
+ 
+ 
+@@ -1283,8 +1291,12 @@ def ai_ask_in_session(current_user, session_id):
+         if len(question) > 2000:
+             return error_response("Question too long (max 2000 characters)")
+ 
+-        api_key = os.getenv("OPENROUTER_API_KEY_1")
+-        if not api_key:
++        # Document 1 §2.4: no longer a single hardcoded OpenRouter key with
++        # no fallback — goes through the same provider_manager every other
++        # AI-adjacent endpoint uses, so a failed/rate-limited provider
++        # rotates instead of failing the whole request.
++        provider = provider_manager.get_working_provider(needs_vision=False)
++        if not provider:
+             return error_response("AI service not configured", 503)
+ 
+         ai_messages = list(session.ai_messages or [])
+@@ -1309,51 +1321,51 @@ def ai_ask_in_session(current_user, session_id):
+ 
+         partner_id = session.user2_id if session.user1_id == current_user.id else session.user1_id
+ 
++        assistant = StudyAssistant(provider, conversation_messages=[])
++        assistant.select_model(has_images=False)
++
+         def generate():
+-            import requests as _requests
+             import json as _json
+ 
++            nonlocal provider
+             full_response = ""
+-            try:
+-                headers = {
+-                    "Authorization": f"Bearer {api_key}",
+-                    "Content-Type": "application/json",
+-                    "HTTP-Referer": "https://learnora-study.com",
+-                    "X-Title": "Learnora Study Assistant",
+-                }
+-                payload = {
+-                    "model": "google/gemini-2.0-flash-exp:free",
+-                    "messages": messages_for_api,
+-                    "stream": True,
+-                }
+-                resp = _requests.post(
+-                    "https://openrouter.ai/api/v1/chat/completions",
+-                    headers=headers,
+-                    json=payload,
+-                    stream=True,
+-                    timeout=60,
+-                )
+ 
+-                for line in resp.iter_lines():
+-                    if not line:
+-                        continue
+-                    text = line.decode("utf-8")
+-                    if text.startswith("data: "):
+-                        text = text[6:]
+-                    if text == "[DONE]":
+-                        break
+-                    try:
+-                        chunk = _json.loads(text)
+-                        content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+-                        if content:
+-                            full_response += content
+-                            yield f"data: {_json.dumps({'content': content})}\n\n"
+-                    except _json.JSONDecodeError:
+-                        continue
+-
+-            except Exception:
+-                # Do NOT log exception details that could include the API key
+-                current_app.logger.error("AI stream request failed")
++            # StudyAssistant.stream_response() already handles model-level
++            # fallback within a provider; if the whole provider is exhausted
++            # (assistant._provider_exhausted), rotate to the next one and
++            # retry once — mirrors the pattern used by learnora.py's own
++            # /api/chat and connections.py's SSE overview endpoint.
++            max_provider_retries = 2
++            attempt = 0
++
++            while attempt <= max_provider_retries:
++                for chunk in assistant.stream_response(messages_for_api, has_images=False):
++                    if chunk.startswith("data: "):
++                        try:
++                            chunk_data = _json.loads(chunk[6:])
++                            if "content" in chunk_data:
++                                full_response += chunk_data["content"]
++                                yield f"data: {_json.dumps({'content': chunk_data['content']})}\n\n"
++                        except _json.JSONDecodeError:
++                            pass
++
++                if not getattr(assistant, "_provider_exhausted", False) or full_response:
++                    break
++
++                # Provider exhausted with nothing recovered — rotate and retry
++                provider_manager.mark_provider_failed(provider["name"], "exhausted in live session AI ask")
++                provider_manager.rotate()
++                next_provider = provider_manager.get_working_provider(needs_vision=False)
++                if not next_provider:
++                    break
++                provider = next_provider
++                assistant.provider = next_provider
++                assistant.select_model(has_images=False)
++                assistant._provider_exhausted = False
++                attempt += 1
++
++            if not full_response:
++                current_app.logger.error("AI stream request failed — no provider produced a response")
+                 yield f"data: {_json.dumps({'error': 'AI request failed'})}\n\n"
+                 return
+ 

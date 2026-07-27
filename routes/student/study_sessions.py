@@ -18,6 +18,14 @@ from routes.student.helpers import (
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
 )
 
+# Document 1 §2.4: ai_ask_in_session used to hardcode a single OpenRouter
+# key/model with no fallback — the one call site named explicitly in the
+# audit as needing to join the shared multi-provider system. It keeps its
+# streaming (SSE) behavior, now driven through StudyAssistant.stream_response()
+# instead of a hand-rolled requests.post(..., stream=True) loop, so it gets
+# provider rotation/retry on failure without losing the live-token UX.
+from services.ai_provider_service import provider_manager, StudyAssistant
+
 study_sessions_bp = Blueprint("study_sessions", __name__)
 
 
@@ -1283,8 +1291,12 @@ def ai_ask_in_session(current_user, session_id):
         if len(question) > 2000:
             return error_response("Question too long (max 2000 characters)")
 
-        api_key = os.getenv("OPENROUTER_API_KEY_1")
-        if not api_key:
+        # Document 1 §2.4: no longer a single hardcoded OpenRouter key with
+        # no fallback — goes through the same provider_manager every other
+        # AI-adjacent endpoint uses, so a failed/rate-limited provider
+        # rotates instead of failing the whole request.
+        provider = provider_manager.get_working_provider(needs_vision=False)
+        if not provider:
             return error_response("AI service not configured", 503)
 
         ai_messages = list(session.ai_messages or [])
@@ -1309,51 +1321,51 @@ def ai_ask_in_session(current_user, session_id):
 
         partner_id = session.user2_id if session.user1_id == current_user.id else session.user1_id
 
+        assistant = StudyAssistant(provider, conversation_messages=[])
+        assistant.select_model(has_images=False)
+
         def generate():
-            import requests as _requests
             import json as _json
 
+            nonlocal provider
             full_response = ""
-            try:
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://learnora-study.com",
-                    "X-Title": "Learnora Study Assistant",
-                }
-                payload = {
-                    "model": "google/gemini-2.0-flash-exp:free",
-                    "messages": messages_for_api,
-                    "stream": True,
-                }
-                resp = _requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    stream=True,
-                    timeout=60,
-                )
 
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    text = line.decode("utf-8")
-                    if text.startswith("data: "):
-                        text = text[6:]
-                    if text == "[DONE]":
-                        break
-                    try:
-                        chunk = _json.loads(text)
-                        content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                        if content:
-                            full_response += content
-                            yield f"data: {_json.dumps({'content': content})}\n\n"
-                    except _json.JSONDecodeError:
-                        continue
+            # StudyAssistant.stream_response() already handles model-level
+            # fallback within a provider; if the whole provider is exhausted
+            # (assistant._provider_exhausted), rotate to the next one and
+            # retry once — mirrors the pattern used by learnora.py's own
+            # /api/chat and connections.py's SSE overview endpoint.
+            max_provider_retries = 2
+            attempt = 0
 
-            except Exception:
-                # Do NOT log exception details that could include the API key
-                current_app.logger.error("AI stream request failed")
+            while attempt <= max_provider_retries:
+                for chunk in assistant.stream_response(messages_for_api, has_images=False):
+                    if chunk.startswith("data: "):
+                        try:
+                            chunk_data = _json.loads(chunk[6:])
+                            if "content" in chunk_data:
+                                full_response += chunk_data["content"]
+                                yield f"data: {_json.dumps({'content': chunk_data['content']})}\n\n"
+                        except _json.JSONDecodeError:
+                            pass
+
+                if not getattr(assistant, "_provider_exhausted", False) or full_response:
+                    break
+
+                # Provider exhausted with nothing recovered — rotate and retry
+                provider_manager.mark_provider_failed(provider["name"], "exhausted in live session AI ask")
+                provider_manager.rotate()
+                next_provider = provider_manager.get_working_provider(needs_vision=False)
+                if not next_provider:
+                    break
+                provider = next_provider
+                assistant.provider = next_provider
+                assistant.select_model(has_images=False)
+                assistant._provider_exhausted = False
+                attempt += 1
+
+            if not full_response:
+                current_app.logger.error("AI stream request failed — no provider produced a response")
                 yield f"data: {_json.dumps({'error': 'AI request failed'})}\n\n"
                 return
 

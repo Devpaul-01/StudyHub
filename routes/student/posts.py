@@ -39,6 +39,17 @@ from routes.student.helpers import (
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
 )
 
+# Document 1 §2.3 / Document 2 §3.10: pure helper functions extracted to
+# services/post_service.py — imported here at the same names so every
+# existing call site in this file keeps working unchanged.
+from services.post_service import (
+    extract_public_id,
+    update_post_reaction_count,
+    detect_and_create_mentions,
+    check_spam,
+    update_user_activity,
+)
+
 posts_bp = Blueprint("student_posts", __name__)
 import cloudinary
 
@@ -626,8 +637,14 @@ def react_to_post(current_user, post_id):
                 try:
                     from routes.student.reputation import check_and_award_milestone
                     check_and_award_milestone(post.student_id, post_id=post_id)
+                    # Document 2 §5 fix: award_reputation() (called internally
+                    # by check_and_award_milestone) no longer commits on its
+                    # own — added explicitly here so a milestone-triggered
+                    # reputation award is actually persisted, not just
+                    # computed in memory and discarded.
+                    db.session.commit()
                 except Exception:
-                    pass
+                    db.session.rollback()
 
             return jsonify({
                 "status": "success",
@@ -733,28 +750,20 @@ def upload_post_resource(current_user):
             exc_info=True
         )
         return error_response("Failed to upload file")
-def extract_public_id(url):
-    # remove query params
-    url = url.split("?")[0]
-
-    # remove extension (.jpg, .png, .mp4, etc)
-    public_id = re.sub(r'\.[^.]+$', '', url)
-
-    # get everything after /upload/v123456/
-    public_id = re.split(r'/upload/v\d+/', public_id)[-1]
-
-    return public_id
-
 
 # ============================================================================
 # HELPER FUNCTIONS
+#
+# Document 1 §2.3 / Document 2 §3.10: extract_public_id,
+# update_post_reaction_count, detect_and_create_mentions, check_spam, and
+# update_user_activity moved to services/post_service.py (imported at the
+# top of this file). check_helpful_milestones stays here for now — it
+# calls check_and_award_badge, which currently lives in
+# routes/student/badges.py (not yet a service), so moving it into
+# post_service.py would make a service import from routes/*, violating
+# Document 2 §2's layering rule. Revisit once services/badge_service.py
+# exists.
 # ============================================================================
-def update_post_reaction_count(post, reaction_type, delta):
-    """Update denormalized reaction counts on post"""
-    if reaction_type in ["like", "love", "helpful", "insightful", "fire", "wow", "celebrate"]:
-        post.positive_reactions_count = max(0, post.positive_reactions_count + delta)
-    if reaction_type == "helpful":
-        post.helpful_count += 1
 def check_helpful_milestones(user_id):
     """Check if user reached helpful count milestones"""
     user = User.query.get(user_id)
@@ -774,137 +783,6 @@ def check_helpful_milestones(user_id):
         check_and_award_badge(user_id, "Helpful Hero")
         
 
-
-def detect_and_create_mentions(text_content, created_by_id, content_type, content_id):
-    """
-    Detect @username mentions in text and create Mention records
-    Also creates notifications for mentioned users
-    
-    Args:
-        text_content: Text to scan for mentions
-        created_by_id: ID of user who created the content
-        content_type: "post", "comment", or "thread_message"
-        content_id: ID of the content (post_id, comment_id, etc)
-    """
-    if not text_content:
-        return []
-    
-    # Regex pattern to match @username (alphanumeric + underscore)
-    mention_pattern = r'@([a-zA-Z0-9_]{3,20})'
-    matches = re.finditer(mention_pattern, text_content)
-    
-    mentioned_users = []
-    creator = User.query.get(created_by_id)
-    
-    for match in matches:
-        username = match.group(1).lower()
-        
-        # Find user
-        mentioned_user = User.query.filter_by(username=username).first()
-        
-        if mentioned_user and mentioned_user.id != created_by_id:
-            # Check if mention already exists (prevent duplicates)
-            existing_mention = Mention.query.filter_by(
-                mentioned_in_type=content_type,
-                mentioned_in_id=content_id,
-                mentioned_user_id=mentioned_user.id,
-                mentioned_by_user_id=created_by_id
-            ).first()
-            
-            if not existing_mention:
-                # Create mention record
-                mention = Mention(
-                    mentioned_in_type=content_type,
-                    mentioned_in_id=content_id,
-                    mentioned_user_id=mentioned_user.id,
-                    mentioned_by_user_id=created_by_id
-                )
-                db.session.add(mention)
-                
-                # Create notification
-                content_link = f"{content_type}/{content_id}"
-                notification = Notification(
-                    user_id=mentioned_user.id,
-                    title=f"{creator.name} mentioned you",
-                    body=f"{creator.name} mentioned you in a {content_type}",
-                    notification_type="mention",
-                    related_type=content_type,
-                    related_id=content_id
-                )
-                db.session.add(notification)
-                
-                mentioned_users.append(mentioned_user.id)
-    
-    return mentioned_users
-
-
-def check_spam(user_id, content_type="post"):
-    """
-    Simple spam detection - rate limiting
-    
-    Returns: (is_spam: bool, reason: str)
-    """
-    now = datetime.datetime.utcnow()
-    hour_ago = now - datetime.timedelta(hours=1)
-    
-    # Check posts in last hour
-    if content_type == "post":
-        recent_posts = Post.query.filter(
-            Post.student_id == user_id,
-            Post.posted_at >= hour_ago
-        ).count()
-        
-        if recent_posts >= 10:  # Max 10 posts per hour
-            return True, "Too many posts in short time"
-    
-    # Check comments in last hour
-    elif content_type == "comment":
-        recent_comments = Comment.query.filter(
-            Comment.student_id == user_id,
-            Comment.posted_at >= hour_ago
-        ).count()
-        
-        if recent_comments >= 30:  # Max 30 comments per hour
-            return True, "Too many comments in short time"
-    
-    return False, None
-
-
-
-def update_user_activity(user_id, activity_type):
-    """
-    Update or create daily activity record for user
-    Used for activity heatmap and streak tracking
-    """
-    today = datetime.date.today()
-    
-    activity = UserActivity.query.filter_by(
-        user_id=user_id,
-        activity_date=today
-    ).first()
-    
-    if not activity:
-        activity = UserActivity(
-            user_id=user_id,
-            activity_date=today,
-            posts_created=0,      # ← ADD THIS
-            comments_created=0,   # ← ADD THIS
-            threads_joined=0,     # ← ADD THIS
-            messages_sent=0,      # ← ADD THIS
-            helpful_count=0,      # ← ADD THIS
-            activity_score=0      # ← ADD THIS
-        )
-        db.session.add(activity)
-    
-    # Increment counters (now safe because we initialized them)
-    if activity_type == "post":
-        activity.posts_created = (activity.posts_created or 0) + 1
-        activity.activity_score = (activity.activity_score or 0) + 5
-    elif activity_type == "comment":
-        activity.comments_created = (activity.comments_created or 0) + 1
-        activity.activity_score = (activity.activity_score or 0) + 2
-    
-    return activity
 
 # ============================================================================
 # POST CRUD OPERATIONS
@@ -2328,6 +2206,11 @@ def mark_solution(current_user, post_id):
         commenter = User.query.get(comment.student_id)
         if commenter and commenter.id != current_user.id:
             from routes.student.reputation import award_reputation
+            # Document 2 §5: award_reputation() no longer commits internally.
+            # Safe here without an immediate commit — this route's own
+            # db.session.commit() a few lines below covers this change too,
+            # as one transaction alongside the solution-marking and
+            # notification writes.
             award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
             
             # ✅ Check badge milestones
@@ -2573,6 +2456,15 @@ def mark_comment_helpful(current_user, comment_id):
         # ✅ Award reputation to commenter
         from routes.student.reputation import award_reputation
         award_reputation(comment.student_id, "comment_marked_helpful", "comment", comment_id)
+
+        # Document 2 §5 fix: award_reputation() no longer commits internally
+        # (moved to services/reputation_service.py, which follows the
+        # "services don't commit" convention). This call site previously
+        # relied entirely on that internal commit — added explicitly here so
+        # the reputation change is actually persisted (this was a real,
+        # silent bug: without this, the point award and any level-up
+        # notification were computed in memory and never saved).
+        db.session.commit()
         
         return success_response(
             "Comment marked as helpful",

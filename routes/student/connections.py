@@ -24,6 +24,16 @@ from routes.student.helpers import (
 )
 from utils import get_user_online_status
 
+# Document 1 §2.4: provider_manager/StudyAssistant now live in
+# services/ai_provider_service.py (moved out of learnora.py so every
+# blueprint that needs AI access shares one canonical implementation).
+# This can be a normal module-level import — the Document 1 §5 fix means
+# importing this module no longer triggers a live network call (model
+# discovery is now an explicit app.py startup step via
+# provider_manager.warm_model_discovery()), so there's no import-time cost
+# to avoid by deferring this to a lazy in-function import anymore.
+from services.ai_provider_service import provider_manager, StudyAssistant
+
 logger = logging.getLogger(__name__)
 
 connections_bp = Blueprint('connections', __name__)
@@ -2910,17 +2920,9 @@ def get_connection_overview(current_user, user_id):
         compatibility_score = calculate_compatibility_score(compatibility_data)
         
         # ========================================================================
-        # ✅ FIX: Use your multi-provider system from learnora.py
+        # Multi-provider AI system (services/ai_provider_service.py) —
+        # provider_manager/StudyAssistant imported at module level now, see top of file.
         # ========================================================================
-
-        # C-5 fix: this endpoint referenced provider_manager/StudyAssistant
-        # without importing them (it was previously dead/commented-out code —
-        # audit finding C-5 — and the import was never added when it was
-        # re-enabled). Imported lazily, matching the same pattern already
-        # used by posts.py's AI endpoints, so this module doesn't pay
-        # learnora.py's import-time provider-discovery network cost unless
-        # this specific AI feature is actually used.
-        from routes.student.learnora import provider_manager, StudyAssistant
 
         # Get working provider (no vision needed for text chat)
         provider = provider_manager.get_working_provider(needs_vision=False)
