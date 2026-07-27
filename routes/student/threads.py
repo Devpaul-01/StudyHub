@@ -38,8 +38,21 @@ from routes.student.helpers import (
     token_required, success_response, error_response
 )
 
+# Document 1 §2.4: shared multi-provider AI access, moved out of learnora.py
+# into services/ai_provider_service.py. call_ai_response() replaces the
+# single-attempt _call_provider_sync() call this file used to make directly
+# for meeting-notes generation, adding retry/rotation for free.
+from services.ai_provider_service import call_ai_response
+
+# Document 1 §2.2 / Document 2 §3.8: the single moderator/creator check,
+# replacing the local _is_mod_or_creator_static and the five separate
+# inline re-derivations of the same check that used to be scattered
+# through this file's route bodies.
+from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+
 import sys
 import os
+import re as _re
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_bp = Blueprint("student_threads", __name__)
@@ -111,9 +124,11 @@ def detect_mentions_in_thread(text_content, sender_id, thread_id, message_id):
     return mentioned_users
 
 
-def _is_mod_or_creator_static(membership):
-    """Helper: check if a membership has privileged role."""
-    return membership and membership.role in ("creator", "moderator")
+# Document 1 §2.2 / Document 2 §3.8: _is_mod_or_creator_static moved to
+# services/thread_authorization.py as is_moderator_or_creator() — that
+# module is now the single implementation shared by this REST blueprint
+# AND services/websocket_threads.py, closing the REST/WebSocket
+# duplication named in Document 1 §2.2's table.
 
 
 # ============================================================================
@@ -901,11 +916,7 @@ def remove_member(current_user, thread_id, user_id):
         if not thread:
             return error_response("Thread not found", 404)
 
-        current_membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not current_membership or current_membership.role not in ["creator", "moderator"]:
-            return error_response("Only creator/moderators can remove members", 403)
+        current_membership = require_moderator_or_creator(thread_id, current_user.id)
 
         if user_id == thread.creator_id:
             return error_response("Cannot remove thread creator", 403)
@@ -2218,7 +2229,7 @@ def get_thread(current_user, thread_id):
             thread_data["members"]       = members_data
             thread_data["message_count"] = thread.message_count
 
-        if is_member and membership and _is_mod_or_creator_static(membership):
+        if is_member and membership and is_moderator_or_creator(membership):
             pending_reqs  = ThreadJoinRequest.query.filter_by(
                 thread_id=thread_id, status="pending"
             ).all()
@@ -2395,11 +2406,7 @@ def approve_join_request(current_user, thread_id, request_id):
         if not thread:
             return error_response("Thread not found", 404)
 
-        membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not membership or membership.role not in ("creator", "moderator"):
-            return error_response("Only creator or moderator can approve requests", 403)
+        require_moderator_or_creator(thread_id, current_user.id)
 
         thread = Thread.query.with_for_update().get(thread_id)
         if thread.member_count >= thread.max_members:
@@ -2505,11 +2512,7 @@ def reject_join_request(current_user, thread_id, request_id):
         if not thread:
             return error_response("Thread not found", 404)
 
-        membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not membership or membership.role not in ("creator", "moderator"):
-            return error_response("Only creator or moderator can reject requests", 403)
+        require_moderator_or_creator(thread_id, current_user.id)
 
         join_request = ThreadJoinRequest.query.filter_by(
             id=request_id, thread_id=thread_id, status="pending"
@@ -2545,11 +2548,7 @@ def invite_to_thread(current_user, thread_id, user_id):
         if not thread:
             return error_response("Thread not found", 404)
 
-        membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not membership or membership.role not in ("creator", "moderator"):
-            return error_response("Only creator/moderator can invite users", 403)
+        require_moderator_or_creator(thread_id, current_user.id)
 
         if thread.member_count >= thread.max_members:
             return error_response("Thread is full", 403)
@@ -2837,17 +2836,26 @@ No markdown, no explanation."""
     user_prompt = f'Thread: "{thread.title}"\nLast {message_range} messages:\n\n{conversation}'
 
     try:
-        from learnora import provider_manager, _call_provider_sync
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        if not provider:
+        # Document 1 §2.4: call_ai_response() handles provider selection,
+        # retry, and rotation internally — replaces the single-attempt
+        # _call_provider_sync() call this used to make directly, so a
+        # transient provider failure no longer fails meeting-notes
+        # generation outright.
+        ai_response, diagnostics = call_ai_response(
+            [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}],
+            needs_vision=False,
+            call_type="meeting_notes",
+        )
+        if not ai_response:
+            current_app.logger.error(f"Meeting notes AI error: {diagnostics}")
             return error_response("AI service unavailable", 503)
 
-        ai_response = _call_provider_sync(
-            [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}],
-            provider, "meeting_notes"
-        )
-
-        clean = ai_response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        # Document 1 §5 fix: the original .lstrip("```json").lstrip("```")
+        # strips arbitrary leading/trailing characters from the given sets
+        # (character-strip, not substring-strip) — wrong semantics for
+        # removing a code fence. Replaced with a regex that removes the
+        # fence as a literal substring.
+        clean = _re.sub(r"^```(?:json)?\s*|\s*```$", "", ai_response.strip())
         notes = _json.loads(clean)
     except Exception as e:
         current_app.logger.error(f"Meeting notes AI error: {e!r}")
@@ -2930,11 +2938,7 @@ def add_members_to_thread(current_user, thread_id):
         if not thread.is_open:
             return error_response("Thread is closed — reopen it before adding members", 403)
 
-        membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not membership or membership.role not in ("creator", "moderator"):
-            return error_response("Only the creator or a moderator can add members", 403)
+        require_moderator_or_creator(thread_id, current_user.id)
 
         data     = request.get_json(silent=True) or {}
         user_ids = data.get("user_ids", [])
