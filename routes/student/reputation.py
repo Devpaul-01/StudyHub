@@ -35,7 +35,7 @@ from routes.student.helpers import (
 # (and independently in badges.py, leaderboard.py, and
 # models.py::User.update_reputation_level) — now imported from the single
 # shared module so all of them stay in sync.
-from routes.student.reputation_levels import REPUTATION_LEVELS, get_reputation_level
+from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 
 # Document 2 §3.1: REPUTATION_ACTIONS, award_reputation, and
 # check_and_award_milestone moved to services/reputation_service.py —

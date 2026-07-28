@@ -15,7 +15,6 @@ import os
 import time
 import traceback
 from routes.student.reputation import check_and_award_milestone
-from routes.student.badges import check_and_award_badge
 
 import datetime
 import mimetypes
@@ -102,22 +101,19 @@ def ask_learnora_about_post(current_user, post_id):
         if not question:
             question = "Can you explain this post, summarize the key points, and offer any helpful insight?"
  
-        from routes.student.learnora import provider_manager, StudyAssistant
- 
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        if not provider:
-            return error_response("AI service temporarily unavailable. Please try again later.", 503)
- 
-        assistant = StudyAssistant(provider, conversation_messages=[])
-        assistant.select_model(has_images=False)
- 
+        # Document 1 §2.4: use the consolidated call_ai_response() instead of
+        # hand-rolling a provider-rotation/retry loop against
+        # StudyAssistant.stream_response() directly — this is one of the four
+        # duplicated call sites that consolidation was meant to replace.
+        from services.ai_provider_service import call_ai_response
+
         post_context = f"""
 **Post Title:** {post.title}
  
 **Post Content:**
 {post.text_content or '[No content]'}
 """
- 
+
         messages = [
             {
                 "role": "system",
@@ -128,57 +124,23 @@ def ask_learnora_about_post(current_user, post_id):
                 "content": f"{post_context}\n\n**Question:** {question}"
             }
         ]
- 
-        # Consume the underlying stream_response generator fully so the
-        # client gets one normal JSON response instead of SSE.
-        full_response = ""
-        error_occurred = False
-        error_message = None
-        retries = 0
-        max_retries = 2
- 
-        while retries < max_retries:
-            error_in_stream = False
- 
-            for chunk in assistant.stream_response(messages):
-                if chunk.startswith("data: "):
-                    try:
-                        chunk_data = json.loads(chunk[6:])
- 
-                        if "content" in chunk_data:
-                            full_response += chunk_data["content"]
-                        elif "error" in chunk_data:
-                            error_occurred = True
-                            error_message = chunk_data.get("error")
- 
-                            if chunk_data.get("rate_limit") or chunk_data.get("timeout"):
-                                error_in_stream = True
-                                provider_manager.mark_provider_failed(provider["name"])
-                                provider_manager.rotate()
-                                next_provider = provider_manager.get_working_provider(needs_vision=False)
- 
-                                if next_provider and retries < max_retries - 1:
-                                    provider = next_provider
-                                    assistant.provider = next_provider
-                                    assistant.select_model(has_images=False)
-                                    retries += 1
-                                    full_response = ""  # discard partial response before retry
-                                    break
-                    except Exception:
-                        pass
- 
-            if not error_in_stream:
-                break
- 
-        if error_occurred and not full_response:
-            return error_response(error_message or "Failed to get a response from the AI service", 503)
- 
+
+        answer, diagnostics = call_ai_response(
+            messages,
+            needs_vision=False,
+            call_type="post_question",
+        )
+
+        if not answer:
+            current_app.logger.warning(f"Ask Learnora about post failed: {diagnostics}")
+            return error_response("Failed to get a response from the AI service", 503)
+
         return jsonify({
             "status": "success",
             "data": {
                 "post_id": post.id,
                 "question": question,
-                "answer": full_response
+                "answer": answer
             }
         })
  
@@ -757,31 +719,11 @@ def upload_post_resource(current_user):
 # Document 1 §2.3 / Document 2 §3.10: extract_public_id,
 # update_post_reaction_count, detect_and_create_mentions, check_spam, and
 # update_user_activity moved to services/post_service.py (imported at the
-# top of this file). check_helpful_milestones stays here for now — it
-# calls check_and_award_badge, which currently lives in
-# routes/student/badges.py (not yet a service), so moving it into
-# post_service.py would make a service import from routes/*, violating
-# Document 2 §2's layering rule. Revisit once services/badge_service.py
-# exists.
+# top of this file). check_helpful_milestones has now ALSO moved to
+# services/post_service.py, since services/badge_service.py exists now —
+# the layering blocker that used to keep it here is resolved. Import it
+# from services.post_service at call sites instead.
 # ============================================================================
-def check_helpful_milestones(user_id):
-    """Check if user reached helpful count milestones"""
-    user = User.query.get(user_id)
-    if not user:
-        return
-    
-    helpful_count = PostReaction.query.filter_by(
-        reaction_type="helpful"
-    ).join(Post).filter(
-        Post.student_id == user_id
-    ).count()
-    
-    # Check badge criteria
-    if helpful_count == 10:
-        check_and_award_badge(user_id, "Helpful Csontributor")
-    elif helpful_count == 50:
-        check_and_award_badge(user_id, "Helpful Hero")
-        
 
 
 # ============================================================================

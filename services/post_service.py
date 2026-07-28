@@ -14,16 +14,12 @@ Moved verbatim (no behavior change) from posts.py:
     - detect_and_create_mentions
     - check_spam
     - update_user_activity
-
-NOT moved (deliberately, flagged rather than silently worked around):
-    - check_helpful_milestones — calls check_and_award_badge, which
-      currently lives in routes/student/badges.py (not yet a service per
-      Document 2 §3.2's not-yet-implemented badge_service.py). Moving it
-      here as-is would make this service import from routes/*, violating
-      Document 2 §2's dependency rule (services never import from
-      routes/student/*). Left in posts.py until badge_service.py exists,
-      at which point it can move here too and call
-      badge_service.check_and_award_badge(...) instead.
+    - check_helpful_milestones (moved in the Phase 1 remediation pass, now
+      that services/badge_service.py exists — it previously stayed in
+      posts.py because moving it here would have made this service import
+      from routes/*, violating Document 2 §2's dependency rule. Now calls
+      badge_service.check_and_award_badge(...) instead of
+      routes.student.badges.check_and_award_badge(...).)
 
 Per Document 2 §5's transaction-boundary convention: these functions
 mutate the session (db.session.add / attribute assignment) but do NOT
@@ -36,8 +32,9 @@ Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`
 import re
 import datetime
 
-from models import User, Post, Comment, Mention, Notification, UserActivity
+from models import User, Post, Comment, Mention, Notification, UserActivity, PostReaction
 from extensions import db
+from services import badge_service
 
 
 def extract_public_id(url):
@@ -191,3 +188,29 @@ def update_user_activity(user_id, activity_type):
         activity.activity_score = (activity.activity_score or 0) + 2
 
     return activity
+
+
+def check_helpful_milestones(user_id):
+    """
+    Check if user reached helpful count milestones and award the
+    corresponding badge if so.
+
+    Moved from posts.py in the Phase 1 remediation pass now that
+    services/badge_service.py exists — calls badge_service directly
+    instead of importing routes.student.badges.
+    """
+    user = User.query.get(user_id)
+    if not user:
+        return
+
+    helpful_count = PostReaction.query.filter_by(
+        reaction_type="helpful"
+    ).join(Post).filter(
+        Post.student_id == user_id
+    ).count()
+
+    # Check badge criteria
+    if helpful_count == 10:
+        badge_service.check_and_award_badge(user_id, "Helpful Contributor")
+    elif helpful_count == 50:
+        badge_service.check_and_award_badge(user_id, "Helpful Hero")

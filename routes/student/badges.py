@@ -15,7 +15,7 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
-from routes.student.reputation_levels import get_reputation_level
+from services.reputation_levels import get_reputation_level
 from services import badge_service
 
 badges_bp = Blueprint("student_badges", __name__)

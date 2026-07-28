@@ -490,7 +490,7 @@ class User(UserMixin, db.Model):
 
         H-8 fix: previously reimplemented the reputation-tier boundaries
         independently of badges.py/leaderboard.py/reputation.py (all three
-        of which are now consolidated into routes.student.reputation_levels).
+        of which are now consolidated into services.reputation_levels).
         This used strict "<" comparisons where the other three used an
         inclusive min/max range table, and they disagreed at exactly
         reputation == 1000 (this method said "Master"; the shared table says
@@ -498,10 +498,10 @@ class User(UserMixin, db.Model):
         the shared table removes that discrepancy for good.
 
         Imported locally (not at module level) to avoid a circular import —
-        routes/student/*.py imports models.py, so models.py can't import
-        routes.student.reputation_levels at module scope.
+        services/*.py imports models.py, so models.py can't import
+        services.reputation_levels at module scope.
         """
-        from routes.student.reputation_levels import get_reputation_level_name
+        from services.reputation_levels import get_reputation_level_name
         self.reputation_level = get_reputation_level_name(self.reputation)
 
     def __repr__(self):

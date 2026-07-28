@@ -34,17 +34,25 @@ check_and_award_milestone was already commit-free (it only ever calls
 award_reputation, never touches db.session directly), so no change there.
 
 Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`.
-The one exception noted in Document 2 §3.1: this depends on
-notification_service.notify_level_up(...) once that service exists (it
-doesn't yet in this codebase) — until then, the level-up Notification is
-still constructed directly here, exactly as the original code did.
+Level-up notifications are built via services.notification_service.notify_level_up(...)
+rather than constructed inline here, keeping the notification field-list in
+exactly one place (matching how badge_service.check_and_award_badge already
+calls notification_service.notify_badge_earned(...)).
+
+REMEDIATION NOTE (Phase 1 correction pass): this module previously imported
+get_reputation_level from routes.student.reputation_levels, which is a
+services -> routes import and violates the one dependency rule this whole
+migration depends on. reputation_levels.py has moved to
+services/reputation_levels.py (routes/student/reputation_levels.py is now
+just a re-export shim); this file imports from the new location.
 """
 
 from enum import Enum
 
-from models import User, ReputationHistory, Post, Notification
+from models import User, ReputationHistory, Post
 from extensions import db
-from routes.student.reputation_levels import get_reputation_level
+from services.reputation_levels import get_reputation_level
+from services import notification_service
 
 
 class ReputationAction(str, Enum):
@@ -135,15 +143,9 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     new_level = get_reputation_level(user.reputation)
 
     if old_level["name"] != new_level["name"]:
-        notification = Notification(
-            user_id=user_id,
-            title=f"Level Up! You're now a {new_level['name']}!",
-            body=f"You've reached {user.reputation} reputation points {new_level['icon']}",
-            notification_type="reputation_level_up",
-            related_type="user",
-            related_id=user_id
-        )
-        db.session.add(notification)
+        # notify_level_up() calls db.session.add() + flush() only — it does
+        # not commit, matching this function's own no-commit convention.
+        notification_service.notify_level_up(user_id, new_level)
 
     return history
 

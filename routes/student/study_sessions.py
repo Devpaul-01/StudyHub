@@ -1223,9 +1223,16 @@ def ai_ask_in_session(current_user, session_id):
         if len(question) > 2000:
             return error_response("Question too long (max 2000 characters)")
 
-        api_key = os.getenv("OPENROUTER_API_KEY_1")
-        if not api_key:
-            return error_response("AI service not configured", 503)
+        # Document 1 §2.4: use the shared multi-provider system instead of a
+        # raw requests.post() to a single hardcoded OpenRouter key/model with
+        # no fallback. This was the one call site with zero provider
+        # rotation — if that one key was rate-limited or revoked, this
+        # feature failed outright with no recovery path.
+        from services.ai_provider_service import provider_manager, StudyAssistant
+
+        provider = provider_manager.get_working_provider(needs_vision=False)
+        if not provider:
+            return error_response("AI service temporarily unavailable. Please try again later.", 503)
 
         ai_messages = list(session.ai_messages or [])
         ai_messages.append({
@@ -1249,61 +1256,60 @@ def ai_ask_in_session(current_user, session_id):
 
         partner_id = session.user2_id if session.user1_id == current_user.id else session.user1_id
 
+        assistant = StudyAssistant(provider, conversation_messages=[])
+        assistant.select_model(has_images=False)
+
         def generate():
-            import requests as _requests
+            nonlocal provider
             import json as _json
 
             full_response = ""
-            try:
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://learnora-study.com",
-                    "X-Title": "Learnora Study Assistant",
-                }
-                payload = {
-                    "model": "google/gemini-2.0-flash-exp:free",
-                    "messages": messages_for_api,
-                    "stream": True,
-                }
-                resp = _requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    stream=True,
-                    timeout=60,
-                )
+            error_occurred = False
+            retries = 0
+            max_retries = 2
 
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    text = line.decode("utf-8")
-                    if text.startswith("data: "):
-                        text = text[6:]
-                    if text == "[DONE]":
-                        break
-                    try:
-                        chunk = _json.loads(text)
-                        content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                        if content:
-                            full_response += content
-                            yield f"data: {_json.dumps({'content': content})}\n\n"
-                    except _json.JSONDecodeError:
-                        continue
+            while retries < max_retries:
+                error_in_stream = False
 
-            except Exception:
-                # Do NOT log exception details that could include the API key
-                current_app.logger.error("AI stream request failed")
-                yield f"data: {_json.dumps({'error': 'AI request failed'})}\n\n"
-                return
+                for chunk in assistant.stream_response(messages_for_api):
+                    yield chunk
+
+                    if chunk.startswith("data: "):
+                        try:
+                            chunk_data = _json.loads(chunk[6:])
+
+                            if 'content' in chunk_data:
+                                full_response += chunk_data['content']
+                            elif 'error' in chunk_data:
+                                error_occurred = True
+
+                                if chunk_data.get('rate_limit') or chunk_data.get('timeout') or chunk_data.get('http_error'):
+                                    error_in_stream = True
+                                    provider_manager.mark_provider_failed(provider['name'])
+                                    provider_manager.rotate()
+                                    next_provider = provider_manager.get_working_provider(needs_vision=False)
+
+                                    if next_provider and retries < max_retries - 1:
+                                        provider = next_provider
+                                        assistant.provider = next_provider
+                                        assistant.select_model(has_images=False)
+                                        retries += 1
+                                        full_response = ""  # discard partial response before retry
+                                        break
+                        except Exception:
+                            pass
+
+                if not error_in_stream:
+                    break
 
             # Persist AI reply
             try:
-                ai_messages.append({
-                    "role": "assistant",
-                    "content": full_response,
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                })
+                if full_response:
+                    ai_messages.append({
+                        "role": "assistant",
+                        "content": full_response,
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                    })
                 # Re-fetch session inside generator to avoid stale state
                 from extensions import db as _db
                 live_s = LiveStudySession.query.get(session_id)

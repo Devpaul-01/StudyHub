@@ -27,7 +27,7 @@ from routes.student.helpers import (
 )
 # Imported at module level to avoid repeated lookups inside generate_insights
 # and to eliminate the circular-import risk of a function-level import.
-from routes.student.badges import calculate_badge_progress
+from services.badge_service import calculate_badge_progress
 
 # Document 2 §4: calculate_engagement_rate and get_activity_level are pure
 # functions of numeric inputs, moved to services/analytics_service.py.

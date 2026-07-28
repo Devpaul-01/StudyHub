@@ -38,7 +38,7 @@ from models import (
     User, StudentProfile, ReputationHistory, UserActivity,
     Connection, UserBadge, Badge, WeeklyChampion,
 )
-from routes.student.reputation_levels import REPUTATION_LEVELS, get_reputation_level
+from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 
 
 # ─────────────────────────────────────────────────────────────────────────────
