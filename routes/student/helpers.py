@@ -12,9 +12,8 @@ import secrets
 # FIX: removed `from flask_login import current_user` — was imported but never
 #      used (token_required performs its own user lookup via the JWT payload).
 
-from models import User, Connection
+from models import User
 from extensions import db
-from sqlalchemy import or_, and_
 
 # File upload settings
 ALLOWED_IMAGE_EXT    = {"png", "jpg", "jpeg"}
@@ -234,122 +233,28 @@ def get_reaction_summary(message_id):
 
 
 # ============================================================================
-# CONNECTION BLOCKING (C-3 fix)
+# CONNECTION BLOCKING (C-3 fix) — Document 2 §3.4 shim
 #
-# Both connections.py and messages.py used to implement their own, mutually
-# inconsistent notion of "who blocked whom" on the same Connection table:
-#   - connections.py::block_user swapped requester_id/receiver_id on an
-#     existing row so "receiver_id" always meant "the blocker" — which
-#     corrupted the original connection-request history.
-#   - messages.py::is_blocked_check and messages.py::get_conversations each
-#     read plain requester_id/receiver_id direction to guess the blocker,
-#     which doesn't actually match the swap convention above.
-#   - messages.py::block_user_messaging re-owned the row a third, different
-#     way.
+# is_user_blocked / block_connection / unblock_connection used to be defined
+# directly in this file. They have since moved VERBATIM to
+# services/connection_service.py (Document 2 §3.4) — that is now the single
+# source of truth for "who blocked whom" on the Connection table, since
+# helpers.py is being repositioned as an HTTP-layer-only file (Document 2
+# §2.1) and blocking is business logic, not HTTP plumbing.
 #
-# These three functions are now the single source of truth for blocking,
-# built on the explicit Connection.blocked_by_id column. requester_id and
-# receiver_id are never mutated by blocking; they keep meaning exactly what
-# they meant when the connection/request was first created.
+# PHASE-1 CORRECTNESS FIX: this file previously still carried a full,
+# independently-maintained COPY of these four functions alongside the new
+# services/connection_service.py implementation — i.e. the "shim" described
+# in Document 2 §3.4 was never actually wired up, so the two copies could
+# silently drift apart. This import is that shim, finally in place: every
+# existing call site that does
+#   from routes.student.helpers import block_connection, unblock_connection
+# (connections.py, messages.py) keeps working completely unchanged, but
+# there is now exactly one implementation.
 # ============================================================================
 
-def _find_connection_between(user_a_id, user_b_id, status=None):
-    """Find the Connection row between two users, in either direction."""
-    query = Connection.query.filter(
-        or_(
-            and_(Connection.requester_id == user_a_id, Connection.receiver_id == user_b_id),
-            and_(Connection.requester_id == user_b_id, Connection.receiver_id == user_a_id),
-        )
-    )
-    if status:
-        query = query.filter(Connection.status == status)
-    return query.first()
-
-
-def is_user_blocked(user_a_id, user_b_id):
-    """
-    Return (blocked_by_a, blocked_by_b): whether user_a has blocked user_b,
-    and whether user_b has blocked user_a. At most one of these can be True
-    at a time under the current one-row-per-pair model.
-
-    This is the single "is this pair blocked" check — use it everywhere
-    instead of re-deriving blocking direction from requester_id/receiver_id.
-    """
-    connection = _find_connection_between(user_a_id, user_b_id, status="blocked")
-
-    if not connection or not connection.blocked_by_id:
-        return False, False
-
-    return connection.blocked_by_id == user_a_id, connection.blocked_by_id == user_b_id
-
-
-def block_connection(blocker_id, blocked_id):
-    """
-    Block `blocked_id` on behalf of `blocker_id`.
-
-    Reuses the existing Connection row between the two users if one exists
-    (whatever its prior status — pending, accepted, rejected), setting
-    status="blocked" and blocked_by_id=blocker_id, WITHOUT touching
-    requester_id/receiver_id. Creates a fresh row if no connection existed
-    yet. Does not commit — the caller's existing try/except/commit block
-    stays in charge of the transaction, same as before this fix.
-
-    Returns the (session-pending) Connection object.
-    """
-    connection = _find_connection_between(blocker_id, blocked_id)
-
-    now = datetime.datetime.utcnow()
-
-    if connection:
-        connection.status = "blocked"
-        connection.blocked_by_id = blocker_id
-        connection.responded_at = now
-    else:
-        connection = Connection(
-            requester_id=blocker_id,
-            receiver_id=blocked_id,
-            status="blocked",
-            blocked_by_id=blocker_id,
-            requested_at=now,
-            responded_at=now,
-        )
-        db.session.add(connection)
-
-    return connection
-
-
-def unblock_connection(unblocker_id, other_id, restore_to_accepted=False):
-    """
-    Remove a block between `unblocker_id` and `other_id`. Only the user who
-    created the block (Connection.blocked_by_id) may remove it.
-
-    restore_to_accepted:
-        False (default) — delete the connection row entirely; the two users
-            are no longer connected and would need a fresh connection
-            request to reconnect. Matches the original
-            connections.py /connections/unblock behaviour.
-        True — keep the row and set status back to "accepted" instead of
-            deleting it, so messaging/connection status is restored
-            immediately with no new request needed. Matches the original
-            messages.py /messages/unblock behaviour.
-
-    Does not commit — same convention as block_connection() above.
-
-    Returns (success: bool, error_message: str | None).
-    """
-    connection = _find_connection_between(unblocker_id, other_id, status="blocked")
-
-    if not connection:
-        return False, "User is not blocked"
-
-    if connection.blocked_by_id != unblocker_id:
-        return False, "Not authorized"
-
-    if restore_to_accepted:
-        connection.status = "accepted"
-        connection.blocked_by_id = None
-        connection.responded_at = datetime.datetime.utcnow()
-    else:
-        db.session.delete(connection)
-
-    return True, None
+from services.connection_service import (  # noqa: E402  (kept below the rest of this file's own defs, matching original layout)
+    is_user_blocked,
+    block_connection,
+    unblock_connection,
+)
