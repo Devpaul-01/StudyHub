@@ -1,10 +1,14 @@
 """
-StudyHub - Complete Post System
-Create, edit, interact with posts - the core of student collaboration
-Includes: CRUD, mentions, reactions, comments, bookmarks, spam prevention
+StudyHub - Posts: Post CRUD, feed, reactions, and single-post detail endpoints
+
+Split from posts.py per Document 1 (Architecture Refactor) §2.3 as part of
+Phase 2 (God-file splitting). This is a pure move — function bodies,
+decorators, routes, and logic are unchanged from the original posts.py.
+See routes/student/posts/__init__.py for the sub-blueprint aggregation
+that re-exposes all routes under the same paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app,Response, stream_with_context
+from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
 import json
 from werkzeug.utils import secure_filename
 from sqlalchemy import or_, and_, func, desc
@@ -16,21 +20,19 @@ import time
 import traceback
 from routes.student.reputation import check_and_award_milestone
 
-import datetime
 import mimetypes
 from datetime import date, timedelta
 from collections import defaultdict
 import logging
 
-
 import random
 logger = logging.getLogger(__name__)
 
-# Add to model imports
 from models import (
-    User, StudentProfile, Post, Comment, Connection,PostReaction, PostReport,
-    Bookmark, PostFollow, Mention, Notification, ReputationHistory, BookmarkFolder, Bookmark,ThreadMember,
-    UserActivity, PostView,CommentHelpfulMark, Connection, CommentLike, ThreadJoinRequest,Thread  # ← Added Thread
+    User, StudentProfile, Post, Comment, Connection, PostReaction, PostReport,
+    Bookmark, PostFollow, Mention, Notification, ReputationHistory, BookmarkFolder,
+    ThreadMember, UserActivity, PostView, CommentHelpfulMark, CommentLike,
+    ThreadJoinRequest, Thread
 )
 from extensions import db
 from routes.student.helpers import (
@@ -38,9 +40,6 @@ from routes.student.helpers import (
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
 )
 
-# Document 1 §2.3 / Document 2 §3.10: pure helper functions extracted to
-# services/post_service.py — imported here at the same names so every
-# existing call site in this file keeps working unchanged.
 from services.post_service import (
     extract_public_id,
     update_post_reaction_count,
@@ -49,7 +48,6 @@ from services.post_service import (
     update_user_activity,
 )
 
-posts_bp = Blueprint("student_posts", __name__)
 import cloudinary
 
 try:
@@ -63,8 +61,9 @@ except Exception as e:
     STORAGE_AVAILABLE = False
     logger.warning(f"Storage initialization failed: {str(e)}")
 
-import re
 import base64
+
+posts_crud_bp = Blueprint("posts_crud", __name__)
 def encode_cursor(dt: datetime.datetime) -> str:
     """Encode a datetime into a URL-safe cursor string."""
     return base64.urlsafe_b64encode(dt.isoformat().encode()).decode()
@@ -79,79 +78,7 @@ def decode_cursor(cursor: str):
     except Exception:
         return None
 
-@posts_bp.route("/posts/<int:post_id>/ask-learnora", methods=["POST", "GET"])
-@token_required
-def ask_learnora_about_post(current_user, post_id):
-    """
-    Ask Learnora AI a question about a specific post.
-    Non-streaming: fetches the post, sends it + the question to the AI,
-    and returns the full answer in a single JSON response.
- 
-    Body (optional): { "question": "..." }O
-    If no question is provided, a sensible default is used.
-    """
-    try:
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found", 404)
- 
-        data = request.get_json(silent=True) or {}
-        question = (data.get("question") or "").strip()
- 
-        if not question:
-            question = "Can you explain this post, summarize the key points, and offer any helpful insight?"
- 
-        # Document 1 §2.4: use the consolidated call_ai_response() instead of
-        # hand-rolling a provider-rotation/retry loop against
-        # StudyAssistant.stream_response() directly — this is one of the four
-        # duplicated call sites that consolidation was meant to replace.
-        from services.ai_provider_service import call_ai_response
-
-        post_context = f"""
-**Post Title:** {post.title}
- 
-**Post Content:**
-{post.text_content or '[No content]'}
-"""
-
-        messages = [
-            {
-                "role": "system",
-                "content": "You are Learnora, a helpful study assistant. Use the post content below as context to answer the user's question clearly and concisely."
-            },
-            {
-                "role": "user",
-                "content": f"{post_context}\n\n**Question:** {question}"
-            }
-        ]
-
-        answer, diagnostics = call_ai_response(
-            messages,
-            needs_vision=False,
-            call_type="post_question",
-        )
-
-        if not answer:
-            current_app.logger.warning(f"Ask Learnora about post failed: {diagnostics}")
-            return error_response("Failed to get a response from the AI service", 503)
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "post_id": post.id,
-                "question": question,
-                "answer": answer
-            }
-        })
- 
-    except Exception as e:
-        current_app.logger.error("Ask Learnora about post error: ", exc_info=True)
-        return error_response("Failed to get AI response about this post")
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER: Build a post dict (shared between feed and tag endpoints)
-# ─────────────────────────────────────────────────────────────────────────────
-@posts_bp.route("/posts/feed", methods=["GET"])
+@posts_crud_bp.route("/posts/feed", methods=["GET"])
 @token_required
 def get_feed(current_user):
     start_time = time.time()
@@ -552,7 +479,7 @@ def get_feed(current_user):
 # ENDPOINT 2: Like-only toggle  (replaces the multi-reaction endpoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@posts_bp.route("/posts/<int:post_id>/react", methods=["POST"])
+@posts_crud_bp.route("/posts/<int:post_id>/react", methods=["POST"])
 @token_required
 def react_to_post(current_user, post_id):
     """
@@ -621,7 +548,8 @@ def react_to_post(current_user, post_id):
         db.session.rollback()
         current_app.logger.error(f"Like toggle error: ", exc_info=True)
         return error_response("Failed to toggle like")
-@posts_bp.route("/posts/resource/upload", methods=["POST"])
+
+@posts_crud_bp.route("/posts/resource/upload", methods=["POST"])
 @token_required
 def upload_post_resource(current_user):
     request_id = f"upload_{current_user.id}_{int(time.time())}"
@@ -731,7 +659,7 @@ def upload_post_resource(current_user):
 # ============================================================================
 # Add these endpoints to your posts.py file
 
-@posts_bp.route("/posts/by-type", methods=["GET"])
+@posts_crud_bp.route("/posts/by-type", methods=["GET"])
 @token_required
 def get_posts_by_type(current_user):
     """
@@ -873,7 +801,7 @@ def get_posts_by_type(current_user):
         current_app.logger.error(f"Get posts by type error: ", exc_info=True)
         return error_response("Failed to load posts")
 
-@posts_bp.route("/posts/<int:post_id>/options-menu", methods=["GET"])
+@posts_crud_bp.route("/posts/<int:post_id>/options-menu", methods=["GET"])
 @token_required
 def get_post_options_menu(current_user, post_id):
     """
@@ -969,7 +897,7 @@ def get_post_options_menu(current_user, post_id):
         return error_response("Failed to load post options")
 
 
-@posts_bp.route("/posts/by-status", methods=["GET"])
+@posts_crud_bp.route("/posts/by-status", methods=["GET"])
 @token_required
 def get_posts_by_status(current_user):
     """
@@ -1140,291 +1068,8 @@ def get_posts_by_status(current_user):
         return error_response("Failed to load posts")
         
         
-@posts_bp.route("/posts/bookmark/toggle", methods=["POST"])
-@token_required
-def toggle_bookmarks(current_user):
-    """
-    Toggle bookmark status for multiple posts.
 
-    Body (JSON):
-    - post_ids: list[int] (required)
-    - folder_name: optional (default "Saved")
-    - notes: optional
-    - tags: optional list
-    """
-    try:
-        data = request.get_json() or {}
-        post_ids = data.get("post_ids", [])
-
-        if not isinstance(post_ids, list) or not post_ids:
-            return error_response("post_ids must be a non-empty list", 400)
-
-        folder_name = data.get("folder_name", "Saved").strip()
-        notes = (data.get("notes") or "").strip() or None
-        tags = data.get("tags", [])
-        tags = tags[:10] if isinstance(tags, list) else []
-
-        results = []
-
-        # 🔹 Find or create folder once
-        folder = BookmarkFolder.query.filter_by(
-            user_id=current_user.id,
-            name=folder_name
-        ).first()
-
-        if not folder:
-            max_position = db.session.query(
-                func.max(BookmarkFolder.position)
-            ).filter_by(user_id=current_user.id).scalar() or 0
-
-            folder = BookmarkFolder(
-                user_id=current_user.id,
-                name=folder_name,
-                icon="📁",
-                color="#6B7280",
-                position=max_position + 1,
-                is_default=(folder_name == "Saved")
-            )
-            db.session.add(folder)
-            db.session.flush()
-
-        for post_id in post_ids:
-            post = Post.query.get(post_id)
-
-            if not post:
-                results.append({
-                    "post_id": post_id,
-                    "success": False,
-                    "error": "Post not found"
-                })
-                continue
-
-            existing = Bookmark.query.filter_by(
-                post_id=post_id,
-                student_id=current_user.id
-            ).first()
-
-            # 🔻 UNBOOKMARK
-            if existing:
-                db.session.delete(existing)
-                post.bookmark_count = max(0, post.bookmark_count - 1)
-                folder.bookmark_count = max(0, folder.bookmark_count - 1)
-
-                results.append({
-                    "post_id": post_id,
-                    "bookmarked": False
-                })
-
-            # 🔺 BOOKMARK
-            else:
-                bookmark = Bookmark(
-                    post_id=post_id,
-                    student_id=current_user.id,
-                    folder_id=folder.id,
-                    notes=notes,
-                    tags=tags
-                )
-
-                db.session.add(bookmark)
-                post.bookmark_count += 1
-                folder.bookmark_count += 1
-
-                results.append({
-                    "post_id": post_id,
-                    'bookmark_count': post.bookmark_count,
-                    "bookmarked": True,
-                    "bookmark_id": bookmark.id
-                })
-
-        db.session.commit()
-
-        return success_response(
-            "Bookmark toggle completed",
-            data={
-                "results": results,
-                "folder": {
-                    "id": folder.id,
-                    "name": folder.name,
-                    "icon": folder.icon,
-                    "color": folder.color
-                }
-            }
-        )
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Toggle bookmarks error: ", exc_info=True)
-        return error_response("Failed to toggle bookmarks", 500)
-        
-        
-
-        
-
-        
-        
-@posts_bp.route("/comments/<int:comment_id>/resources", methods=["GET"])
-@token_required
-def comment_resources(current_user, comment_id):
-    try:
-        comment = Comment.query.get(comment_id)
-        if not comment:
-            return error_response("Comment not found")
-        resources = comment.resources
-        return jsonify({"status": "success", "data":{"id": comment.id, "resources": resources}})
-    except Exception as e:
-        current_app.logger.error(f"Comment resources error: ", exc_info=True)
-        return jsonify({"status": "error", "message": "Failed to load comment resources"}), 500
-
-@posts_bp.route("/posts/<int:post_id>/resources", methods=["GET"])
-@token_required
-def post_resources(current_user, post_id):
-    try:
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found")
-        resources = post.resources
-        return jsonify({"status": "success", "data":{"id": post.id, "resources": resources}})
-    except Exception as e:
-        current_app.logger.error(f"Post resources error: ", exc_info=True)
-        return jsonify({"status": "error", "message": "Failed to load post resources"}), 500
-        
-# C-5 fix: removed ~300 lines of dead code here (the AI-assisted
-# refine_post/draft_post endpoints — their @posts_bp.route decorators
-# had already been manually commented out, but the full function bodies
-# were still shipping in this file). If AI-assisted post refinement is
-# still wanted, re-implement it as a tracked feature using the same
-# provider_manager/StudyAssistant pattern as ask_learnora_about_post()
-# above, rather than restoring this block.
-@posts_bp.route("/posts/<int:post_id>/apply-refinement", methods=["PATCH"])
-@token_required
-def apply_refinement(current_user, post_id):
-    """
-    Apply refined content to post after user approval
-    """
-    try:
-        post = Post.query.get(post_id)
-        
-        if not post:
-            return error_response("Post not found", 404)
-        
-        if post.student_id != current_user.id:
-            return error_response("Only post author can update post", 403)
-        
-        data = request.get_json()
-        
-        if not data:
-            return error_response("No data provided", 400)
-        
-        refined_title = data.get("title", "").strip()
-        refined_content = data.get("content", "").strip()
-        
-        # Store original content for history (optional)
-        original_content = {
-            "title": post.title,
-            "content": post.text_content,
-            "refined_at": datetime.datetime.utcnow().isoformat()
-        }
-        
-        # Update post
-        post.title = refined_title
-        post.text_content = refined_content
-        post.edited_at = datetime.datetime.utcnow()
-        
-        # Re-detect mentions in refined content
-        Mention.query.filter_by(
-            mentioned_in_type="post",
-            mentioned_in_id=post_id
-        ).delete()
-        
-        detect_and_create_mentions(
-            refined_content,
-            current_user.id,
-            "post",
-            post_id
-        )
-        
-        db.session.commit()
-        
-        return success_response(
-            "Post refined successfully!",
-            data={
-                "post_id": post_id,
-                "title": post.title,
-                "content": post.text_content,
-                "edited_at": post.edited_at.isoformat(),
-                "original": original_content
-            }
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Apply refinement error: ", exc_info=True)
-        return error_response("Failed to apply refinement")
-        
-@posts_bp.route("/posts/bulk/bookmark", methods=["POST"])
-@token_required
-def bulk_bookmark(current_user):
-    """
-    Bookmark/unbookmark multiple posts at once (toggle).
-    Body: {"post_ids": [1, 2, 3], "folder": "Exam Prep"}
-    """
-    bookmark_info = []
-    try:
-        data = request.get_json()
-        post_ids = data.get("post_ids")
-        folder = data.get("folder", "Saved")
-
-        if not post_ids or len(post_ids) > 50:
-            return error_response("Please provide between 1 and 50 post ids")
-
-        for post_id in post_ids:
-            post = Post.query.get(post_id)
-            if not post:
-                bookmark_info.append({"post_id": post_id, "success": False, "error": "Post not found"})
-                continue
-
-            existing = Bookmark.query.filter_by(
-                post_id=post_id,
-                student_id=current_user.id
-            ).first()
-
-            if existing:
-                # Unbookmark
-                db.session.delete(existing)
-                post.bookmark_count = max(0, post.bookmark_count - 1)
-                bookmark_info.append({
-                    "post_id": post_id,
-                    "bookmarked": False,
-                    "bookmark_count": post.bookmark_count
-                })
-            else:
-                # Bookmark
-                bookmark = Bookmark(
-                    post_id=post_id,
-                    student_id=current_user.id,
-                    folder=folder
-                )
-                db.session.add(bookmark)
-                post.bookmark_count += 1
-                bookmark_info.append({
-                    "post_id": post_id,
-                    "bookmarked": True,
-                    "bookmark_count": post.bookmark_count
-                })
-
-        db.session.commit()
-
-        return success_response(
-            f"Processed {len(bookmark_info)} posts",
-            data={"bookmark_details": bookmark_info}
-        )
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error("Bulk bookmark error", exc_info=True)
-        return error_response("Failed to bookmark posts")
-
-@posts_bp.route("/posts/<int:post_id>/view", methods=["POST"])
+@posts_crud_bp.route("/posts/<int:post_id>/view", methods=["POST"])
 @token_required
 def view_post(current_user, post_id):
     try:
@@ -1448,7 +1093,7 @@ def view_post(current_user, post_id):
         return error_response("Failed to view posts")
         
 
-@posts_bp.route("/posts/<int:post_id>/metrics", methods=["GET"])
+@posts_crud_bp.route("/posts/<int:post_id>/metrics", methods=["GET"])
 @token_required
 def get_post_metrics(current_user, post_id):
     """
@@ -1502,7 +1147,8 @@ def get_post_metrics(current_user, post_id):
         current_app.logger.error(f"Get metrics error: ", exc_info=True)
         return error_response("Failed to load metrics")
         
-@posts_bp.route("/posts/<int:post_id>/report", methods=["POST"])
+
+@posts_crud_bp.route("/posts/<int:post_id>/report", methods=["POST"])
 @token_required
 def report_post(current_user, post_id):
     """
@@ -1548,7 +1194,7 @@ def report_post(current_user, post_id):
         current_app.logger.error(f"Report error: ", exc_info=True)
         return error_response("Failed to submit report")
 
-@posts_bp.route("/posts/create", methods=["POST"])
+@posts_crud_bp.route("/posts/create", methods=["POST"])
 @token_required
 def create_post(current_user):
     """
@@ -1715,7 +1361,7 @@ def create_post(current_user):
         current_app.logger.error(f"Create post error: ", exc_info=True)
         return error_response("Failed to create post")
 
-@posts_bp.route("/posts/<int:post_id>/quick-view", methods=["GET"])
+@posts_crud_bp.route("/posts/<int:post_id>/quick-view", methods=["GET"])
 @token_required
 def quick_view_post(current_user, post_id):
     """Get single post with full details"""
@@ -1738,7 +1384,8 @@ def quick_view_post(current_user, post_id):
         db.session.rollback()
         current_app.logger.error(f"Get post error: ", exc_info=True)
         return error_response("Failed to get post")
-@posts_bp.route("/posts/<int:post_id>", methods=["GET"])
+
+@posts_crud_bp.route("/posts/<int:post_id>", methods=["GET"])
 @token_required
 def get_post(current_user, post_id):
     """Get single post with full details"""
@@ -1852,7 +1499,7 @@ def get_post(current_user, post_id):
         current_app.logger.error(f"Get post error: ", exc_info=True)
         return error_response("Failed to load post")
 
-@posts_bp.route("/posts/<int:post_id>/edit", methods=["PATCH"])
+@posts_crud_bp.route("/posts/<int:post_id>/edit", methods=["PATCH"])
 @token_required
 def edit_post(current_user, post_id):
     """
@@ -1936,7 +1583,7 @@ def edit_post(current_user, post_id):
         return error_response("Failed to update post")
 
 
-@posts_bp.route("/posts/<int:post_id>", methods=["DELETE"])
+@posts_crud_bp.route("/posts/<int:post_id>", methods=["DELETE"])
 @token_required
 def delete_post(current_user, post_id):
     """
@@ -2008,7 +1655,7 @@ def delete_post(current_user, post_id):
 # ============================================================================
 
 
-@posts_bp.route("/posts/<int:post_id>/mark-solved", methods=["POST"])
+@posts_crud_bp.route("/posts/<int:post_id>/mark-solved", methods=["POST"])
 @token_required
 def mark_solved(current_user, post_id):
     try:
@@ -2034,7 +1681,8 @@ def mark_solved(current_user, post_id):
         current_app.logger.error(f"Mark solved error: ", exc_info=True)
         return error_response("Failed to mark post as solved")
         
-@posts_bp.route("/posts/<int:post_id>/unmark-solved", methods=["POST"])
+
+@posts_crud_bp.route("/posts/<int:post_id>/unmark-solved", methods=["POST"])
 @token_required
 def unmark_solved(current_user, post_id):
     try:
@@ -2060,180 +1708,7 @@ def unmark_solved(current_user, post_id):
         current_app.logger.error(f"UnMark solved error: ", exc_info=True)
         return error_response("Failed to unmark post as solved")
 
-@posts_bp.route("/posts/<int:post_id>/unmark-solution", methods=["POST"])
-@token_required
-def unmark_solution(current_user, post_id):  # Changed from mark_solution
-    """
-    Unmark a specific comment as the solution
-    """
-    try:
-        post = Post.query.get(post_id)
-        
-        if not post:
-            return error_response("Post not found", 404)
-        
-        if post.student_id != current_user.id:
-            return error_response("Only post author can unmark solution", 403)  # Fixed message
-        
-        if post.post_type not in ["question","problem"]:
-            return error_response("Only questions and problems can be unmarked")
-        
-        data = request.get_json(silent=True) or {}
-        comment_id = data.get("comment_id")
-        
-        if not comment_id:
-            return error_response("comment_id is required")
-        
-        comment = Comment.query.get(comment_id)
-        if not comment or comment.post_id != post_id:
-            return error_response("Comment not found or doesn't belong to this post", 404)
-        
-        # Unmark solution
-        comment.is_solution = False
-        post.is_solved = False
-        post.solved_at = None  # Add this
-        
-        db.session.commit()
-        return success_response("Comment unmarked as solution successfully")
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Unmark solution error: ", exc_info=True)
-        return error_response("Failed to unmark comment as solution")
-   
-@posts_bp.route("/posts/<int:post_id>/mark-solution", methods=["POST"])
-@token_required
-def mark_solution(current_user, post_id):
-    """
-    Mark question/problem as solved
-    Only ONE comment can be solution - auto-unmarks old one
-    """
-    try:
-        post = Post.query.get(post_id)
-        
-        if not post:
-            return error_response("Post not found", 404)
-        
-        if post.student_id != current_user.id:
-            return error_response("Only post author can mark as solved", 403)
-        
-        if post.post_type not in ["question","problem"]:
-            return error_response("Only questions and problems can be marked as solved")
-        
-        data = request.get_json(silent=True) or {}
-        comment_id = data.get("comment_id")
-        
-        if not comment_id:
-            return error_response("comment_id is required")
-        
-        comment = Comment.query.get(comment_id)
-        if not comment or comment.post_id != post_id:
-            return error_response("Comment not found or doesn't belong to this post", 404)
-        
-        # ✅ UNMARK old solution (if exists)
-        old_solution = Comment.query.filter_by(
-            post_id=post_id,
-            is_solution=True
-        ).first()
-        
-        if old_solution and old_solution.id != comment_id:
-            old_solution.is_solution = False
-            logger.info(f"Unmarked old solution: Comment {old_solution.id}")
-        
-        # Mark new solution
-        comment.is_solution = True
-        post.is_solved = True
-        post.solved_at = datetime.datetime.utcnow()
-        
-        
-        commenter = User.query.get(comment.student_id)
-        if commenter and commenter.id != current_user.id:
-            from routes.student.reputation import award_reputation
-            # Document 2 §5: award_reputation() no longer commits internally.
-            # Safe here without an immediate commit — this route's own
-            # db.session.commit() a few lines below covers this change too,
-            # as one transaction alongside the solution-marking and
-            # notification writes.
-            award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
-            
-            # ✅ Check badge milestones
-            from routes.student.badges import check_and_award_badge
-            check_and_award_badge(commenter.id, "Problem Solver")
-            check_and_award_badge(commenter.id, "Genius")
-            
-            # Notify commenter
-            notification = Notification(
-                user_id=commenter.id,
-                title="Your answer was marked as the solution!",
-                body=f'"{post.title}" (+15 reputation)',
-                notification_type="solution_accepted",
-                related_type="post",
-                related_id=post_id
-            )
-            db.session.add(notification)
-        
-        db.session.commit()
-        
-        return success_response(
-            "Post marked as solved",
-            data={
-                "solved_at": post.solved_at.isoformat(),
-                "solution_comment_id": comment_id
-            }
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Mark solved error: ", exc_info=True)
-        return error_response("Failed to mark as solved")
-
-@posts_bp.route("/posts/<int:post_id>/bookmark", methods=["POST"])
-@token_required
-def bookmark_post(current_user, post_id):
-    try:
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found", 404)
-        
-        existing = Bookmark.query.filter_by(
-            post_id=post_id,
-            student_id=current_user.id
-        ).first()
-        
-        if existing:
-            db.session.delete(existing)
-            post.bookmark_count = max(0, post.bookmark_count - 1)  # ✅ FIX: Decrement
-            db.session.commit()
-            return success_response("Post unbookmarked", data={
-                "bookmarked": False, 
-                "bookmark_count": post.bookmark_count
-            })
-        
-        data = request.get_json(silent=True) or {}
-        folder = data.get("folder", "Saved").strip()
-        notes = data.get("notes", "").strip()
-        
-        bookmark = Bookmark(
-            post_id=post_id,
-            student_id=current_user.id,
-            folder=folder,
-            notes=notes if notes else None
-        )
-        db.session.add(bookmark)
-        post.bookmark_count += 1
-        
-        db.session.commit()
-        
-        return success_response(
-            "Post bookmarked",
-            data={"bookmarked": True, "bookmark_count": post.bookmark_count}  # ✅ FIX: Return count
-        ), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Bookmark post error: ", exc_info=True)
-        return error_response("Failed to bookmark post")
-
-@posts_bp.route("/posts/<int:post_id>/follow", methods=["POST"])
+@posts_crud_bp.route("/posts/<int:post_id>/follow", methods=["POST"])
 @token_required
 def follow_post(current_user, post_id):
     """
@@ -2266,7 +1741,7 @@ def follow_post(current_user, post_id):
         current_app.logger.error(f"Follow post error: ", exc_info=True)
         return error_response("Failed to follow post")
 
-@posts_bp.route("/posts/<int:post_id>/unfollow", methods=["DELETE"])
+@posts_crud_bp.route("/posts/<int:post_id>/unfollow", methods=["DELETE"])
 @token_required
 def unfollow_post(current_user, post_id):
     """
@@ -2295,445 +1770,8 @@ def unfollow_post(current_user, post_id):
 # ============================================================================
 # COMMENTS & REPLIES
 # ============================================================================
-@posts_bp.route("/comments/<int:comment_id>/like", methods=["POST"])
-@token_required
-def like_comment(current_user, comment_id):
-    try:
-        user = User.query.get(current_user.id)
-        if not user:
-            return error_response("User not found")
-        comment = Comment.query.get(comment_id)
-        if not comment:
-            return error_response("Comment not found")
-        if comment.is_deleted:
-            return error_response("Comment has been deleted")
-        post = Post.query.get(comment.post_id)
-        if post and post.is_locked:
-            return error_response("Post is locked")
-        existing = CommentLike.query.filter_by(student_id=current_user.id, comment_id=comment_id).first()
-        if existing:
-            # Unlike
-            db.session.delete(existing)
-            comment.likes_count = max(0, comment.likes_count - 1)
-            db.session.commit()
-            return success_response("Comment unliked", data={"liked": False, "count": comment.likes_count})
-            
-        else:
-            # Like
-            new_like = CommentLike(
-                comment_id=comment_id,
-                student_id=current_user.id
-            )
-            db.session.add(new_like)
-            comment.likes_count += 1
-            
-            # Notify comment author
-            if comment.student_id != current_user.id:
-                notification = Notification(
-                    user_id=comment.student_id,
-                    title=f"{current_user.name} liked your comment",
-                    body="",
-                    notification_type="like",
-                    related_type="comment",
-                    related_id=comment_id
-                )
-                db.session.add(notification)
-        db.session.commit()
-        return success_response("Comment liked", data={"liked": True, "count": comment.likes_count})
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Comment like error: ", exc_info=True)
-        return error_response("Failed to like comment")    
 
-@posts_bp.route("/comments/<int:comment_id>/mark-helpful", methods=["POST"])
-@token_required
-def mark_comment_helpful(current_user, comment_id):
-    """
-    Mark a comment as helpful
-    - User can mark multiple comments as helpful
-    - Cannot mark own comment as helpful
-    """
-    try:
-        comment = Comment.query.get(comment_id)
-        if not comment:
-            return error_response("Comment not found", 404)
-        
-        if comment.is_deleted:
-            return error_response("Comment has been deleted", 400)
-        
-        # ✅ Cannot mark own comment
-        if comment.student_id == current_user.id:
-            return error_response("Cannot mark your own comment as helpful", 403)
-        
-        # Check if already marked
-        existing = CommentHelpfulMark.query.filter_by(
-            comment_id=comment_id,
-            user_id=current_user.id
-        ).first()
-        
-        
-    
-  
-        
-        if existing:
-            db.session.delete(existing)
-            if comment.helpful_count > 0:
-                comment.helpful_count -= 1
-            db.session.commit()  # ← this line is missing!
-            return success_response("Comment unmarked helpful", data={"is_helpful": False, "count": comment.helpful_count})
-        
-        # Create mark
-        helpful_mark = CommentHelpfulMark(
-            comment_id=comment_id,
-            user_id=current_user.id,
-            marked_at=datetime.datetime.utcnow()
-        )
-        db.session.add(helpful_mark)
-        
-        # Increment count
-        comment.helpful_count += 1
-        
-        db.session.commit()
-        
-        # ✅ Award reputation to commenter
-        from routes.student.reputation import award_reputation
-        award_reputation(comment.student_id, "comment_marked_helpful", "comment", comment_id)
-
-        # Document 2 §5 fix: award_reputation() no longer commits internally
-        # (moved to services/reputation_service.py, which follows the
-        # "services don't commit" convention). This call site previously
-        # relied entirely on that internal commit — added explicitly here so
-        # the reputation change is actually persisted (this was a real,
-        # silent bug: without this, the point award and any level-up
-        # notification were computed in memory and never saved).
-        db.session.commit()
-        
-        return success_response(
-            "Comment marked as helpful",
-            data={"is_helpful": True, "count": comment.helpful_count}
-        ), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Mark helpful error: ", exc_info=True)
-        return error_response("Failed to mark as helpful")
-
-    
-@posts_bp.route("/comments/<int:comment_id>", methods=["PATCH"])
-@token_required
-def edit_comment(current_user, comment_id):
-    """
-    Edit your own comment
-    
-    Body: {"text_content": "Updated text"}
-    """
-    try:
-        comment = Comment.query.get(comment_id)
-        
-        if not comment:
-            return error_response("Comment not found", 404)
-        post = Post.query.get(comment.post_id)
-        if not post:
-            return error_response("Post not found or has been deleted")
-        
-        if comment.student_id != current_user.id:
-            return error_response("You can only edit your own comments", 403)
-        
-        data = request.get_json()
-        new_text = data.get("text_content", "").strip()
-        
-        if not new_text:
-            return error_response("Comment text is required")
-        
-        if new_text == comment.text_content:
-            return success_response("No changes made")
-        
-        comment.text_content = new_text
-        comment.edited_at = datetime.datetime.utcnow()
-        
-        # Re-detect mentions
-        Mention.query.filter_by(
-            mentioned_in_type="comment",
-            mentioned_in_id=comment_id
-        ).delete()
-        
-        detect_and_create_mentions(
-            new_text,
-            current_user.id,
-            "comment",
-            comment_id
-        )
-        
-        db.session.commit()
-        
-        return success_response(
-            "Comment updated",
-            data={"edited_at": comment.edited_at.isoformat()}
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Edit comment error: ", exc_info=True)
-        return error_response("Failed to edit comment")
-
-
-@posts_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
-@token_required
-def delete_comment(current_user, comment_id):
-    """
-    Delete your own comment (soft delete)
-    """
-    try:
-        comment = Comment.query.get(comment_id)
-        
-        if not comment:
-            return error_response("Comment not found", 404)
-        
-        if comment.student_id != current_user.id:
-            return error_response("You can only delete your own comments", 403)
-        
-        # Soft delete (preserve structure for replies)
-        comment.is_deleted = True
-        comment.text_content = "[deleted]"
-        
-        # Update post comment count
-        post = Post.query.get(comment.post_id)
-        if post and post.comments_count > 0:
-            post.comments_count -= 1
-        
-        db.session.commit()
-        
-        return success_response("Comment deleted")
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Delete comment error: ", exc_info=True)
-        return error_response("Failed to delete comment")
-
-
-# ============================================================================
-# FEED & DISCOVERY
-# ===========================================================================
-from models import ThreadMember
-
-@posts_bp.route("/posts/tags/<tag>", methods=["GET"])
-@token_required
-def get_posts_by_tag(current_user, tag):
-    """
-    Get posts filtered by tag with PAGINATION
-    """
-    try:
-        page = request.args.get("page", 1, type=int)
-        per_page = request.args.get("per_page", 20, type=int)
-        
-        # PostgreSQL array contains operator
-        query = Post.query.filter(Post.tags.contains([tag]))
-        query = query.order_by(Post.posted_at.desc())
-        
-        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
-        
-        # Build response (same structure as feed)
-        posts_data = []
-        for post in paginated.items:
-            comments_data = []
-            comments = Comment.query.filter_by(
-                post_id=post.id, 
-                parent_id=None,
-                is_deleted=False
-            ).order_by(
-                Comment.is_solution.desc(),
-                Comment.likes_count.desc()
-            ).limit(2).all()
-            
-            for comment in comments:
-                user = User.query.get(comment.student_id)
-                has_liked = CommentLike.query.filter_by(
-                    student_id=current_user.id, 
-                    comment_id=comment.id
-                ).first() is not None
-                
-                comments_data.append({
-                    'id': comment.id,
-                    "likes_count": comment.likes_count,
-                    "user_id": user.id,
-                    "username": user.username,
-                    "name": user.name,
-                    "avatar": user.avatar,
-                    "posted_at": comment.posted_at.isoformat(),
-                    "is_solution": comment.is_solution,
-                    "helpful_count": comment.helpful_count,
-                    "resources": comment.resources,
-                    "has_liked": has_liked,
-                    "text_content": comment.text_content
-                })
-            
-            # Get post author
-            author = User.query.get(post.student_id)
-            
-            # Initialize default values
-            connection_status = None
-            is_solved = None
-            is_pinned = None
-            requested_thread = False
-            is_member = False
-            
-            # Check connection status
-            if author and author.id != current_user.id:
-                connection = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == author.id),
-                        and_(Connection.requester_id == author.id, Connection.receiver_id == current_user.id)
-                    )
-                ).first()
-                
-                if connection:
-                    connection_status = connection.status
-            
-            # Check user reactions
-            user_reacted = PostReaction.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_bookmarked = Bookmark.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_followed = PostFollow.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            # Check thread request
-            if post.thread_enabled:
-                thread = Thread.query.filter_by(post_id=post.id).first()
-                if thread:
-                    requested_thread = ThreadJoinRequest.query.filter_by(
-                        requester_id=current_user.id, 
-                        thread_id=thread.id
-                    ).first()
-                    is_member = ThreadMember.query.filter_by(
-                        thread_id=thread.id,
-                        student_id=current_user.id
-                    ).first() is not None
-               
-            # Check if solvable type
-            if post.post_type in ["problem", "question"]:
-                is_solved = post.is_solved
-            
-            # Check if pinned (only for author)
-            if post.student_id == current_user.id:
-                is_pinned = post.is_pinned
-
-            posts_data.append({
-                "id": post.id,
-                "title": post.title,
-                "excerpt": post.text_content,
-                "post_type": post.post_type,
-                "department": post.department,
-                "tags": post.tags,
-                "resources": post.resources,
-                "thread_enabled": post.thread_enabled,
-                "bookmarks_count": post.bookmark_count,
-                "is_solved": is_solved,
-                "is_pinned": is_pinned,
-                "reactions_count": post.positive_reactions_count or 0,
-                "comments_count": post.comments_count,
-                "posted_at": post.posted_at.isoformat(),
-                "is_author": post.student_id == current_user.id,
-                "connection_status": connection_status,
-                "author": {
-                    "id": author.id,
-                    "username": author.username,
-                    "name": author.name,
-                    "avatar": author.avatar,
-                    "reputation_level": author.reputation_level
-                } if author else None,
-                "comments": comments_data,
-                "user_interactions": {
-                    "requested_thread": requested_thread.status if requested_thread else None,
-                    "is_thread_member": is_member,
-                    "user_followed": bool(user_followed),
-                    "user_reacted": bool(user_reacted),
-                    "reaction_type": user_reacted.reaction_type if user_reacted else None,
-                    "bookmarked": bool(user_bookmarked)
-                }
-            })
-
-        # ✅ FIXED: Return with correct data structure (removed undefined filter_type)
-        return jsonify({
-            "status": "success",
-            "data": {
-                "posts": posts_data,
-                "tag": tag,  # ✅ FIX: Use 'tag' instead of undefined 'filter_type'
-                "pagination": {
-                    "page": page,
-                    "per_page": per_page,
-                    "total": paginated.total,
-                    "pages": paginated.pages,
-                    "has_next": paginated.has_next,
-                    "has_prev": paginated.has_prev
-                }
-            }
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Get posts by tag error: ", exc_info=True)
-        return error_response("Failed to load posts by tag")
-
-
-@posts_bp.route("/posts/tags", methods=["GET"])
-@token_required
-def popular_tags(current_user):
-    try:
-        user = User.query.get(current_user.id)
-        if not user:
-            return error_response("User not found")
-
-        # Load only the tags column for the current user's posts (not full Post objects)
-        user_tags_rows = (
-            Post.query
-            .filter_by(student_id=user.id)
-            .with_entities(Post.tags)
-            .all()
-        )
-        user_tags = set()
-        for (tags,) in user_tags_rows:
-            if tags:
-                for tag in tags:
-                    user_tags.add(tag.lower().strip())
-
-        # Load only the tags column for ALL posts — dramatically more memory-efficient
-        # than Post.query.all() which loads every column for every post
-        all_tags_rows = (
-            Post.query
-            .with_entities(Post.tags)
-            .filter(Post.tags.isnot(None))
-            .all()
-        )
-
-        tags_details = {}
-        for (tags,) in all_tags_rows:
-            if tags:
-                for tag in tags:
-                    tag_clean = tag.lower().strip()
-                    if tag_clean:
-                        tags_details[tag_clean] = tags_details.get(tag_clean, 0) + 1
-
-        # Sort by count, prioritizing the current user's own tags first
-        sorted_tags = sorted(
-            tags_details.items(),
-            key=lambda x: (x[0] not in user_tags, -x[1])
-        )
-
-        return jsonify({"status": "success", "data": dict(sorted_tags[:50])})
-    except Exception as e:
-        current_app.logger.error("Get tags error", exc_info=True)
-        return error_response("Failed to load trending tags")
-            
-
-@posts_bp.route("/posts/my-posts", methods=["GET"])
+@posts_crud_bp.route("/posts/my-posts", methods=["GET"])
 @token_required
 def get_my_posts(current_user):
     """
@@ -2780,484 +1818,3 @@ def get_my_posts(current_user):
         return error_response("Failed to load your posts")
 
 
-@posts_bp.route("/posts/bookmarked", methods=["GET"])
-@token_required
-def get_bookmarked_posts(current_user):
-    """
-    Get all bookmarked posts organized by folder
-    
-    Query params:
-    - folder: Filter by folder name
-    """
-    try:
-        folder_filter = request.args.get("folder")
-        
-        query = Bookmark.query.filter_by(student_id=current_user.id)
-        
-        if folder_filter:
-            query = query.filter_by(folder=folder_filter)
-        
-        bookmarks = query.order_by(Bookmark.bookmarked_at.desc()).all()
-        
-        bookmarks_data = []
-        for bookmark in bookmarks:
-            post = Post.query.get(bookmark.post_id)
-            if post:
-                author = User.query.get(post.student_id)
-                bookmarks_data.append({
-                    "bookmark_id": bookmark.id,
-                    "folder": bookmark.folder,
-                    "notes": bookmark.notes,
-                    "bookmarked_at": bookmark.bookmarked_at.isoformat(),
-                    "post": {
-                        "id": post.id,
-                        "title": post.title,
-                        'content': post.text_content,
-                        "post_type": post.post_type,
-                        "posted_at": post.posted_at.isoformat(),
-                        "author": {
-                            "username": author.username,
-                            "name": author.name,
-                            "avatar": author.avatar,
-                        } if author else None
-                    }
-                })
-        
-        # Get all unique folders
-        folders = db.session.query(Bookmark.folder, func.count(Bookmark.id)).filter_by(
-            student_id=current_user.id
-        ).group_by(Bookmark.folder).all()
-        
-        folders_data = [{"name": f[0], "count": f[1]} for f in folders]
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "bookmarks": bookmarks_data,
-                "folders": folders_data,
-                "total": len(bookmarks_data)
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Get bookmarked posts error: ", exc_info=True)
-        return error_response("Failed to load bookmark")
-
-
-
-# ============================================================================
-# COMMENTS & REPLIES - FIXED TO SUPPORT ONLY 2 LEVELS
-# ============================================================================
-
-@posts_bp.route("/comments/create", methods=["POST"])
-@token_required
-def create_comment(current_user):
-    """
-    Create comment/reply with file uploads
-    
-    **IMPORTANT:** Max depth = 1 (only 2 levels total)
-    - Level 0: Top-level comments on posts
-    - Level 1: Replies to top-level comments
-    - Level 2+: NOT ALLOWED
-    """
-    try:
-        is_spam, spam_reason = check_spam(current_user.id, "comment")
-        if is_spam:
-            return error_response(f"Rate limit exceeded: {spam_reason}", 429)
-        
-        # Get form data
-        data = request.get_json()
-        post_id = data.get("post_id")
-        text_content = data.get("text_content", "").strip()
-        parent_id = data.get("parent_id")
-        resources = data.get("resources", [])
-        
-        if not isinstance(resources, list):
-            resources = []
-        
-        # ✅ VALIDATE resource structure
-        validated_resources = []
-        for resource in resources:
-            if isinstance(resource, dict) and "url" in resource:
-                validated_resources.append({
-                    "url": resource.get("url"),
-                    "type": resource.get("type", "document"),
-                    "filename": resource.get("filename", "file")
-                })
-            elif isinstance(resource, str):
-                validated_resources.append({
-                    "url": resource,
-                    "type": "document",
-                    "filename": "file"
-                })
-        
-        # Validation
-        if not post_id:
-            return error_response("Post ID is required", 400)
-        
-        if not text_content:
-            return error_response("Comment text cannot be empty", 400)
-        
-        if len(text_content) > 5000:
-            return error_response("Comment too long (max 5000 characters)", 400)
-        
-        # Verify post exists
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found", 404)
-        
-        if post.is_locked:
-            return error_response("This post is locked", 403)
-        
-        # ✅ ENFORCE MAX DEPTH = 1 (only 2 levels)
-        depth_level = 0
-        parent_comment = None
-        
-        if parent_id:
-            parent_comment = Comment.query.get(parent_id)
-            if not parent_comment:
-                return error_response("Parent comment not found", 404)
-            
-            if parent_comment.is_deleted:
-                return error_response("Cannot reply to deleted comment", 400)
-            
-            # ✅ STRICT DEPTH CHECK - Block if parent is already level 1
-            if parent_comment.depth_level >= 1:
-                return error_response(
-                    "Cannot reply to this comment. Maximum reply depth reached (2 levels only).",
-                    400
-                )
-            
-            depth_level = parent_comment.depth_level + 1
-        
-        # Create comment
-        new_comment = Comment(
-            post_id=post_id,
-            student_id=current_user.id,
-            parent_id=parent_id,
-            text_content=text_content,
-            depth_level=depth_level,
-            resources=validated_resources 
-        )
-        
-        db.session.add(new_comment)
-        db.session.flush()
-        
-        # Update parent's reply count
-        if parent_comment:
-            parent_comment.replies_count += 1
-        
-        # Update post's comment count
-        post.comments_count += 1
-        
-        # ✅ Detect mentions
-        detect_and_create_mentions(
-            text_content,
-            current_user.id,
-            "comment",
-            new_comment.id
-        )
-        
-        # ✅ Notify post author (if not self-comment)
-        if post.student_id != current_user.id:
-            notification = Notification(
-                user_id=post.student_id,
-                title=f"{current_user.name} commented on your post",
-                body=f'"{post.title}"',
-                notification_type="comment",
-                related_type="post",
-                related_id=post_id
-            )
-            db.session.add(notification)
-        
-        # Update activity
-        update_user_activity(current_user.id, "comment")
-        
-        db.session.commit()
-        
-        # Fetch author data for response
-        author = User.query.get(current_user.id)
-        
-        return jsonify({
-            "status": "success",
-            "message": "Comment posted successfully",
-            "data": {
-                "comment": {
-                    "id": new_comment.id,
-                    "post_id": new_comment.post_id,
-                    "parent_id": new_comment.parent_id,
-                    'comments_count': post.comments_count,
-                    "text_content": new_comment.text_content,
-                    "resources": new_comment.resources,
-                    "likes_count": new_comment.likes_count,
-                    "replies_count": new_comment.replies_count,
-                    "depth_level": new_comment.depth_level, 
-                    "helpful_count": new_comment.helpful_count,
-                    "is_solution": new_comment.is_solution,
-                    "posted_at": new_comment.posted_at.isoformat(),
-                    "author": {
-                        "id": author.id,
-                        "name": author.name,
-                        "username": author.username,
-                        "avatar": author.avatar
-                    },
-                    "user_interactions": {
-                        "liked": False,
-                        "has_marked_helpful": False,
-                        "is_author": True
-                    },
-                    # ✅ NEW: Tell frontend if this comment can receive replies
-                    "can_reply": new_comment.depth_level < 1  # Only level 0 can receive replies
-                }
-            }
-        }), 201
-    
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Comment creation error: ", exc_info=True)
-        return jsonify({
-            "status": "error",
-            "message": "Failed to post comment"
-        }), 500
-
-
-@posts_bp.route("/posts/<int:post_id>/comments", methods=["GET"])
-@token_required
-def post_comments(current_user, post_id):
-    """
-    Get all comments for a post
-    Structure: Top-level comments (depth 0) with direct replies (depth 1) only
-    """
-    try:
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found"), 404
-        
-        post_is_solved = post.is_solved
-
-        # 1️⃣ Fetch Top-Level Comments (depth_level = 0)
-        top_comments = Comment.query.filter_by(
-            post_id=post_id,
-            parent_id=None,
-            is_deleted=False
-        ).order_by(
-            Comment.is_solution.desc(),
-            Comment.likes_count.desc(),
-            Comment.posted_at.desc()
-        ).all()
-        
-        if not top_comments:
-            return success_response("No comments yet for this post", data={
-                "comments": []
-            })
-
-        comment_ids = [c.id for c in top_comments]
-
-        # 2️⃣ Get direct replies (depth_level = 1 ONLY)
-        all_replies = Comment.query.filter(
-            Comment.parent_id.in_(comment_ids),
-            Comment.is_deleted == False,
-            Comment.depth_level == 1  # ✅ ENFORCE: Only level 1 replies
-        ).order_by(
-            Comment.parent_id,
-            Comment.posted_at.asc()
-        ).all()
-
-        # 3️⃣ Map replies to parent comments
-        reply_map = defaultdict(list)
-        for r in all_replies:
-            reply_map[r.parent_id].append(r)
-
-        # 4️⃣ Build final response
-        comments_data = []
-        for c in top_comments:
-            comment_author = User.query.get(c.student_id)
-            
-            comment_liked = CommentLike.query.filter_by(
-                student_id=current_user.id,
-                comment_id=c.id
-            ).first() is not None
-            
-            comment_marked_helpful = CommentHelpfulMark.query.filter_by(
-                user_id=current_user.id, 
-                comment_id=c.id
-            ).first() is not None
-
-            replies_data = []
-            for r in reply_map.get(c.id, []):
-                reply_author = User.query.get(r.student_id)
-                
-                reply_liked = CommentLike.query.filter_by(
-                    student_id=current_user.id,
-                    comment_id=r.id
-                ).first() is not None
-                
-                reply_marked_helpful = CommentHelpfulMark.query.filter_by(
-                    user_id=current_user.id, 
-                    comment_id=r.id
-                ).first() is not None
-                
-                replies_data.append({
-                    "id": r.id,
-                    "text_content": r.text_content,
-                    "likes_count": r.likes_count,
-                    "post_is_solved": post_is_solved,
-                    "is_author": post.student_id == r.student_id,
-                    "replies_count": r.replies_count,
-                    "helpful_count": r.helpful_count,
-                    "resources": r.resources,
-                    "is_you": reply_author.id == current_user.id,
-                    "post_id": r.post_id,
-                    "is_solution": r.is_solution,
-                    "depth_level": r.depth_level,
-                    "parent_id": r.parent_id,
-                    "posted_at": r.posted_at.isoformat(),
-                    "can_reply": False,  # ✅ Level 1 comments CANNOT receive replies
-                    "author": {
-                        "id": reply_author.id,
-                        "name": reply_author.name,
-                        "username": reply_author.username,
-                        "avatar": reply_author.avatar
-                    },
-                    "user_interactions": {
-                        "has_liked": reply_liked,
-                        "has_marked_helpful": reply_marked_helpful,
-                        "is_author": r.student_id == current_user.id
-                    }
-                })
-
-            comments_data.append({
-                "id": c.id,
-                "text_content": c.text_content,
-                "post_id": c.post_id,
-                "likes_count": c.likes_count,
-                "replies_count": c.replies_count,
-                "helpful_count": c.helpful_count,
-                "resources": c.resources,
-                "is_solution": c.is_solution,
-                "post_is_solved": post_is_solved,
-                "is_author": post.student_id == c.student_id,
-
-                "depth_level": c.depth_level,
-                "is_you": comment_author.id == current_user.id,
-                "posted_at": c.posted_at.isoformat(),
-                "can_reply": True,  # ✅ Level 0 comments CAN receive replies
-                "author": {
-                    "id": comment_author.id,
-                    "name": comment_author.name,
-                    "username": comment_author.username,
-                    "avatar": comment_author.avatar
-                },
-                "user_interactions": {
-                    "has_liked": comment_liked,
-                    "has_marked_helpful": comment_marked_helpful,
-                    "is_author": c.student_id == current_user.id
-                },
-                "replies": replies_data
-            })
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "comments": comments_data
-            }
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Comments load error: ", exc_info=True)
-        return jsonify({
-            "status": "error",
-            "message": "Failed to load comments"
-        }), 500
-
-
-@posts_bp.route("/comments/<int:comment_id>/replies", methods=["GET"])
-@token_required
-def comment_replies(current_user, comment_id):
-    """
-    Get replies for a specific comment
-    ✅ ONLY WORKS FOR LEVEL 0 COMMENTS (top-level)
-    ✅ RETURNS LEVEL 1 REPLIES ONLY (no nested replies)
-    """
-    try:
-        parent_comment = Comment.query.get(comment_id)
-        if not parent_comment:
-            return error_response("Comment not found", 404)
-
-        # ✅ BLOCK: If this is already a level 1 comment, it has no replies
-        if parent_comment.depth_level >= 1:
-            return error_response(
-                "This comment cannot have replies (maximum depth reached)",
-                400
-            )
-
-        # Fetch only direct replies (depth_level = 1)
-        replies = Comment.query.filter_by(
-            parent_id=comment_id,
-            is_deleted=False,
-            depth_level=1  # ✅ ENFORCE: Only level 1 replies
-        ).order_by(
-            Comment.is_solution.desc(),
-            Comment.likes_count.desc(),
-            Comment.posted_at.desc()
-        ).all()
-
-        if not replies:
-            return success_response("No replies found", data={
-                "replies": [],
-                "parent_comment": {
-                    "id": parent_comment.id,
-                    "depth_level": parent_comment.depth_level
-                }
-            })
-
-        replies_data = []
-        for reply in replies:
-            reply_author = User.query.get(reply.student_id)
-
-            reply_liked = CommentLike.query.filter_by(
-                student_id=current_user.id,
-                comment_id=reply.id
-            ).first() is not None
-
-            replies_data.append({
-                "id": reply.id,
-                "text_content": reply.text_content,
-                "likes_count": reply.likes_count,
-                "replies_count": 0,  # ✅ Always 0 (level 1 comments cannot have replies)
-                "is_you": reply.student_id == current_user.id,
-                "post_id": reply.post_id,
-                "helpful_count": reply.helpful_count,
-                "resources": reply.resources,
-                "is_solution": reply.is_solution,
-                "depth_level": reply.depth_level,
-                "parent_id": reply.parent_id,
-                "posted_at": reply.posted_at.isoformat(),
-                "can_reply": False,  # ✅ Level 1 comments CANNOT receive replies
-                "author": {
-                    "id": reply_author.id,
-                    "name": reply_author.name,
-                    "username": reply_author.username,
-                    "avatar": reply_author.avatar
-                },
-                "user_interactions": {
-                    "liked": reply_liked,
-                    "is_author": reply.student_id == current_user.id
-                }
-            })
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "replies": replies_data,
-                "parent_comment": {
-                    "id": parent_comment.id,
-                    "depth_level": parent_comment.depth_level,
-                    "can_receive_replies": True  # ✅ Only level 0 can receive replies
-                }
-            }
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Replies load error: ", exc_info=True)
-        return jsonify({"status": "error", "message": "Failed to load replies"}), 500
