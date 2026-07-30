@@ -40,6 +40,7 @@ from services.connection_service import (
     get_connection_health,
     get_user_onboarding_preview,
 )
+from services import search_service
 
 logger = logging.getLogger(__name__)
 
@@ -451,103 +452,52 @@ def connection_suggestions(current_user):
 @connections_discovery_bp.route("/connections/search", methods=["GET"])
 @token_required
 def search_users(current_user):
-    """Search for users (no pagination, max 50 results)"""
+    """
+    Search for users, scoped to connections (excludes users you've
+    blocked or who've blocked you).
+
+    This is a thin wrapper around services/search_service.py::search_users
+    (Document 1 section 6.1 / section 2.1) — the one implementation of user
+    search. Block-exclusion is the only genuinely connections-specific
+    behavior layered on top; everything else (text match, connection-status
+    annotation, pagination) is the shared service logic.
+    """
     try:
         search_term = request.args.get("search", "").strip()
-        
+
         if not search_term or len(search_term) < 2:
             return error_response("Please provide at least 2 characters to search", 400)
-        
-        # Get blocked user IDs
+
+        # Connections-specific: exclude users involved in a blocked
+        # relationship with the viewer (in either direction).
         blocked_connections = Connection.query.filter(
             or_(
                 and_(Connection.receiver_id == current_user.id, Connection.status == "blocked"),
                 and_(Connection.requester_id == current_user.id, Connection.status == "blocked")
             )
         ).all()
-        
-        excluded_ids = [current_user.id]
-        for conn in blocked_connections:
-            blocked_id = conn.requester_id if conn.receiver_id == current_user.id else conn.receiver_id
-            excluded_ids.append(blocked_id)
-        
-        # Search query
-        users = User.query.filter(
-            User.id.notin_(excluded_ids),
-            User.status == "approved",
-            or_(
-                User.name.ilike(f"%{search_term}%"),
-                User.username.ilike(f"%{search_term}%")
-            )
-        ).limit(50).all()
-        
-        # Get connection statuses
-        user_ids = [user.id for user in users]
-        connections = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(user_ids)),
-                and_(Connection.requester_id.in_(user_ids), Connection.receiver_id == current_user.id)
-            )
-        ).all()
-        
-        connection_map = {}
-        for conn in connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            connection_map[other_id] = {
-                "connection_id": conn.id,
-                "status": conn.status,
-                "is_requester": conn.requester_id == current_user.id
-            }
-        
-        users_data = []
-        for user in users:
-            profile = StudentProfile.query.filter_by(user_id=user.id).first()
-            conn_info = connection_map.get(user.id, {})
-            online_status = get_user_online_status(user.id)
-            
-            # Determine connection status
-            if not conn_info:
-                connection_status = "none"
-                can_connect = True
-            elif conn_info["status"] == "accepted":
-                connection_status = "connected"
-                can_connect = False
-            elif conn_info["status"] == "pending":
-                connection_status = "pending_sent" if conn_info["is_requester"] else "pending_received"
-                can_connect = False
-            elif conn_info["status"] == "blocked":
-                connection_status = "blocked"
-                can_connect = False
-            else:
-                connection_status = "rejected"
-                can_connect = True
-            
-            users_data.append({
-                "id": user.id,
-                "username": user.username,
-                "name": user.name,
-                "avatar": user.avatar,
-                "bio": user.bio,
-                "department": profile.department if profile else None,
-                "class_level": profile.class_name if profile else None,
-                "reputation": user.reputation,
-                "reputation_level": user.reputation_level,
-                "is_online": online_status["is_online"],
-                "last_active": online_status["last_active"],
-                "connection_status": connection_status,
-                "connection_id": conn_info.get("connection_id"),
-                "can_connect": can_connect
-            })
-        
+
+        excluded_ids = [
+            conn.requester_id if conn.receiver_id == current_user.id else conn.receiver_id
+            for conn in blocked_connections
+        ]
+
+        data = search_service.search_users(
+            search_term,
+            exclude_ids=excluded_ids,
+            per_page=50,
+            viewer_id=current_user.id,
+        )
+
         return jsonify({
             "status": "success",
             "data": {
-                "users": users_data,
-                "total": len(users_data),
-                "search_term": search_term
+                "users": data["users"],
+                "total": data["pagination"]["total"],
+                "search_term": search_term,
             }
         })
-        
+
     except Exception as e:
         current_app.logger.error(f"Search users error: ", exc_info=True)
         return error_response("Failed to search users")

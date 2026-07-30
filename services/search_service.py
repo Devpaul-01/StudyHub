@@ -131,6 +131,7 @@ def search_users(
     skills: list[str] | None = None,
     reputation_min: int | None = None,
     connected_only: bool = False,
+    exclude_ids: list[int] | None = None,
     sort: str = "relevance",
     page: int = 1,
     per_page: int = 20,
@@ -139,10 +140,20 @@ def search_users(
     """
     Search users with filters. Single implementation for both
     GET /search/users and GET /search/unified?type=users.
+
+    exclude_ids: optional extra IDs to exclude beyond the viewer
+    themselves (e.g. blocked users). This is the one piece of
+    connections.py::search_users behavior that's genuinely
+    connections-specific, exposed as a parameter here rather than
+    duplicated as a second query implementation in
+    routes/student/connections/discovery.py (Document 1 section 6.1).
     """
     per_page = min(per_page, 50)
 
     q = User.query.filter(User.id != viewer_id, User.status == "approved")
+
+    if exclude_ids:
+        q = q.filter(User.id.notin_(exclude_ids))
 
     if query:
         pattern = f"%{query}%"
