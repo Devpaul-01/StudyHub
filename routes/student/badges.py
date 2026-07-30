@@ -7,16 +7,29 @@ lives in services/badge_service.py (Document 1 §2, Document 2 §3.2) — this
 file is the thin HTTP layer: request parsing, auth, response envelope.
 """
 
-from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import func, and_, or_
+from __future__ import annotations
 
-from models import User, Badge, UserBadge, StudentProfile, Connection
+from flask import Blueprint, request, jsonify, current_app
+from sqlalchemy import func
+
+from models import User, Badge, UserBadge
 from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
 from services.reputation_levels import get_reputation_level
 from services import badge_service
+
+# Document 1 §6.2 / §4 point 3: top_earners is badge-count-based (a
+# genuinely different leaderboard from reputation.py's/leaderboard.py's
+# reputation-based ones, so it's kept as its own endpoint) but reuses
+# leaderboard_service's batch-loading helpers instead of hand-rolling its
+# own {user_id -> User}/{user_id -> connection_status} maps a second time.
+# These are the same _user_map/_connection_map helpers get_global_leaderboard
+# and get_rising_stars already use — importing them here means there is
+# exactly one implementation of "batch load users" and "batch load
+# connection status relative to viewer" in the codebase, not two.
+from services.leaderboard_service import _user_map, _connection_map, _profile_map
 
 badges_bp = Blueprint("student_badges", __name__)
 
@@ -337,84 +350,61 @@ def award_badge_endpoint(current_user):
 @badges_bp.route("/badges/top-earners", methods=["GET"])
 @token_required
 def top_earners(current_user):
-    """Top 20 users by badge count, with connection status relative to current_user."""
-    try:
-        leaderboard_data = []
+    """
+    Top 20 users by badge count, with connection status relative to
+    current_user.
 
-        top_rows = (
+    A genuinely different leaderboard from reputation.py's/leaderboard.py's
+    (badge-count-based, not reputation-based) so it's kept as its own
+    endpoint per Document 1 §6.2 — but the {user_id -> User},
+    {user_id -> StudentProfile}, and {user_id -> connection_status} batch
+    lookups below now reuse services/leaderboard_service.py's
+    _user_map/_profile_map/_connection_map instead of hand-rolling a
+    second copy of each, per Document 1 §6.2's third bullet.
+    """
+    try:
+        rank_rows = (
             db.session.query(
-                User.id,
+                UserBadge.user_id,
                 func.count(UserBadge.id).label("badge_count"),
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                User.total_helpful,
-                StudentProfile.department,
-                StudentProfile.class_name,
             )
-            .join(UserBadge, UserBadge.user_id == User.id)
-            .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
-            .group_by(
-                User.id,
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                User.total_helpful,
-                StudentProfile.department,
-                StudentProfile.class_name,
-            )
+            .group_by(UserBadge.user_id)
             .order_by(func.count(UserBadge.id).desc())
             .limit(20)
             .all()
         )
 
-        if not top_rows:
-            return jsonify({"status": "success", "data": leaderboard_data})
+        if not rank_rows:
+            return jsonify({"status": "success", "data": []})
 
-        top_user_ids = [row.id for row in top_rows]
+        top_user_ids = [row.user_id for row in rank_rows]
 
-        connections = Connection.query.filter(
-            or_(
-                and_(
-                    Connection.requester_id == current_user.id,
-                    Connection.receiver_id.in_(top_user_ids),
-                ),
-                and_(
-                    Connection.receiver_id == current_user.id,
-                    Connection.requester_id.in_(top_user_ids),
-                ),
-            )
-        ).all()
+        umap = _user_map(top_user_ids)
+        pmap = _profile_map(top_user_ids)
+        connection_map = _connection_map(current_user.id, top_user_ids)
 
-        connection_map = {}
-        for conn in connections:
-            other_id = (
-                conn.receiver_id
-                if conn.requester_id == current_user.id
-                else conn.requester_id
-            )
-            connection_map[other_id] = conn.status
+        leaderboard_data = []
+        for idx, row in enumerate(rank_rows, start=1):
+            user = umap.get(row.user_id)
+            if not user:
+                continue
 
-        for idx, row in enumerate(top_rows, start=1):
-            level = get_reputation_level(row.reputation)
+            profile = pmap.get(row.user_id)
+            level = get_reputation_level(user.reputation)
 
             leaderboard_data.append({
                 "rank": idx,
-                "status": connection_map.get(row.id),
+                "status": connection_map.get(row.user_id),
                 "user": {
-                    "id": row.id,
-                    "username": row.username,
-                    "name": row.name,
-                    "avatar": row.avatar,
-                    "department": row.department,
-                    "class_level": row.class_name,
+                    "id": user.id,
+                    "username": user.username,
+                    "name": user.name,
+                    "avatar": user.avatar,
+                    "department": profile.department if profile else None,
+                    "class_level": profile.class_name if profile else None,
                 },
                 "reputation": {
-                    "points": row.reputation,
+                    "points": user.reputation,
                     "level": {
                         "name": level["name"],
                         "icon": level["icon"],
@@ -423,9 +413,9 @@ def top_earners(current_user):
                 },
                 "stats": {
                     "total_badges": row.badge_count,
-                    "total_helpful": row.total_helpful,
+                    "total_helpful": user.total_helpful,
                 },
-                "is_you": row.id == current_user.id,
+                "is_you": user.id == current_user.id,
             })
 
         return jsonify({"status": "success", "data": leaderboard_data})
