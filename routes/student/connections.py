@@ -4,25 +4,30 @@ Users must connect before messaging - prevents spam and creates safer community
 """
 
 from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
-from sqlalchemy import or_, and_, func, case
+from sqlalchemy import or_, and_, case
 from datetime import timedelta
 import datetime
 import json
 import logging
 import random
-from collections import Counter
 
 from models import (
     User, StudentProfile, Connection, Notification,
-    HelpRequest, Post, Comment, Thread, ThreadMember,
-    OnboardingDetails, PostReaction, CommentHelpfulMark, Message
+    HelpRequest, Thread, ThreadMember,
+    OnboardingDetails, Message
 )
 from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response,
     block_connection, unblock_connection,
 )
-from utils import get_user_online_status
+
+# PHASE-1 WIRING FIX: was `from utils import get_user_online_status`, which
+# was itself a duplicate re-implementation (see utils.py's own fix). Import
+# directly from the canonical service now — utils.py still re-exports the
+# same name as a shim for any other caller, but this file goes straight to
+# the source per Document 1 §6.4.
+from services.online_status_service import get_user_online_status
 
 # Document 1 §2.4: provider_manager/StudyAssistant now live in
 # services/ai_provider_service.py (moved out of learnora.py so every
@@ -33,6 +38,33 @@ from utils import get_user_online_status
 # provider_manager.warm_model_discovery()), so there's no import-time cost
 # to avoid by deferring this to a lazy in-function import anymore.
 from services.ai_provider_service import provider_manager, StudyAssistant
+
+# PHASE-1 WIRING FIX (Document 2 §3.4): these were specified to live in
+# services/connection_service.py but were still defined locally in this
+# file — the local defs below have been removed in favor of importing the
+# now-canonical implementations. calculate_compatibility_score/
+# calculate_schedule_overlap/gather_user_data/calculate_compatibility are
+# pure; get_user_top_topics/get_recent_activity/get_mutual_connection_count/
+# get_connection_health/get_user_onboarding_preview do their own DB reads
+# (decision test #3 in Document 2 §4 — "orchestrates DB reads to accomplish
+# one business operation" is still service-layer-shaped).
+from services.connection_service import (
+    calculate_compatibility_score,
+    calculate_schedule_overlap,
+    gather_user_data,
+    calculate_compatibility,
+    get_recent_activity,
+    get_mutual_connection_count,
+    get_connection_health,
+    get_user_onboarding_preview,
+)
+# Note: services.connection_service also exposes get_user_top_topics()
+# (used internally by get_recent_activity, not called directly here) and
+# get_connection_health_batch() — the N+1-safe batch form of
+# get_connection_health(), not yet wired into this file's per-row loops
+# (list_connections / get_online_connections / get_online_connections_by_department).
+# Document 1 §2.1.1 flags upgrading those three loops to the batch call as
+# a fix to apply during the eventual file split.
 
 logger = logging.getLogger(__name__)
 
@@ -2679,179 +2711,13 @@ def connection_suggestions_flat(current_user):
     except Exception as e:
         current_app.logger.error(f"Flat connection suggestions error: ", exc_info=True)
         return error_response("Failed to load suggestions")
-              
-def calculate_schedule_overlap(schedule1, schedule2):
-    """Calculate percentage of overlapping study times"""
-    if not schedule1 or not schedule2:
-        return 0
-    
-    overlap_count = 0
-    total_slots = 0
-    
-    # Match the casing from HTML
-    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    times = ['morning', 'afternoon', 'evening']
-    
-    for day in days:
-        if day in schedule1 and day in schedule2:
-            # Get time slots for each user
-            user1_times = set(schedule1[day])  # e.g., ['morning', 'afternoon']
-            user2_times = set(schedule2[day])  # e.g., ['afternoon', 'evening']
-            
-            # Count total possible slots
-            total_slots += len(times)
-            
-            # Count overlapping time slots
-            overlaps = user1_times & user2_times  # Intersection
-            overlap_count += len(overlaps)
-    
-    # Return percentage
-    return int((overlap_count / max(total_slots, 1)) * 100) if total_slots > 0 else 0
 
-
-def get_user_top_topics(user_id, limit=3):
-    """Get user's most discussed topics from posts and activity"""
-    try:
-        # Get tags from user's posts
-        posts = Post.query.filter_by(student_id=user_id).limit(30).all()
-        
-        all_tags = []
-        for post in posts:
-            if post.tags:
-                all_tags.extend(post.tags)
-        
-        if not all_tags:
-            return []
-        
-        topic_counts = Counter(all_tags)
-        return [topic for topic, _ in topic_counts.most_common(limit)]
-    except Exception as e:
-        logger.error(f"Error getting top topics: ", exc_info=True)
-        return []
-
-
-def calculate_compatibility_score(compatibility_data):
-    """Calculate numerical compatibility score (0-100)"""
-    score = 0
-    
-    # Shared subjects (30 points max)
-    shared_count = len(compatibility_data.get('shared_subjects', []))
-    score += min(shared_count * 10, 30)
-    
-    # They can help you (40 points max)
-    help_count = len(compatibility_data['complementary_skills'].get('they_can_help_with', []))
-    score += min(help_count * 20, 40)
-    
-    # Schedule overlap (20 points max)
-    schedule_overlap = compatibility_data.get('schedule_overlap', 0)
-    score += min(schedule_overlap * 0.2, 20)
-    
-    # Department match (10 points)
-    if compatibility_data.get('department_match', False):
-        score += 10
-    
-    return min(int(score), 100)
-
-
-def gather_user_data(user):
-    """Gather all relevant data about a user for AI analysis"""
-    try:
-        profile = user.student_profile
-        onboarding = user.onboarding_details
-        
-        return {
-            "name": user.name,
-            "username": user.username,
-            "bio": user.bio or "No bio yet",
-            "department": profile.department if profile else "Unknown",
-            "class_name": profile.class_name if profile else "Unknown",
-            "reputation": user.reputation,
-            "reputation_level": user.reputation_level,
-            "strong_subjects": onboarding.strong_subjects if onboarding else [],
-            "help_subjects": onboarding.help_subjects if onboarding else [],
-            "learning_style": onboarding.learning_style if onboarding else "Not specified",
-            "study_preferences": onboarding.study_preferences if onboarding else [],
-            "badges": [ub.badge.name for ub in user.badges.limit(3)] if user.badges else []
-        }
-    except Exception as e:
-        logger.error(f"Error gathering user data: ", exc_info=True)
-        return {}
-
-
-def calculate_compatibility(current_user_data, target_user_data):
-    """Calculate compatibility metrics between two users"""
-    try:
-        current_subjects = set(
-            current_user_data.get('strong_subjects', []) + 
-            current_user_data.get('help_subjects', [])
-        )
-        target_subjects = set(
-            target_user_data.get('strong_subjects', []) + 
-            target_user_data.get('help_subjects', [])
-        )
-        
-        shared_subjects = list(current_subjects & target_subjects)
-        
-        they_can_help = list(
-            set(target_user_data.get('strong_subjects', [])) & 
-            set(current_user_data.get('help_subjects', []))
-        )
-        
-        you_can_help = list(
-            set(current_user_data.get('strong_subjects', [])) & 
-            set(target_user_data.get('help_subjects', []))
-        )
-        
-        return {
-            "shared_subjects": shared_subjects,
-            "complementary_skills": {
-                "they_can_help_with": they_can_help,
-                "you_can_help_with": you_can_help
-            },
-            "schedule_overlap": 0,  # Will be calculated below
-            "department_match": current_user_data.get('department') == target_user_data.get('department')
-        }
-    except Exception as e:
-        logger.error(f"Error calculating compatibility: ", exc_info=True)
-        return {
-            "shared_subjects": [],
-            "complementary_skills": {"they_can_help_with": [], "you_can_help_with": []},
-            "schedule_overlap": 0,
-            "department_match": False
-        }
-
-
-def get_recent_activity(user_id):
-    """Get user's recent activity metrics"""
-    try:
-        seven_days_ago = datetime.datetime.utcnow() - timedelta(days=7)
-        
-        recent_posts = Post.query.filter_by(student_id=user_id)\
-            .filter(Post.posted_at >= seven_days_ago).count()
-        
-        recent_helpful = Comment.query.filter_by(student_id=user_id)\
-            .filter(Comment.helpful_count > 0)\
-            .filter(Comment.posted_at >= seven_days_ago).count()
-        
-        active_threads = ThreadMember.query.filter_by(student_id=user_id).count()
-        
-        popular_topics = get_user_top_topics(user_id, limit=3)
-        
-        return {
-            "recent_posts": recent_posts,
-            "recent_helpful_comments": recent_helpful,
-            "active_threads": active_threads,
-            "popular_topics": popular_topics
-        }
-    except Exception as e:
-        logger.error(f"Error getting recent activity: ", exc_info=True)
-        return {
-            "recent_posts": 0,
-            "recent_helpful_comments": 0,
-            "active_threads": 0,
-            "popular_topics": []
-        }
-
+# PHASE-1 WIRING FIX: calculate_schedule_overlap, get_user_top_topics,
+# calculate_compatibility_score, gather_user_data, calculate_compatibility,
+# and get_recent_activity used to be defined here. They now live in
+# services/connection_service.py (Document 2 §3.4) and are imported at the
+# top of this file under the same names, so every call site below is
+# unchanged.
 
 # ============================================================================
 # REPLACE THE ENTIRE /connections/overview/<int:user_id> ENDPOINT
@@ -3781,28 +3647,11 @@ def mark_all_connections_seen(current_user):
 
 
 
-def get_user_onboarding_preview(user_id):
-    
-    try:
-        from models import OnboardingDetails
-        
-        onboarding = OnboardingDetails.query.filter_by(user_id=user_id).first()
-        
-        if not onboarding:
-            return None
-        
-        return {
-            "subjects": onboarding.subjects[:3] if onboarding.subjects else [],
-            "strong_subjects": onboarding.strong_subjects[:3] if onboarding.strong_subjects else [],
-            "help_subjects": onboarding.help_subjects[:3] if onboarding.help_subjects else [],
-            "learning_style": onboarding.learning_style,
-            "study_preferences": onboarding.study_preferences[:3] if onboarding.study_preferences else [],
-            "session_length": onboarding.session_length,
-            "has_schedule": bool(onboarding.study_schedule)
-        }
-    except Exception as e:
-        current_app.logger.error(f"Available connections error: ", exc_info=True)
-        return error_response("Failed to find available connections")
+# PHASE-1 WIRING FIX: get_user_onboarding_preview used to be defined here
+# (with a real bug — on exception it logged a mismatched message and
+# returned a Flask error_response() where every caller expects a dict/None).
+# It now lives in services/connection_service.py, fixed, and is imported at
+# the top of this file under the same name.
 
             
 @connections_bp.route("/connections/available-now", methods=["GET"])
@@ -4596,127 +4445,13 @@ def remove_connection(current_user, user_id):
         current_app.logger.error(f"Remove connection error: ", exc_info=True)
         return error_response("Failed to remove connection")
 
-def get_mutual_connection_count(user1_id, user2_id):
-    """
-    Get count of mutual connections between two users
-    """
-    try:
-        # Get user1's connections
-        user1_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == user1_id,
-                Connection.receiver_id == user1_id
-            ),
-            Connection.status == "accepted"
-        ).all()
-        
-        user1_ids = set()
-        for conn in user1_connections:
-            other_id = conn.receiver_id if conn.requester_id == user1_id else conn.requester_id
-            user1_ids.add(other_id)
-        
-        # Get user2's connections
-        user2_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == user2_id,
-                Connection.receiver_id == user2_id
-            ),
-            Connection.status == "accepted"
-        ).all()
-        
-        user2_ids = set()
-        for conn in user2_connections:
-            other_id = conn.receiver_id if conn.requester_id == user2_id else conn.requester_id
-            user2_ids.add(other_id)
-        
-        # Count mutual connections
-        return len(user1_ids & user2_ids)
-        
-    except Exception as e:
-        current_app.logger.error(f"Get mutual count error: ", exc_info=True)
-        return 0
-        
+# PHASE-1 WIRING FIX: get_mutual_connection_count and get_connection_health
+# used to be defined here. Both now live in services/connection_service.py
+# (Document 2 §3.4) — get_connection_health is kept as a single-pair
+# wrapper there; get_connection_health_batch is the new, N+1-safe batch
+# form (Document 1 §2.1.1) available for any call site that loops over
+# multiple pairs. Imported at the top of this file under the same names.
 
-
-
-
-# ========================================
-# HELPER FUNCTION: Get Connection Health
-# ========================================
-
-        
-def get_connection_health(user_id, other_user_id):
-    """
-    Calculate connection health score based on:
-    - Time since last interaction
-    - Shared thread participation
-    - Study sessions completed
-    
-    Returns dict with score, suggestion, and metrics
-    """
-    try:
-        # Find the connection
-        connection = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == user_id, Connection.receiver_id == other_user_id),
-                and_(Connection.requester_id == other_user_id, Connection.receiver_id == user_id)
-            ),
-            Connection.status == "accepted"
-        ).first()
-        
-        if not connection:
-            return None
-        
-        score = 100  # Start at perfect
-        
-        # 1. Check last interaction time
-        last_interaction = connection.responded_at or connection.requested_at
-        days_since = (datetime.datetime.utcnow() - last_interaction).days
-        
-        if days_since > 30:
-            score -= 40
-        elif days_since > 14:
-            score -= 20
-        elif days_since > 7:
-            score -= 10
-        
-        # 2. Shared thread activity
-        user_threads = ThreadMember.query.filter_by(student_id=user_id).all()
-        other_threads = ThreadMember.query.filter_by(student_id=other_user_id).all()
-        
-        user_thread_ids = set(t.thread_id for t in user_threads)
-        other_thread_ids = set(t.thread_id for t in other_threads)
-        
-        shared_threads = len(user_thread_ids & other_thread_ids)
-        score += min(shared_threads * 10, 30)
-        
-        # 3. Study buddy bonus
-        
-       
-        
-        # Cap score
-        score = max(0, min(100, score))
-        
-        # Generate suggestion
-        if score < 40:
-            suggestion = "💤 Haven't connected in a while. Send them a message!"
-        elif score < 70:
-            suggestion = "👍 Good connection. Schedule a study session?"
-        else:
-            suggestion = "🔥 Strong connection! Keep it up."
-        health_percent = score/100  *100
-        return {
-            "health_score": score,
-            "health_percent": health_percent,
-            "suggestion": suggestion,
-            "last_interaction_days": days_since,
-            "shared_threads": shared_threads
-        }
-        
-    except Exception as e:
-        current_app.logger.error(f"Connection health error: ", exc_info=True)
-        return None
-                
 @connections_bp.route("/connections/status/<int:user_id>", methods=["GET"])
 @token_required
 def connection_status(current_user, user_id):
