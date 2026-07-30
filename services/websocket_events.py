@@ -192,11 +192,22 @@ class WebSocketManager:
     }
         for user_id in connection_ids:
             self.emit_to_user(user_id, 'new_activity', activity_data)
-            
-        def emit_to_user(self, user_id, event_name, data):
-            socket_ids = self.online_users.get(user_id, [])
-            for socket_id in socket_ids:
-                self.socketio.emit(event_name, data, room=socket_id)
+
+    def emit_to_user(self, user_id, event_name, data):
+        """Emit an event to every socket a given user currently has open.
+
+        BUG FIX: this was previously defined as a nested function *inside*
+        broadcast_activity, declared after the very call site
+        (`self.emit_to_user(...)`) that depends on it — since it was never
+        actually a method of WebSocketManager, calling broadcast_activity()
+        would raise AttributeError at runtime (there was no other
+        definition of this method anywhere else in the class). Promoted to
+        a real method here, matching the equivalent method every sibling
+        manager (MessageWebSocketManager) already defines correctly.
+        """
+        socket_ids = self.online_users.get(user_id, [])
+        for socket_id in socket_ids:
+            self.socketio.emit(event_name, data, room=socket_id)
     
     def create_conversation_key(self, user1_id, user2_id):
         """Create consistent conversation identifier"""
