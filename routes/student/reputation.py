@@ -1,7 +1,25 @@
 """
 StudyHub - Reputation System
-Tracks user reputation through helpful actions and quality contributions
-Includes leaderboards, history tracking, and auto-award logic
+══════════════════════════════════════════════════════════════════════════════
+
+Personal reputation summary, history, stats, admin award, and the
+levels-lookup endpoint. No leaderboard logic lives here anymore — see
+Document 1 §6.2:
+
+    - GET /reputation/leaderboard and GET /reputation/leaderboard/department
+      were REMOVED entirely (not redirected/deprecated). leaderboard.py's
+      GET /leaderboard/global (with department filter) and
+      GET /leaderboard/department are the sole surviving equivalents.
+    - GET /reputation/rising-stars is kept (URL stability for existing
+      callers) but is now a thin wrapper around
+      services/leaderboard_service.py::get_rising_stars — the single
+      implementation, also used by leaderboard.py's own /leaderboard/rising.
+      reputation.py and leaderboard.py used to each compute this slightly
+      differently; that duplication is gone.
+
+Business logic (point-awarding, REPUTATION_ACTIONS, milestone-checking)
+lives in services/reputation_service.py (Document 2 §3.1) — this file is
+the thin HTTP layer: request parsing, auth, response envelope.
 
 Reputation Points:
 +5  → Post gets 10 likes
@@ -19,18 +37,17 @@ Reputation Levels:
 1K+:     👑 Master
 """
 
-from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import func, desc, and_, or_, case
+from __future__ import annotations
+
 import datetime
 
-from models import (
-    User, StudentProfile, ReputationHistory, Post, Comment, Connection,
-    PostReaction, PostReport, Badge, UserBadge
-)
+from flask import Blueprint, request, jsonify, current_app
+from sqlalchemy import func
+
+from models import User, StudentProfile, ReputationHistory
 from extensions import db
-from routes.student.helpers import (
-    token_required, success_response, error_response
-)
+from routes.student.helpers import token_required, success_response, error_response
+
 # H-8 fix: REPUTATION_LEVELS/get_reputation_level used to be duplicated here
 # (and independently in badges.py, leaderboard.py, and
 # models.py::User.update_reputation_level) — now imported from the single
@@ -42,8 +59,8 @@ from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 # imported here at the same names so every existing call site in this file
 # (and in posts.py, which imports these from routes.student.reputation)
 # keeps working. NOTE: award_reputation() no longer commits internally
-# (Document 2 §5) — award_reputation_endpoint below was updated to commit
-# explicitly, since it previously relied on the internal commit.
+# (Document 2 §5) — award_reputation_endpoint below commits explicitly,
+# since it previously relied on the internal commit.
 from services.reputation_service import (
     REPUTATION_ACTIONS,
     ReputationAction,
@@ -51,14 +68,18 @@ from services.reputation_service import (
     check_and_award_milestone,
 )
 
+# Document 1 §6.2: rising-stars now has exactly one implementation, shared
+# with leaderboard.py's /leaderboard/rising route.
+from services import leaderboard_service
+
 reputation_bp = Blueprint("student_reputation", __name__)
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# PURE HELPERS  (no DB calls)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def next_level(points):
+def next_level(points: int) -> dict | None:
     for idx, level in enumerate(REPUTATION_LEVELS):
         if level["min"] <= points <= level["max"]:
             if idx + 1 < len(REPUTATION_LEVELS):
@@ -66,233 +87,35 @@ def next_level(points):
     return None
 
 
-# ============================================================================
-# REPUTATION ENDPOINTS
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. RISING STARS  (thin wrapper — Document 1 §6.2)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/rising-stars", methods=["GET"])
 @token_required
 def get_rising_stars(current_user):
-    """Get users with highest reputation gain in last 7 days."""
+    """
+    Users with the highest reputation gain in the last 7 days.
+
+    URL kept stable at /reputation/rising-stars for whatever caller depends
+    on this specific path (Document 1 §6.2), but the computation itself is
+    now delegated entirely to services/leaderboard_service.get_rising_stars
+    — the same function backing leaderboard.py's GET /leaderboard/rising.
+    There is exactly one rising-stars implementation now.
+    """
     try:
-        limit = min(request.args.get('limit', 10, type=int), 50)
-        week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
-
-        rising_rows = (
-            db.session.query(
-                ReputationHistory.user_id,
-                func.sum(ReputationHistory.points_change).label("weekly_gain"),
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                StudentProfile.department,
-            )
-            .join(User, User.id == ReputationHistory.user_id)
-            .outerjoin(StudentProfile, StudentProfile.user_id == ReputationHistory.user_id)
-            .filter(
-                ReputationHistory.created_at >= week_ago,
-                ReputationHistory.points_change > 0,
-            )
-            .group_by(
-                ReputationHistory.user_id,
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                StudentProfile.department,
-            )
-            .order_by(desc("weekly_gain"))
-            .limit(limit)
-            .all()
-        )
-
-        if not rising_rows:
-            return jsonify({"status": "success", "data": {"rising_stars": []}})
-
-        rising_user_ids = [row.user_id for row in rising_rows]
-        connections = Connection.query.filter(
-            or_(
-                and_(
-                    Connection.requester_id == current_user.id,
-                    Connection.receiver_id.in_(rising_user_ids),
-                ),
-                and_(
-                    Connection.receiver_id == current_user.id,
-                    Connection.requester_id.in_(rising_user_ids),
-                ),
-            )
-        ).all()
-
-        connection_map = {}
-        for conn in connections:
-            other_id = (
-                conn.receiver_id
-                if conn.requester_id == current_user.id
-                else conn.requester_id
-            )
-            connection_map[other_id] = conn.status
-
-        rising_data = [
-            {
-                "user": {
-                    "id": row.user_id,
-                    "username": row.username,
-                    "name": row.name,
-                    "avatar": row.avatar,
-                    "reputation": row.reputation,
-                    "reputation_level": row.reputation_level,
-                    "department": row.department,
-                },
-                "weekly_gain": int(row.weekly_gain),
-                "is_you": row.user_id == current_user.id,
-                "status": connection_map.get(row.user_id),
-                "trend": "🔥" if row.weekly_gain > 100 else "⚡",
-            }
-            for row in rising_rows
-        ]
-
-        return jsonify({"status": "success", "data": {"rising_stars": rising_data}})
+        limit = min(request.args.get("limit", 10, type=int), 50)
+        data = leaderboard_service.get_rising_stars(limit, viewer_id=current_user.id)
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Rising stars error: {str(e)}")
         return error_response("Failed to load rising stars")
 
 
-@reputation_bp.route("/badges/top-earners", methods=["GET"])
-@token_required
-def get_top_badge_earners(current_user):
-    """
-    Get users with the most badges earned.
-
-    Query params:
-    - limit: Max users to return (default 10, max 50)
-    """
-    try:
-        limit = min(request.args.get("limit", 10, type=int), 50)
-
-        top_rows = (
-            db.session.query(
-                UserBadge.user_id,
-                func.count(UserBadge.id).label("badge_count"),
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                StudentProfile.department,
-            )
-            .join(User, User.id == UserBadge.user_id)
-            .outerjoin(StudentProfile, StudentProfile.user_id == UserBadge.user_id)
-            .filter(User.status == "approved")
-            .group_by(
-                UserBadge.user_id,
-                User.username,
-                User.name,
-                User.avatar,
-                User.reputation,
-                User.reputation_level,
-                StudentProfile.department,
-            )
-            .order_by(desc("badge_count"))
-            .limit(limit)
-            .all()
-        )
-
-        if not top_rows:
-            return jsonify({"status": "success", "data": {"top_earners": []}})
-
-        top_user_ids = [row.user_id for row in top_rows]
-        connections = Connection.query.filter(
-            or_(
-                and_(
-                    Connection.requester_id == current_user.id,
-                    Connection.receiver_id.in_(top_user_ids),
-                ),
-                and_(
-                    Connection.receiver_id == current_user.id,
-                    Connection.requester_id.in_(top_user_ids),
-                ),
-            )
-        ).all()
-
-        connection_map = {}
-        for conn in connections:
-            other_id = (
-                conn.receiver_id
-                if conn.requester_id == current_user.id
-                else conn.requester_id
-            )
-            connection_map[other_id] = conn.status
-
-        badge_preview_rows = (
-            db.session.query(UserBadge.user_id, Badge.name, Badge.icon)
-            .join(Badge, Badge.id == UserBadge.badge_id)
-            .filter(UserBadge.user_id.in_(top_user_ids))
-            .order_by(UserBadge.user_id, UserBadge.earned_at.desc())
-            .all()
-        )
-
-        badge_preview_map = {}
-        for user_id, badge_name, badge_icon in badge_preview_rows:
-            if user_id not in badge_preview_map:
-                badge_preview_map[user_id] = []
-            if len(badge_preview_map[user_id]) < 3:
-                badge_preview_map[user_id].append({"name": badge_name, "icon": badge_icon})
-
-        current_user_badge_count = (
-            db.session.query(func.count(UserBadge.id))
-            .filter(UserBadge.user_id == current_user.id)
-            .scalar()
-            or 0
-        )
-        your_rank = (
-            db.session.query(func.count())
-            .select_from(
-                db.session.query(UserBadge.user_id)
-                .group_by(UserBadge.user_id)
-                .having(func.count(UserBadge.id) > current_user_badge_count)
-                .subquery()
-            )
-            .scalar()
-            + 1
-        )
-
-        top_earners = [
-            {
-                "rank": idx,
-                "user": {
-                    "id": row.user_id,
-                    "username": row.username,
-                    "name": row.name,
-                    "avatar": row.avatar,
-                    "reputation": row.reputation,
-                    "reputation_level": row.reputation_level,
-                    "department": row.department,
-                },
-                "badge_count": row.badge_count,
-                "badge_previews": badge_preview_map.get(row.user_id, []),
-                "is_you": row.user_id == current_user.id,
-                "connection_status": connection_map.get(row.user_id),
-            }
-            for idx, row in enumerate(top_rows, 1)
-        ]
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "top_earners": top_earners,
-                "your_rank": your_rank,
-                "your_badge_count": current_user_badge_count,
-            },
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Top badge earners error: {str(e)}")
-        return error_response("Failed to load top badge earners")
-
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. PERSONAL REPUTATION SUMMARY
+# ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/me", methods=["GET"])
 @token_required
@@ -388,6 +211,10 @@ def get_my_reputation(current_user):
         return error_response("Failed to load reputation data")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. REPUTATION HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
 @reputation_bp.route("/reputation/history", methods=["GET"])
 @token_required
 def get_reputation_history(current_user):
@@ -455,164 +282,9 @@ def get_reputation_history(current_user):
         return error_response("Failed to load reputation history")
 
 
-@reputation_bp.route("/reputation/leaderboard", methods=["GET"])
-@token_required
-def get_global_leaderboard(current_user):
-    try:
-        limit = min(request.args.get("limit", 50, type=int), 100)
-
-        top_users = User.query.filter_by(status="approved").order_by(User.reputation.desc()).limit(limit).all()
-
-        if not top_users:
-            return jsonify({"status": "success", "data": {"leaderboard": [], "your_rank": None, "total_users": 0}})
-
-        top_user_ids = [u.id for u in top_users]
-
-        profiles = StudentProfile.query.filter(StudentProfile.user_id.in_(top_user_ids)).all()
-        profile_map = {p.user_id: p for p in profiles}
-
-        connections = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(top_user_ids)),
-                and_(Connection.receiver_id == current_user.id, Connection.requester_id.in_(top_user_ids)),
-            )
-        ).all()
-        connection_map = {}
-        for conn in connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            connection_map[other_id] = conn.status
-
-        leaderboard_data = []
-        for idx, user in enumerate(top_users, 1):
-            profile = profile_map.get(user.id)
-            level = get_reputation_level(user.reputation)
-            leaderboard_data.append({
-                "rank": idx,
-                "status": connection_map.get(user.id),
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "name": user.name,
-                    "avatar": user.avatar,
-                    "department": profile.department if profile else None,
-                },
-                "reputation": {
-                    "points": user.reputation,
-                    "level": {"name": level["name"], "icon": level["icon"], "color": level["color"]},
-                },
-                "stats": {"total_posts": user.total_posts, "total_helpful": user.total_helpful},
-                "is_you": user.id == current_user.id,
-            })
-
-        your_rank = None
-        if current_user.id not in [u["user"]["id"] for u in leaderboard_data]:
-            your_rank = (
-                db.session.query(func.count(User.id))
-                .filter(User.reputation > current_user.reputation, User.status == "approved")
-                .scalar()
-                + 1
-            )
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "leaderboard": leaderboard_data,
-                "your_rank": your_rank,
-                "total_users": User.query.filter_by(status="approved").count(),
-            },
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Get leaderboard error: {str(e)}")
-        return error_response("Failed to load leaderboard")
-
-
-@reputation_bp.route("/reputation/leaderboard/department", methods=["GET"])
-@token_required
-def get_department_leaderboard(current_user):
-    try:
-        limit = min(request.args.get("limit", 50, type=int), 100)
-        profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
-        department = profile.department if profile else None
-
-        top_users = (
-            db.session.query(User)
-            .join(StudentProfile)
-            .filter(StudentProfile.department == department, User.status == "approved")
-            .order_by(User.reputation.desc())
-            .limit(limit)
-            .all()
-        )
-
-        top_user_ids = [u.id for u in top_users]
-
-        profiles = StudentProfile.query.filter(StudentProfile.user_id.in_(top_user_ids)).all()
-        profile_map = {p.user_id: p for p in profiles}
-
-        connections = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(top_user_ids)),
-                and_(Connection.receiver_id == current_user.id, Connection.requester_id.in_(top_user_ids)),
-            )
-        ).all()
-        connection_map = {}
-        for conn in connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            connection_map[other_id] = conn.status
-
-        leaderboard_data = []
-        for idx, user in enumerate(top_users, 1):
-            p = profile_map.get(user.id)
-            level = get_reputation_level(user.reputation)
-            leaderboard_data.append({
-                "rank": idx,
-                "status": connection_map.get(user.id),
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "name": user.name,
-                    "avatar": user.avatar,
-                    "class_level": p.class_name if p else None,
-                },
-                "reputation": {
-                    "points": user.reputation,
-                    "level": {"name": level["name"], "icon": level["icon"], "color": level["color"]},
-                },
-                "stats": {"total_posts": user.total_posts, "total_helpful": user.total_helpful},
-                "is_you": user.id == current_user.id,
-            })
-
-        your_rank = None
-        current_profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
-        if current_profile and current_profile.department == department:
-            your_rank = (
-                db.session.query(func.count(User.id))
-                .join(StudentProfile)
-                .filter(
-                    StudentProfile.department == department,
-                    User.reputation > current_user.reputation,
-                    User.status == "approved",
-                )
-                .scalar()
-                + 1
-            )
-
-        total_dept_users = (
-            db.session.query(func.count(User.id))
-            .join(StudentProfile)
-            .filter(StudentProfile.department == department, User.status == "approved")
-            .scalar()
-        )
-
-        return jsonify({
-            "status": "success",
-            "data": {"leaderboard": leaderboard_data, "your_rank": your_rank, "total_users": total_dept_users},
-        })
-
-    except Exception as e:
-        current_app.logger.error(f"Get department leaderboard error: {str(e)}")
-        return error_response("Failed to load department leaderboard")
-
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. PLATFORM STATS
+# ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/stats", methods=["GET"])
 @token_required
@@ -644,18 +316,23 @@ def reputation_stats(current_user):
         })
 
     except Exception as e:
-        # FIX: previously used raw jsonify({"status": "error", ...}) — inconsistent
-        # with every other endpoint which uses error_response().  Also added the
-        # logger call that was missing from this function.
         current_app.logger.error(f"Reputation stats error: {str(e)}")
         return error_response("Failed to load reputation stats")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. ADMIN AWARD  (admin/system only)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/award", methods=["POST"])
 @token_required
 def award_reputation_endpoint(current_user):
     # FIX: previously had no authorization check — any authenticated student
     # could grant arbitrary reputation points to any account (including their own).
+    #
+    # NOTE (Document 3 §6.3): this endpoint is flagged for possible removal
+    # outright, pending confirmation per the security-review document —
+    # left in place, still admin-gated, until that's decided separately.
     if current_user.role not in ("admin", "system"):
         return error_response("Forbidden", 403)
 
@@ -677,7 +354,7 @@ def award_reputation_endpoint(current_user):
 
         # Document 2 §5 fix: award_reputation() no longer commits internally
         # (services don't commit — that's the route's job). This route
-        # previously relied entirely on that internal commit; added
+        # previously relied entirely on that internal commit; committed
         # explicitly here so the reputation change is actually persisted.
         db.session.commit()
 
@@ -698,6 +375,10 @@ def award_reputation_endpoint(current_user):
         current_app.logger.error(f"Award reputation error: {str(e)}")
         return error_response("Failed to award reputation")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. LEVELS LOOKUP  (public — no auth required)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/levels", methods=["GET"])
 def get_reputation_levels():
