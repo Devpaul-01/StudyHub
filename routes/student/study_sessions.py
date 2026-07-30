@@ -12,7 +12,11 @@ from models import (
     StudySessionCalendar, LiveStudySession, ConversationAnalytics, Assignment
 )
 from extensions import db
-from utils import limiter, can_message
+from utils import limiter
+# PHASE-1 WIRING FIX: was `from utils import limiter, can_message` — utils.py
+# still re-exports can_message as a shim, but this file now goes straight
+# to the canonical implementation, matching Document 2 §3.4.
+from services.connection_service import can_message
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
