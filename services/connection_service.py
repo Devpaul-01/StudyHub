@@ -24,11 +24,15 @@ Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`
 """
 
 import datetime
+import logging
+from collections import Counter
 
 from sqlalchemy import or_, and_
 
-from models import Connection
+from models import Connection, Post, StudentProfile, User
 from extensions import db
+
+logger = logging.getLogger(__name__)
 
 
 def _find_connection_between(user_a_id, user_b_id, status=None):
@@ -157,3 +161,384 @@ def can_message(sender_id, receiver_id):
     connection = _find_connection_between(sender_id, receiver_id, status="accepted")
 
     return connection is not None
+
+
+# ============================================================================
+# COMPATIBILITY SCORING / PROFILE DATA GATHERING  (Document 2 §3.4)
+#
+# PHASE-1 CORRECTNESS FIX: these were specified in Document 2 §3.4 as
+# belonging to this service ("calculate_compatibility",
+# "calculate_compatibility_score", "calculate_schedule_overlap",
+# "get_user_top_topics", "gather_user_data", "get_mutual_connection_count",
+# "get_connection_health_batch") but the move was never actually done —
+# they were still defined directly inside routes/student/connections.py.
+# Moved here now (verbatim behavior, two bug fixes bundled in and called
+# out explicitly below), with connections.py updated to import them
+# instead of defining its own copies.
+# ============================================================================
+
+def get_user_top_topics(user_id, limit=3):
+    """Get user's most discussed topics from posts and activity"""
+    try:
+        # Get tags from user's posts
+        posts = Post.query.filter_by(student_id=user_id).limit(30).all()
+
+        all_tags = []
+        for post in posts:
+            if post.tags:
+                all_tags.extend(post.tags)
+
+        if not all_tags:
+            return []
+
+        topic_counts = Counter(all_tags)
+        return [topic for topic, _ in topic_counts.most_common(limit)]
+    except Exception:
+        logger.error("Error getting top topics", exc_info=True)
+        return []
+
+
+def calculate_compatibility_score(compatibility_data):
+    """Calculate numerical compatibility score (0-100)"""
+    score = 0
+
+    # Shared subjects (30 points max)
+    shared_count = len(compatibility_data.get('shared_subjects', []))
+    score += min(shared_count * 10, 30)
+
+    # They can help you (40 points max)
+    help_count = len(compatibility_data['complementary_skills'].get('they_can_help_with', []))
+    score += min(help_count * 20, 40)
+
+    # Schedule overlap (20 points max)
+    schedule_overlap = compatibility_data.get('schedule_overlap', 0)
+    score += min(schedule_overlap * 0.2, 20)
+
+    # Department match (10 points)
+    if compatibility_data.get('department_match', False):
+        score += 10
+
+    return min(int(score), 100)
+
+
+def gather_user_data(user):
+    """Gather all relevant data about a user for AI analysis"""
+    try:
+        profile = user.student_profile
+        onboarding = user.onboarding_details
+
+        return {
+            "name": user.name,
+            "username": user.username,
+            "bio": user.bio or "No bio yet",
+            "department": profile.department if profile else "Unknown",
+            "class_name": profile.class_name if profile else "Unknown",
+            "reputation": user.reputation,
+            "reputation_level": user.reputation_level,
+            "strong_subjects": onboarding.strong_subjects if onboarding else [],
+            "help_subjects": onboarding.help_subjects if onboarding else [],
+            "learning_style": onboarding.learning_style if onboarding else "Not specified",
+            "study_preferences": onboarding.study_preferences if onboarding else [],
+            "badges": [ub.badge.name for ub in user.badges.limit(3)] if user.badges else []
+        }
+    except Exception:
+        logger.error("Error gathering user data", exc_info=True)
+        return {}
+
+
+def calculate_compatibility(current_user_data, target_user_data):
+    """Calculate compatibility metrics between two users"""
+    try:
+        current_subjects = set(
+            current_user_data.get('strong_subjects', []) +
+            current_user_data.get('help_subjects', [])
+        )
+        target_subjects = set(
+            target_user_data.get('strong_subjects', []) +
+            target_user_data.get('help_subjects', [])
+        )
+
+        shared_subjects = list(current_subjects & target_subjects)
+
+        they_can_help = list(
+            set(target_user_data.get('strong_subjects', [])) &
+            set(current_user_data.get('help_subjects', []))
+        )
+
+        you_can_help = list(
+            set(current_user_data.get('strong_subjects', [])) &
+            set(target_user_data.get('help_subjects', []))
+        )
+
+        return {
+            "shared_subjects": shared_subjects,
+            "complementary_skills": {
+                "they_can_help_with": they_can_help,
+                "you_can_help_with": you_can_help
+            },
+            "schedule_overlap": 0,  # Filled in by caller via calculate_schedule_overlap
+            "department_match": current_user_data.get('department') == target_user_data.get('department')
+        }
+    except Exception:
+        logger.error("Error calculating compatibility", exc_info=True)
+        return {
+            "shared_subjects": [],
+            "complementary_skills": {"they_can_help_with": [], "you_can_help_with": []},
+            "schedule_overlap": 0,
+            "department_match": False
+        }
+
+
+def calculate_schedule_overlap(schedule1, schedule2):
+    """
+    Calculate percentage of overlapping study times.
+
+    Contract (previously undocumented, per Document 1 §3.3's B-5 naming
+    cleanup): `schedule1`/`schedule2` are dicts keyed by day name
+    ("Monday".."Sunday", exactly as produced by the onboarding UI) whose
+    values are lists drawn from {"morning", "afternoon", "evening"}
+    (lowercase). Day keys are matched case-sensitively against this exact
+    casing; day/time values that don't match this contract are silently
+    treated as non-overlapping rather than raising.
+    """
+    if not schedule1 or not schedule2:
+        return 0
+
+    overlap_count = 0
+    total_slots = 0
+
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    times = ['morning', 'afternoon', 'evening']
+
+    for day in days:
+        if day in schedule1 and day in schedule2:
+            user1_times = set(schedule1[day])
+            user2_times = set(schedule2[day])
+
+            total_slots += len(times)
+
+            overlaps = user1_times & user2_times
+            overlap_count += len(overlaps)
+
+    return int((overlap_count / max(total_slots, 1)) * 100) if total_slots > 0 else 0
+
+
+def get_recent_activity(user_id):
+    """Get user's recent activity metrics"""
+    from models import Comment
+
+    try:
+        seven_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+
+        recent_posts = Post.query.filter_by(student_id=user_id) \
+            .filter(Post.posted_at >= seven_days_ago).count()
+
+        recent_helpful = Comment.query.filter_by(student_id=user_id) \
+            .filter(Comment.helpful_count > 0) \
+            .filter(Comment.posted_at >= seven_days_ago).count()
+
+        from models import ThreadMember
+        active_threads = ThreadMember.query.filter_by(student_id=user_id).count()
+
+        popular_topics = get_user_top_topics(user_id, limit=3)
+
+        return {
+            "recent_posts": recent_posts,
+            "recent_helpful_comments": recent_helpful,
+            "active_threads": active_threads,
+            "popular_topics": popular_topics
+        }
+    except Exception:
+        logger.error("Error getting recent activity", exc_info=True)
+        return {
+            "recent_posts": 0,
+            "recent_helpful_comments": 0,
+            "active_threads": 0,
+            "popular_topics": []
+        }
+
+
+def get_user_onboarding_preview(user_id):
+    """
+    Short onboarding-details preview (subjects/strong_subjects/help_subjects/
+    learning_style/study_preferences/session_length/has_schedule), used
+    across connection listing/discovery/detail endpoints.
+
+    BUG FIX bundled into this move: the original copy of this function
+    (in connections.py) caught its own exceptions by logging a mismatched
+    message ("Available connections error" — clearly copy-pasted from a
+    different function) and then returning `error_response(...)`, a Flask
+    JSON-response helper, instead of `None`. Every call site treats this
+    function's return value as `dict | None` (e.g. `onboarding or {}`), so
+    on the (rare) exception path the original code would have handed a
+    Flask Response object into code expecting a dict, and — since
+    error_response()/Flask's request context aren't available outside an
+    HTTP request — would have raised a second, more confusing exception
+    from inside a service function. Fixed to log accurately and return
+    None, matching every caller's actual expectation.
+    """
+    from models import OnboardingDetails
+
+    try:
+        onboarding = OnboardingDetails.query.filter_by(user_id=user_id).first()
+
+        if not onboarding:
+            return None
+
+        return {
+            "subjects": onboarding.subjects[:3] if onboarding.subjects else [],
+            "strong_subjects": onboarding.strong_subjects[:3] if onboarding.strong_subjects else [],
+            "help_subjects": onboarding.help_subjects[:3] if onboarding.help_subjects else [],
+            "learning_style": onboarding.learning_style,
+            "study_preferences": onboarding.study_preferences[:3] if onboarding.study_preferences else [],
+            "session_length": onboarding.session_length,
+            "has_schedule": bool(onboarding.study_schedule)
+        }
+    except Exception:
+        logger.error(f"get_user_onboarding_preview error (user_id={user_id})", exc_info=True)
+        return None
+
+
+def get_mutual_connection_count(user1_id, user2_id):
+    """Get count of mutual connections between two users"""
+    try:
+        user1_connections = Connection.query.filter(
+            or_(
+                Connection.requester_id == user1_id,
+                Connection.receiver_id == user1_id
+            ),
+            Connection.status == "accepted"
+        ).all()
+
+        user1_ids = set()
+        for conn in user1_connections:
+            other_id = conn.receiver_id if conn.requester_id == user1_id else conn.requester_id
+            user1_ids.add(other_id)
+
+        user2_connections = Connection.query.filter(
+            or_(
+                Connection.requester_id == user2_id,
+                Connection.receiver_id == user2_id
+            ),
+            Connection.status == "accepted"
+        ).all()
+
+        user2_ids = set()
+        for conn in user2_connections:
+            other_id = conn.receiver_id if conn.requester_id == user2_id else conn.requester_id
+            user2_ids.add(other_id)
+
+        return len(user1_ids & user2_ids)
+
+    except Exception:
+        logger.error("Get mutual count error", exc_info=True)
+        return 0
+
+
+def get_connection_health_batch(user_id, other_user_ids):
+    """
+    Batch connection-health computation for `user_id` against every id in
+    `other_user_ids` — 2 queries total regardless of how many pairs are
+    being scored, instead of the N+1 the original per-pair
+    get_connection_health(user_id, other_user_id) produced when called in
+    a loop (Document 1 §2.1.1's flagged fix, applied here rather than at
+    the eventual file-split point since the fix is independent of where
+    the code physically lives).
+
+    Returns {other_user_id: health_dict}. A pair with no accepted
+    connection is simply omitted from the result (matches the original
+    single-pair function returning None for "no connection found").
+    """
+    from models import ThreadMember
+
+    result = {}
+    if not other_user_ids:
+        return result
+
+    try:
+        # One query: every accepted connection involving user_id
+        my_connections = Connection.query.filter(
+            or_(
+                Connection.requester_id == user_id,
+                Connection.receiver_id == user_id
+            ),
+            Connection.status == "accepted"
+        ).all()
+        conn_by_other = {}
+        for c in my_connections:
+            other_id = c.receiver_id if c.requester_id == user_id else c.requester_id
+            conn_by_other[other_id] = c
+
+        relevant_ids = [oid for oid in other_user_ids if oid in conn_by_other]
+        if not relevant_ids:
+            return result
+
+        # One query: this user's thread memberships
+        my_thread_ids = {
+            t.thread_id for t in ThreadMember.query.filter_by(student_id=user_id).all()
+        }
+
+        # One query: thread memberships for every relevant "other" user at once
+        other_memberships = ThreadMember.query.filter(
+            ThreadMember.student_id.in_(relevant_ids)
+        ).all()
+        other_thread_ids_map = {}
+        for tm in other_memberships:
+            other_thread_ids_map.setdefault(tm.student_id, set()).add(tm.thread_id)
+
+        now = datetime.datetime.utcnow()
+
+        for other_id in relevant_ids:
+            connection = conn_by_other[other_id]
+            score = 100
+
+            last_interaction = connection.responded_at or connection.requested_at
+            days_since = (now - last_interaction).days if last_interaction else 999
+
+            if days_since > 30:
+                score -= 40
+            elif days_since > 14:
+                score -= 20
+            elif days_since > 7:
+                score -= 10
+
+            shared_threads = len(my_thread_ids & other_thread_ids_map.get(other_id, set()))
+            score += min(shared_threads * 10, 30)
+
+            score = max(0, min(100, score))
+
+            if score < 40:
+                suggestion = "💤 Haven't connected in a while. Send them a message!"
+            elif score < 70:
+                suggestion = "👍 Good connection. Schedule a study session?"
+            else:
+                suggestion = "🔥 Strong connection! Keep it up."
+
+            result[other_id] = {
+                "health_score": score,
+                "health_percent": float(score),
+                "suggestion": suggestion,
+                "last_interaction_days": days_since,
+                "shared_threads": shared_threads,
+            }
+
+        return result
+
+    except Exception:
+        logger.error("Connection health batch error", exc_info=True)
+        return result
+
+
+def get_connection_health(user_id, other_user_id):
+    """
+    Single-pair convenience wrapper over get_connection_health_batch, for
+    the one legitimate single-pair caller (get_connection_details). Every
+    listing endpoint (list_connections, get_online_connections,
+    get_online_connections_by_department) should call
+    get_connection_health_batch(...) once before its loop instead of this,
+    to avoid reintroducing the N+1 this batch form exists to fix.
+
+    Returns the same dict shape as before, or None if no accepted
+    connection exists between the pair (matches original behavior).
+    """
+    return get_connection_health_batch(user_id, [other_user_id]).get(other_user_id)
