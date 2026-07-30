@@ -14,11 +14,10 @@ from flask import current_app
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Message
-from sqlalchemy import or_, and_
 
 # Local imports
 from extensions import mail
-from models import Connection, User
+from models import User
 
 # Initialize limiter
 limiter = Limiter(
@@ -29,104 +28,27 @@ limiter = Limiter(
 
 
 
-def get_user_online_status(user_id):
-    """
-    Get user's online status and formatted last active time.
-    Returns:
-        {
-            "is_online": bool,
-            "in_study_session": bool,
-            "last_active": str | None
-        }
-    """
-    try:
-        user = User.query.get(user_id)
+# ============================================================================
+# Document 1 §6.4 / Document 2 §3.4 consolidation (PHASE-1 CORRECTNESS FIX):
+#
+# get_user_online_status and can_message used to be fully, independently
+# reimplemented in this file — a second, silently-driftable copy of exactly
+# the logic Document 1 §6.4 and Document 2 §3.4 name as needing ONE
+# implementation apiece (services/online_status_service.py and
+# services/connection_service.py). The service modules already existed, but
+# this file was never actually converted into a shim onto them, so both
+# copies were live and could disagree. They're now thin re-exports instead
+# of duplicated bodies, so every existing `from utils import
+# get_user_online_status` / `from utils import can_message` call site keeps
+# working completely unchanged, but there is exactly one implementation.
+# ============================================================================
 
-        # User not found or never active
-        if not user or not user.last_active:
-            return {
-                "is_online": False,
-                "in_study_session": False,
-                "last_active": "Never"
-            }
-
-        # Calculate time difference
-        now = datetime.utcnow()
-        time_diff = now - user.last_active
-        minutes_ago = time_diff.total_seconds() / 60
-
-        # Define online threshold (30 minutes)
-        is_online = minutes_ago < 30
-
-        # If user is currently in a study session
-        if user.in_study_session:
-            return {
-                "is_online": True,
-                "in_study_session": True,
-                "last_active": None
-            }
-
-        # If user is online but not in study session
-        if is_online:
-            return {
-                "is_online": True,
-                "in_study_session": False,
-                "last_active": None
-            }
-
-        # Format last active text
-        if minutes_ago < 60:
-            last_active_text = f"{int(minutes_ago)}m"
-        elif minutes_ago < 1440:  # Less than 24 hours
-            hours = int(minutes_ago // 60)
-            last_active_text = f"{hours}h"
-        else:
-            days = int(minutes_ago // 1440)
-            last_active_text = f"{days}d"
-
-        return {
-            "is_online": False,
-            "in_study_session": False,
-            "last_active": last_active_text
-        }
-
-    except Exception as e:
-        current_app.logger.error(f"Online status error: {str(e)}")
-        return {
-            "is_online": False,
-            "in_study_session": False,
-            "last_active": "Unknown"
-        }
+from services.online_status_service import get_user_online_status  # noqa: F401
+from services.connection_service import can_message  # noqa: F401
 
 # Initialize limiter
 
 logger = logging.getLogger(__name__)
-def can_message(sender_id, receiver_id):
-    """
-    Check if sender can message receiver
-    
-    Rules:
-    1. Must have accepted connection, OR
-    2. System message exception
-    
-    Note: Thread members CANNOT DM - must connect first
-    """
-    if sender_id == receiver_id:
-        return False
-    
-    # Check for accepted connection
-    connection = Connection.query.filter(
-        or_(
-            and_(Connection.requester_id == sender_id, Connection.receiver_id == receiver_id),
-            and_(Connection.requester_id == receiver_id, Connection.receiver_id == sender_id)
-        ),
-        Connection.status == "accepted"
-    ).first()
-    
-    if connection:
-        return True
-    
-    return False
 
 
 def get_conversation_partner(conversation, current_user_id):
