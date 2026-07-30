@@ -309,7 +309,7 @@ def upload_user_files(files, user_id):
     Uses cloudinary_storage.upload_file directly to avoid the buggy
     upload_ai_file wrapper in storage.py.
     """
-    from storage import cloudinary_storage, FilenameService
+    from services.storage import cloudinary_storage, FilenameService
 
     uploaded_files = []
 
@@ -1113,7 +1113,7 @@ def upload_post_attachment(current_user):
         url, public_id, filename, size, mime_type, file_category
     """
     try:
-        from storage import cloudinary_storage, FilenameService
+        from services.storage import cloudinary_storage, FilenameService
 
         if 'file' not in request.files:
             return jsonify({"status": "error", "message": "No file provided"}), 400

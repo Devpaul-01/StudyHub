@@ -23,7 +23,7 @@ import mimetypes
 import secrets
 import json as _json
 
-from routes.student.storage import cloudinary_storage, supabase_storage, FilenameService
+from services.storage import cloudinary_storage, supabase_storage, FilenameService
 import bleach
 
 from models import (

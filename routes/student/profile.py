@@ -397,7 +397,7 @@ def upload_avatar(current_user):
     """Upload profile picture to Cloudinary (or local fallback)."""
     try:
         try:
-            from storage import cloudinary_storage, filename_service
+            from services.storage import cloudinary_storage, filename_service
             CLOUD_AVAILABLE = True
         except ImportError:
             CLOUD_AVAILABLE = False

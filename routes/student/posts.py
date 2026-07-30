@@ -53,7 +53,7 @@ posts_bp = Blueprint("student_posts", __name__)
 import cloudinary
 
 try:
-    from routes.student.storage import cloudinary_storage, filename_service
+    from services.storage import cloudinary_storage, filename_service
     STORAGE_AVAILABLE = True
     logger.info("Storage module available")
 except ImportError as e:
