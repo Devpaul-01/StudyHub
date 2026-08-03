@@ -1,6 +1,15 @@
 # ============================================================================
 # STUDY SESSION SCHEDULING
+#
+# Organizational standard (Document 1 §4, applied in Phase 3): module
+# docstring + section banners, pure/no-DB helpers first, then
+# Flask-SocketIO-context helpers, then routes grouped by sub-feature
+# (goals/progress, pomodoro, templates, assignment linking, calendar
+# CRUD, live sessions, AI assistant, resources) — matching the existing
+# banner structure below, which already follows this convention.
 # ============================================================================
+from __future__ import annotations
+
 from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
 from sqlalchemy import or_, and_
 import datetime
@@ -39,8 +48,15 @@ VALID_TEMPLATE_IDS = study_session_service.VALID_TEMPLATE_IDS
 TEMPLATE_DEFAULTS = study_session_service.TEMPLATE_DEFAULTS
 
 
-def _emit(event, data, room):
-    """Emit a WebSocket event safely — always after a commit."""
+def _emit(event: str, data: dict, room: str) -> None:
+    """Emit a WebSocket event safely — always after a commit.
+
+    Broad except is intentional (Document 1 §4 point 5's "scoped comment"
+    requirement): a WebSocket push failing (socket layer down, room
+    doesn't exist, transient network issue) must never fail or roll back
+    the HTTP request that already committed its DB write — this is a
+    best-effort real-time notification, not the source of truth.
+    """
     try:
         from services.websocket_events import ws_manager
         ws_manager.socketio.emit(event, data, room=room)
@@ -48,7 +64,7 @@ def _emit(event, data, room):
         current_app.logger.warning(f"WS emit '{event}' failed: {exc}")
 
 
-def _partner_online(session_obj, current_user_id):
+def _partner_online(session_obj, current_user_id: int) -> int | None:
     """Return partner_id if they are online, else None."""
     try:
         from services.websocket_events import ws_manager
@@ -64,7 +80,7 @@ def _partner_online(session_obj, current_user_id):
         return None
 
 
-def _validate_proposed_times(times_list, max_times=10):
+def _validate_proposed_times(times_list: list, max_times: int = 10):
     """Route-layer wrapper over study_session_service.validate_proposed_times."""
     return study_session_service.validate_proposed_times(times_list, max_times=max_times)
 
@@ -1264,6 +1280,24 @@ def ai_ask_in_session(current_user, session_id):
         assistant.select_model(has_images=False)
 
         def generate():
+            # Document 1 §2.4 / user decision: this endpoint stays streaming
+            # (token-by-token SSE to the client), so it keeps calling
+            # StudyAssistant.stream_response() directly rather than switching
+            # to ai_provider_service.call_ai_response() (which is for
+            # callers that want one complete non-streaming string back —
+            # see that function's docstring). What changes here is only the
+            # retry/rotation *loop shape*: it's rewritten to match the exact
+            # pattern already used by connections.py::get_connection_overview
+            # and homework_system.py's other AI callers, instead of this
+            # being the one call site with its own subtly different
+            # retry-count/discard-partial-response logic (the specific
+            # duplication named in Document 1 §2.4).
+            #
+            # stream_response() already retries across MODELS within one
+            # provider internally and sets assistant._provider_exhausted
+            # when that provider's whole model list is exhausted — that flag
+            # is the correct signal to rotate PROVIDERS on, rather than
+            # hand-parsing every SSE chunk's JSON body to guess at failure.
             nonlocal provider
             import json as _json
 
@@ -1273,38 +1307,43 @@ def ai_ask_in_session(current_user, session_id):
             max_retries = 2
 
             while retries < max_retries:
-                error_in_stream = False
-
-                for chunk in assistant.stream_response(messages_for_api):
+                for chunk in assistant.stream_response(messages_for_api, has_images=False):
                     yield chunk
 
                     if chunk.startswith("data: "):
                         try:
                             chunk_data = _json.loads(chunk[6:])
+                        except (ValueError, TypeError):
+                            continue
 
-                            if 'content' in chunk_data:
-                                full_response += chunk_data['content']
-                            elif 'error' in chunk_data:
-                                error_occurred = True
+                        if 'content' in chunk_data:
+                            full_response += chunk_data['content']
+                        elif 'error' in chunk_data:
+                            error_occurred = True
 
-                                if chunk_data.get('rate_limit') or chunk_data.get('timeout') or chunk_data.get('http_error'):
-                                    error_in_stream = True
-                                    provider_manager.mark_provider_failed(provider['name'])
-                                    provider_manager.rotate()
-                                    next_provider = provider_manager.get_working_provider(needs_vision=False)
+                provider_exhausted = getattr(assistant, "_provider_exhausted", False)
 
-                                    if next_provider and retries < max_retries - 1:
-                                        provider = next_provider
-                                        assistant.provider = next_provider
-                                        assistant.select_model(has_images=False)
-                                        retries += 1
-                                        full_response = ""  # discard partial response before retry
-                                        break
-                        except Exception:
-                            pass
-
-                if not error_in_stream:
+                if not provider_exhausted:
                     break
+
+                # This provider's full model fallback chain is exhausted —
+                # rotate to the next provider and retry, matching the
+                # provider_manager.mark_provider_failed/rotate pattern used
+                # by every other AI call site in the codebase.
+                provider_manager.mark_provider_failed(provider['name'], "provider exhausted mid-stream")
+                provider_manager.rotate()
+                next_provider = provider_manager.get_working_provider(needs_vision=False)
+
+                if not next_provider or retries >= max_retries - 1:
+                    break
+
+                provider = next_provider
+                assistant.provider = next_provider
+                assistant.select_model(has_images=False)
+                retries += 1
+                full_response = ""  # discard partial response before retry
+                error_occurred = False
+                yield f"data: {_json.dumps({'type': 'provider_retry', 'provider': provider['name']})}\n\n"
 
             # Persist AI reply
             try:
@@ -1321,9 +1360,9 @@ def ai_ask_in_session(current_user, session_id):
                     live_s.ai_messages = ai_messages
                     _db.session.commit()
             except Exception as persist_err:
-                current_app.logger.error(f"AI message persist error: {persist_err}")
+                current_app.logger.error(f"AI message persist error: {persist_err}", exc_info=True)
 
-            yield f"data: {_json.dumps({'type': 'done'})}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'success': not error_occurred})}\n\n"
 
             # Notify partner AFTER everything is done
             _emit(
