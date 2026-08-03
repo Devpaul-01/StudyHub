@@ -10,7 +10,19 @@ Features:
 - Message actions (delete, forward, star)
 - Conversation management (archive, mute, pin)
 - Search and export
+
+Organizational standard (Document 1 §4, applied in Phase 3): module
+docstring + section banners, pure/no-DB helpers first, then routes.
+N+1 fixes (Document 4 §4) applied to get_shared_media (DM thread has
+only two possible senders — pre-load both instead of a per-message
+User.query.get()) and search_messages (results can span many different
+partners — batch-load the full set in one query instead of one lookup
+per result row). get_conversations already batch-preloads partners/
+blocked-status/reactions in one pass (see its own inline comments) and
+was not touched further this phase.
 """
+
+from __future__ import annotations
 
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import or_, and_, func, desc
@@ -47,7 +59,7 @@ messages_bp = Blueprint("student_messages", __name__)
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-def _utc_iso(dt):
+def _utc_iso(dt: "datetime.datetime | None") -> str | None:
     """Return ISO string guaranteed to end with Z so browsers parse it as UTC."""
     if dt is None:
         return None
@@ -56,19 +68,19 @@ def _utc_iso(dt):
     return dt.isoformat().replace('+00:00', 'Z')
 
 
-def get_conversation_partner(conversation, current_user_id):
+def get_conversation_partner(conversation: dict, current_user_id: int):
     """Get the other user in a conversation"""
     if conversation.get("user1_id") == current_user_id:
         return User.query.get(conversation.get("user2_id"))
     return User.query.get(conversation.get("user1_id"))
 
 
-def create_conversation_key(user1_id, user2_id):
+def create_conversation_key(user1_id: int, user2_id: int) -> str:
     sorted_ids = sorted([user1_id, user2_id])
     return f"{sorted_ids[0]}-{sorted_ids[1]}"
 
 
-def _visible_to_me(msg, current_user_id):
+def _visible_to_me(msg, current_user_id: int) -> bool:
     """Return True if the message should be visible to the given user."""
     if msg.is_deleted:
         return False
@@ -202,7 +214,13 @@ def get_shared_media(current_user, partner_id):
         
         # Paginate
         paginated = messages_query.paginate(page=page, per_page=limit, error_out=False)
-        
+
+        # N+1 fix (Document 4 §4): a DM thread only ever has two possible
+        # senders (current_user or partner) — pre-load both once instead of
+        # calling User.query.get(message.sender_id) inside the loop below.
+        partner_user = User.query.get(partner_id)
+        sender_map = {current_user.id: current_user, partner_id: partner_user}
+
         # Process media by type
         images = []
         videos = []
@@ -214,7 +232,7 @@ def get_shared_media(current_user, partner_id):
             if not message.resources:
                 continue
             
-            sender = User.query.get(message.sender_id)
+            sender = sender_map.get(message.sender_id)
             
             message_meta = {
                 "message_id": message.id,
@@ -1002,10 +1020,23 @@ def search_messages(current_user):
             )
         
         results = query.order_by(Message.sent_at.desc()).limit(50).all()
-        
+
+        # N+1 fix (Document 4 §4): batch-load every distinct partner across
+        # the result set in one query instead of one User.query.get() per
+        # result row (results can span many different conversations, unlike
+        # get_shared_media's single-partner case above).
+        partner_ids_in_results = {
+            (msg.receiver_id if msg.sender_id == current_user.id else msg.sender_id)
+            for msg in results
+        }
+        partners_map = (
+            {u.id: u for u in User.query.filter(User.id.in_(partner_ids_in_results)).all()}
+            if partner_ids_in_results else {}
+        )
+
         results_data = []
         for msg in results:
-            partner = User.query.get(
+            partner = partners_map.get(
                 msg.receiver_id if msg.sender_id == current_user.id else msg.sender_id
             )
             
