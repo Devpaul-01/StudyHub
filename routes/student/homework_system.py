@@ -9,7 +9,21 @@ the HTTP layer: request parsing, auth, response envelope, and the
 still-route-local help-streak/activity-feed helpers (those stay here since
 they're not yet named as a distinct service in the current migration pass —
 flagged below for a future homework_service extension if that grows).
+
+Organizational standard (Document 1 §4, applied in Phase 3): module
+docstring + section banners (below), pure/no-DB helpers first, then
+DB-batch-loading helpers, then routes, roughly outside-in from
+cheapest-to-test to most integration-heavy. Batch-loading helpers for
+online status use services/online_status_service.py::get_online_status_batch
+— every GET route below that lists multiple users' online status now
+does exactly one batch call before its loop, never a per-row call inside
+it (Document 4 §4's N+1 fix, applied to get_homework_feed,
+get_my_help_requests, and get_homework_im_helping_with).
 """
+
+from __future__ import annotations
+
+import datetime as _dt
 
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import or_, and_, func, desc
@@ -23,13 +37,17 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
-from services.online_status_service import get_user_online_status
+from services.online_status_service import get_user_online_status, get_online_status_batch
 from services import homework_service, notification_service
 
 homework_bp = Blueprint("student_homework", __name__)
 
 
-def _parse_pagination_params():
+# ============================================================================
+# PURE / NO-DB HELPERS
+# ============================================================================
+
+def _parse_pagination_params() -> tuple[int, str | None]:
     """Route-layer wrapper: pulls limit/cursor out of request.args, then
     delegates parsing/validation to the service."""
     return homework_service.parse_pagination_params(
@@ -37,15 +55,15 @@ def _parse_pagination_params():
     )
 
 
-def _slice_by_cursor(items, cursor, limit):
+def _slice_by_cursor(items: list, cursor: str | None, limit: int) -> tuple[list, bool, str | None]:
     return homework_service.slice_by_cursor(items, cursor, limit)
 
 
-def _get_urgency_level(hours_until_due):
+def _get_urgency_level(hours_until_due: float) -> str:
     return homework_service.get_urgency_level(hours_until_due)
 
 
-def _get_smart_suggestions(assignments, user):
+def _get_smart_suggestions(assignments: list, user) -> list[dict]:
     return homework_service.get_smart_suggestions(assignments)
 
 
@@ -53,7 +71,7 @@ def _get_smart_suggestions(assignments, user):
 # HELP STREAK / ACTIVITY FEED  (route-local for now — not yet its own service)
 # ============================================================================
 
-def _update_help_streak(helper_user_id):
+def _update_help_streak(helper_user_id: int) -> dict | None:
     """
     Update help streak when user provides helpful assistance.
     Called when HomeworkSubmission gets positive feedback.
@@ -96,8 +114,17 @@ def _update_help_streak(helper_user_id):
     }
 
 
-def _create_activity(user_id, activity_type, data):
-    """Create activity feed entry. Auto-expires after 24 hours."""
+def _create_activity(user_id: int, activity_type: str, data: dict):
+    """Create activity feed entry. Auto-expires after 24 hours.
+
+    Broad except is intentional here (Document 1 §4 point 5's "scoped
+    comment" requirement): this helper is a best-effort side channel
+    (activity feed / WebSocket broadcast) called from several mutation
+    routes — a DB write succeeding but the activity-feed write or the
+    WebSocket broadcast failing (bad ActivityFeed data, ws_manager down,
+    etc.) should never roll back or fail the caller's primary operation,
+    so every failure mode here is swallowed and logged rather than raised.
+    """
     from models import ActivityFeed
 
     try:
@@ -116,7 +143,7 @@ def _create_activity(user_id, activity_type, data):
 
         return activity
     except Exception as e:
-        current_app.logger.error(f"Create activity error: {e}")
+        current_app.logger.error(f"Create activity error: {e}", exc_info=True)
         db.session.rollback()
         return None
 
@@ -237,6 +264,11 @@ def get_activity_feed(current_user):
 
         actor_ids = {a.user_id for a in activities}
         actors_map = {u.id: u for u in User.query.filter(User.id.in_(actor_ids)).all()} if actor_ids else {}
+        # N+1 fix (Document 4 §4): one batch call instead of one
+        # get_user_online_status() query per activity row (up to 50/request).
+        online_status_map = get_online_status_batch(list(actor_ids))
+
+        now = datetime.utcnow()
 
         feed_items = []
         for activity in activities:
@@ -244,9 +276,10 @@ def get_activity_feed(current_user):
             if not user:
                 continue
 
-            online_status = get_user_online_status(activity.user_id)
+            online_status = online_status_map.get(activity.user_id, {
+                "is_online": False, "in_study_session": False, "last_active": "Unknown"
+            })
 
-            now = datetime.utcnow()
             diff = now - activity.created_at
             seconds = diff.total_seconds()
 
@@ -803,6 +836,9 @@ def get_homework_feed(current_user):
 
         student_ids = {hw.user_id for hw in page}
         students_map = {u.id: u for u in User.query.filter(User.id.in_(student_ids)).all()} if student_ids else {}
+        # N+1 fix (Document 4 §4): one batch call for online status instead of
+        # one get_user_online_status() query per row in the loop below.
+        online_status_map = get_online_status_batch(list(student_ids))
 
         homework_ids_on_page = [hw.id for hw in page]
         existing_help_map = {
@@ -829,7 +865,7 @@ def get_homework_feed(current_user):
             hours_until_due = (hw.due_date - now).total_seconds() / 3600
 
             existing_help = existing_help_map.get(hw.id)
-            active_details = get_user_online_status(student.id) if student else None
+            active_details = online_status_map.get(student.id) if student else None
 
             homework_data.append({
                 "id": hw.id,
@@ -983,12 +1019,14 @@ def get_my_help_requests(current_user):
             {a.id: a for a in Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()}
             if assignment_ids else {}
         )
+        # N+1 fix (Document 4 §4): batch instead of per-row get_user_online_status().
+        online_status_map = get_online_status_batch(list(helper_ids))
 
         requests_data = []
         for req in help_requests:
             helper = helpers_map.get(req.helper_id)
             assignment = assignments_map.get(req.assignment_id) if req.assignment_id else None
-            active_details = get_user_online_status(req.helper_id)
+            active_details = online_status_map.get(req.helper_id)
 
             requests_data.append({
                 "id": req.id,
@@ -1056,11 +1094,13 @@ def get_homework_im_helping_with(current_user):
             {a.id: a for a in Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()}
             if assignment_ids else {}
         )
+        # N+1 fix (Document 4 §4): batch instead of per-row get_user_online_status().
+        online_status_map = get_online_status_batch(list(student_ids))
 
         helping_data = []
         for hw in helping_with:
             student = students_map.get(hw.requester_id)
-            active_details = get_user_online_status(hw.requester_id)
+            active_details = online_status_map.get(hw.requester_id)
             assignment = assignments_map.get(hw.assignment_id) if hw.assignment_id else None
 
             helping_data.append({
