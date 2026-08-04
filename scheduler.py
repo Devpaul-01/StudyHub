@@ -21,6 +21,7 @@ Install dependency:
 Jobs registered here:
     • weekly_leaderboard_snapshot  – every Sunday 00:05 UTC
     • monthly_leaderboard_snapshot – 1st of every month 00:10 UTC
+    • counter_reconciliation       – every Sunday 00:20 UTC
 
 SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
     The actual snapshot computation used to be duplicated here (as
@@ -31,6 +32,15 @@ SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
     "template" since it already had the one-per-day idempotency guard and
     the cleaner two-query department-rank computation). Both this
     scheduler and leaderboard.py's admin route now call the same function.
+
+COUNTER RECONCILIATION (Document 4 §3.3 point 2, Phase 5a):
+    services/reconciliation_service.py::reconcile_denormalized_counts() is
+    a safety-net job, not a primary consistency mechanism, so it runs at
+    the same low weekly frequency as the snapshot jobs rather than more
+    often. Scheduled 15 minutes after the monthly snapshot slot (00:20 vs
+    00:05/00:10) purely so the three jobs don't contend for DB load in the
+    same window on the Sundays when weekly snapshot + reconciliation both
+    fire — there's no other ordering dependency between them.
 """
 
 import atexit
@@ -79,6 +89,18 @@ def _job_monthly(app):
         )
 
 
+def _job_reconcile_counters(app):
+    logger.info("[Scheduler] ▶ Running denormalized counter reconciliation job")
+    with app.app_context():
+        from services.reconciliation_service import reconcile_denormalized_counts
+        report = reconcile_denormalized_counts()
+        logger.info(
+            "[Scheduler] ✅ reconciliation done — checked=%s drifts=%s corrected=%s alert_only=%s",
+            report.counters_checked, len(report.drifts_found),
+            report.corrected_count, report.alerted_only_count,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT LISTENER  (logs job outcomes to your existing logger)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,8 +131,9 @@ def init_scheduler(app) -> None:
     because use_reloader=False prevents double-invocation.
 
     Schedule (UTC):
-        Weekly snapshot  – every Sunday at 00:05
-        Monthly snapshot – 1st of every month at 00:10
+        Weekly snapshot   – every Sunday at 00:05
+        Monthly snapshot  – 1st of every month at 00:10
+        Counter reconciliation – every Sunday at 00:20
     """
     if scheduler.running:
         logger.warning("[Scheduler] Already running — init_scheduler called twice, skipping")
@@ -136,6 +159,19 @@ def init_scheduler(app) -> None:
         trigger=CronTrigger(day=1, hour=0, minute=10, timezone="UTC"),
         id="monthly_leaderboard_snapshot",
         name="Monthly Leaderboard Snapshot",
+        replace_existing=True,
+    )
+
+    # ── Counter reconciliation: every Sunday at 00:20 UTC ─────────────────────
+    # Safety-net job (Document 4 §3.3 point 2) — runs weekly, offset 15
+    # minutes after the other Sunday job so they don't contend for DB load
+    # in the same window.
+    scheduler.add_job(
+        func=_job_reconcile_counters,
+        args=[app],
+        trigger=CronTrigger(day_of_week="sun", hour=0, minute=20, timezone="UTC"),
+        id="counter_reconciliation",
+        name="Denormalized Counter Reconciliation",
         replace_existing=True,
     )
 
