@@ -224,13 +224,24 @@ def get_thread_messages(current_user, thread_id):
         ).order_by(ThreadMessage.id.desc()).limit(5).all()
         pinned_data = [serialize_message(p) for p in pinned]
 
-        ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).update(
-            {ThreadMember.last_read_at: datetime.datetime.utcnow()},
-            synchronize_session=False
+        # Document 4 §4 (C-2): only touch last_read_at when this page
+        # actually contains something new to mark as read — on the common
+        # "no new messages" polling case (after_id with nothing newer, or
+        # re-fetching a page with nothing unread) this skips the UPDATE
+        # and, more importantly, the commit entirely.
+        cutoff = membership.last_read_at or datetime.datetime(2000, 1, 1)
+        unread_in_page = any(
+            m.sent_at > cutoff and m.sender_id != current_user.id
+            for m in raw_messages
         )
-        db.session.commit()
+        if unread_in_page:
+            ThreadMember.query.filter_by(
+                thread_id=thread_id, student_id=current_user.id
+            ).update(
+                {ThreadMember.last_read_at: datetime.datetime.utcnow()},
+                synchronize_session=False
+            )
+            db.session.commit()
 
         return jsonify({
             "status": "success",

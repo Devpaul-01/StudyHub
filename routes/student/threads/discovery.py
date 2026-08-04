@@ -14,6 +14,7 @@ import datetime
 import mimetypes
 import secrets
 import json as _json
+from collections import defaultdict
 
 from services.storage import cloudinary_storage, supabase_storage, FilenameService
 import bleach
@@ -121,13 +122,24 @@ def get_popular_threads_by_members(current_user):
         threads      = query.all()
         threads_data = []
 
+        # ── Batch load creators + pending join requests for the whole
+        # candidate set (Document 4 §4: 2 queries instead of N) ────────────
+        creator_ids = list({t.creator_id for t in threads if t.creator_id})
+        creators_map = {u.id: u for u in User.query.filter(User.id.in_(creator_ids)).all()} if creator_ids else {}
+
+        thread_ids_for_page = [t.id for t in threads]
+        pending_thread_ids = set()
+        if thread_ids_for_page:
+            pending_reqs = ThreadJoinRequest.query.filter(
+                ThreadJoinRequest.thread_id.in_(thread_ids_for_page),
+                ThreadJoinRequest.requester_id == current_user.id,
+                ThreadJoinRequest.status == 'pending'
+            ).all()
+            pending_thread_ids = {pr.thread_id for pr in pending_reqs}
+
         for thread in threads:
-            creator = User.query.get(thread.creator_id)
-            has_pending = ThreadJoinRequest.query.filter_by(
-                thread_id=thread.id,
-                requester_id=current_user.id,
-                status='pending'
-            ).first() is not None
+            creator = creators_map.get(thread.creator_id)
+            has_pending = thread.id in pending_thread_ids
 
             thread_age_days  = (datetime.datetime.utcnow() - thread.created_at).days or 1
             msgs_per_member  = (thread.message_count / thread.member_count) if thread.member_count > 0 else 0
@@ -230,6 +242,33 @@ def get_recommended_threads(current_user):
                 for u in User.query.filter(User.id.in_(friend_ids)).all()
             }
 
+        # ── Batch load ThreadMember rows + creator Users for the FULL
+        # candidate set (Document 4 §4: 2 queries instead of N, replacing
+        # the per-thread ThreadMember.query.filter_by(...).all() and
+        # per-thread User.query.get(creator_id) calls below) ───────────────
+        candidate_thread_ids = [t.id for t in threads]
+        members_by_thread = defaultdict(list)
+        if candidate_thread_ids:
+            all_members = ThreadMember.query.filter(
+                ThreadMember.thread_id.in_(candidate_thread_ids)
+            ).all()
+            for m in all_members:
+                members_by_thread[m.thread_id].append(m)
+
+        candidate_creator_ids = list({t.creator_id for t in threads if t.creator_id})
+        creators_map = {
+            u.id: u for u in User.query.filter(User.id.in_(candidate_creator_ids)).all()
+        } if candidate_creator_ids else {}
+
+        pending_by_thread = set()
+        if candidate_thread_ids:
+            pending_reqs = ThreadJoinRequest.query.filter(
+                ThreadJoinRequest.thread_id.in_(candidate_thread_ids),
+                ThreadJoinRequest.requester_id == current_user.id,
+                ThreadJoinRequest.status == 'pending'
+            ).all()
+            pending_by_thread = {pr.thread_id for pr in pending_reqs}
+
         recommendations = []
         for thread in threads:
             score   = 0
@@ -246,7 +285,7 @@ def get_recommended_threads(current_user):
                 score += min(len(subject_overlap) * 10, 30)
                 reasons.append(f"Matches: {', '.join(list(subject_overlap)[:2])}")
 
-            thread_members     = ThreadMember.query.filter_by(thread_id=thread.id).all()
+            thread_members     = members_by_thread.get(thread.id, [])
             thread_member_ids  = [m.student_id for m in thread_members]
             friends_in_thread  = set(friend_ids) & set(thread_member_ids)
             if friends_in_thread:
@@ -269,10 +308,8 @@ def get_recommended_threads(current_user):
                 reasons.append("Good space available")
 
             if score > 20:
-                creator = User.query.get(thread.creator_id)
-                has_pending = ThreadJoinRequest.query.filter_by(
-                    thread_id=thread.id, requester_id=current_user.id, status='pending'
-                ).first() is not None
+                creator = creators_map.get(thread.creator_id)
+                has_pending = thread.id in pending_by_thread
 
                 recommendations.append({
                     'score': score,

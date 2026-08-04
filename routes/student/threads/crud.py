@@ -298,17 +298,39 @@ def thread_details(current_user, resource_id):
 
         members_data  = []
         thread_members = ThreadMember.query.filter_by(thread_id=thread.id).all()
+
+        # N+1 fix (Document 4 §4, extended to thread_details while already
+        # in this file): batch-load member authors, their onboarding rows,
+        # and their connection status with the current user — 3 queries for
+        # the whole member list instead of 3 queries per member.
+        member_ids = [m.student_id for m in thread_members]
+        authors_map = {u.id: u for u in User.query.filter(User.id.in_(member_ids)).all()} if member_ids else {}
+
+        onboarding_map = {
+            o.user_id: o for o in OnboardingDetails.query.filter(
+                OnboardingDetails.user_id.in_(member_ids)
+            ).all()
+        } if member_ids else {}
+
+        other_member_ids = [mid for mid in member_ids if mid != user.id]
+        connections_map = {}
+        if other_member_ids:
+            conns = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == user.id, Connection.receiver_id.in_(other_member_ids)),
+                    and_(Connection.receiver_id == user.id, Connection.requester_id.in_(other_member_ids))
+                )
+            ).all()
+            for c in conns:
+                other = c.receiver_id if c.requester_id == user.id else c.requester_id
+                connections_map[other] = c.status
+
         for member in thread_members:
-            author = User.query.get(member.student_id)
+            author = authors_map.get(member.student_id)
             if not author:
                 continue
-            connection = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id, Connection.receiver_id == author.id),
-                    and_(Connection.receiver_id == user.id, Connection.requester_id == author.id)
-                )
-            ).first()
-            onboarding = OnboardingDetails.query.filter_by(user_id=author.id).first()
+            connection_status = connections_map.get(author.id)
+            onboarding = onboarding_map.get(author.id)
             class_level = onboarding.class_level if onboarding else None
             department  = onboarding.department  if onboarding else None
 
@@ -317,7 +339,7 @@ def thread_details(current_user, resource_id):
                 "name":              author.name,
                 "username":          author.username,
                 "avatar":            author.avatar,
-                "connection_status": connection.status if connection else None,
+                "connection_status": connection_status,
                 "reputation":        author.reputation,
                 "reputation_level":  author.reputation_level,
                 "department":        department,
