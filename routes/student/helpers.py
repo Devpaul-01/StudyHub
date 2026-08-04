@@ -1,7 +1,7 @@
 # routes/student/helpers.py
 # Shared helper functions used across student routes
 
-from flask import request, jsonify, current_app
+from flask import request, jsonify, current_app, g
 from werkzeug.utils import secure_filename
 from functools import wraps
 import jwt                      # FIX: removed duplicate `import jwt` that appeared twice
@@ -14,6 +14,7 @@ import secrets
 
 from models import User
 from extensions import db
+from errors import AuthorizationError
 
 # File upload settings
 ALLOWED_IMAGE_EXT    = {"png", "jpg", "jpeg"}
@@ -91,42 +92,143 @@ def verify_token(token):
     return email
 
 
-def token_required(f):
-    """JWT authentication decorator for student routes."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
+def role_required(*allowed_roles: str):
+    """
+    Document 3 §6.1: parameterized replacement for the old hardcoded
+    "if user.role != 'student': 403" check inside token_required.
 
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
+    This is why badges.py::award_badge_endpoint /
+    reputation.py::award_reputation_endpoint's inline
+    "if current_user.role not in ('admin', 'system'): 403" checks used to
+    be unreachable dead code — token_required already rejected every
+    non-student account before the route body ever ran, so no account
+    could ever satisfy both gates. role_required("admin", "system") (see
+    admin_required below) fixes that by making the role gate itself
+    configurable per-route, rather than baking "student" into the one and
+    only decorator.
 
-        if not token:
-            token = request.cookies.get("access_token")
+    token_required = role_required("student") below is kept as a plain
+    alias specifically so every existing `@token_required` usage across
+    ~250 routes keeps working completely UNCHANGED — this is the single
+    most important compatibility decision in this section: the fix is in
+    how the decorator is DEFINED, not in rewriting every call site.
 
-        if not token:
-            return jsonify({
-                "status":  "error",
-                "message": "Authentication required. Please login.",
-            }), 401
+    Also sets g.current_user_id right after decoding (zero extra cost —
+    the payload is already decoded), so Document 4's rate-limit service
+    can key per-user without needing to decode the token a second time.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            token = None
 
-        try:
-            payload = decode_token(token)
-            user    = User.query.get(payload.get("user_id"))
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.split(" ")[1]
 
-            if not user:
-                return jsonify({"status": "error", "message": "User not found."}), 401
+            if not token:
+                token = request.cookies.get("access_token")
 
-            if user.role != "student":
-                return jsonify({"status": "error", "message": "Access denied. Students only."}), 403
+            if not token:
+                return jsonify({
+                    "status":  "error",
+                    "message": "Authentication required. Please login.",
+                }), 401
 
-        except jwt.ExpiredSignatureError:
-            return jsonify({"status": "error", "message": "Token expired. Please refresh your session."}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({"status": "error", "message": "Invalid token."}), 401
+            try:
+                payload = decode_token(token)
+                user    = User.query.get(payload.get("user_id"))
 
-        return f(user, *args, **kwargs)
-    return decorated
+                if not user:
+                    return jsonify({"status": "error", "message": "User not found."}), 401
+
+                if user.role not in allowed_roles:
+                    raise AuthorizationError("Access denied for this role")
+
+                g.current_user_id = user.id
+
+            except jwt.ExpiredSignatureError:
+                return jsonify({"status": "error", "message": "Token expired. Please refresh your session."}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({"status": "error", "message": "Invalid token."}), 401
+
+            return f(user, *args, **kwargs)
+        return decorated
+    return decorator
+
+
+# Preserves every existing `@token_required` call site unchanged (Document 3 §6.1).
+token_required = role_required("student")
+
+# New in this phase: for the one surviving admin-gated endpoint
+# (POST /leaderboard/snapshot, per Document 1 §6.3) and any future
+# admin/system-only route. "system" is kept alongside "admin" since that
+# was the original (dead) inline check's role set in badges.py/reputation.py.
+admin_required = role_required("admin", "system")
+
+
+# ============================================================================
+# AUTH COOKIES  (Document 3 §1 — H-1 cookie redesign, §2 — CSRF cookie)
+#
+# Single place that sets/clears the three auth-related cookies, so every
+# route that logs a user in (login, Google OAuth callback, onboarding,
+# refresh-token) issues them identically instead of hand-rolling
+# `response.set_cookie(...)` three times with slightly different flags at
+# each call site (which is what let access_token's httponly=False survive
+# unnoticed across several routes before this phase).
+#
+# ACCESS_TOKEN_HTTPONLY (config.py, defaults False) gates the actual
+# behavior change: while False, this behaves exactly like the pre-Phase-4
+# code (httponly=False on access_token, no csrf_token cookie) — while
+# True, access_token becomes httponly and csrf_token is issued alongside
+# it. This is a runtime config flag rather than a code branch removed
+# after rollout specifically so the switch is instant and reversible
+# (Document 5 Phase 4's rollback plan), not a redeploy.
+# ============================================================================
+
+def set_auth_cookies(response, access_token, refresh_token=None, *, secure=None):
+    """
+    Set access_token (+ optionally refresh_token) on `response`, plus the
+    csrf_token cookie when ACCESS_TOKEN_HTTPONLY is enabled.
+
+    `secure` defaults to the app's SESSION_COOKIE_SECURE setting if not
+    explicitly passed, matching the existing pattern used across auth.py.
+    """
+    if secure is None:
+        secure = current_app.config.get("SESSION_COOKIE_SECURE", False)
+
+    access_httponly = current_app.config.get("ACCESS_TOKEN_HTTPONLY", False)
+
+    response.set_cookie(
+        "access_token", access_token,
+        httponly=access_httponly, secure=secure, samesite="Lax", max_age=30 * 60,
+    )
+
+    if refresh_token is not None:
+        response.set_cookie(
+            "refresh_token", refresh_token,
+            httponly=True, secure=secure, samesite="Lax", max_age=7 * 24 * 60 * 60,
+        )
+
+    if access_httponly:
+        # Document 3 §2.1: csrf_token is deliberately NOT httponly (must be
+        # JS-readable for the double-submit pattern) and matches
+        # access_token's lifetime, reissued every time access_token is.
+        csrf_token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            "csrf_token", csrf_token,
+            httponly=False, secure=secure, samesite="Lax", max_age=30 * 60,
+        )
+
+    return response
+
+
+def clear_auth_cookies(response):
+    """Clear all three auth cookies (used by /auth/logout)."""
+    response.set_cookie("access_token", "", max_age=0)
+    response.set_cookie("refresh_token", "", max_age=0)
+    response.set_cookie("csrf_token", "", max_age=0)
+    return response
 
 
 def save_file(file, folder, allowed_extensions):
