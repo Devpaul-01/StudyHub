@@ -35,6 +35,7 @@ from models import (
     ThreadJoinRequest, Thread
 )
 from extensions import db
+from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
@@ -605,12 +606,26 @@ def upload_post_resource(current_user):
             f"[{request_id}] Cloudinary resource type mapped | file_type={file_type} → resource_type={resource_type}"
         )
 
+        # ── Image validation (Document 3 §3) ──────────────────────────────
+        # Re-encodes from decoded pixel data, structurally ruling out an
+        # SVG/polyglot payload mislabeled with an image extension — the
+        # file_type categorisation above is extension-based and can't
+        # catch that on its own.
+        upload_target = file
+        if file_type == "image":
+            from services.upload_validation_service import validate_and_normalize_image
+            try:
+                upload_target = validate_and_normalize_image(file)
+            except ValidationError as e:
+                current_app.logger.warning(f"[{request_id}] Image validation failed | error={e}")
+                return error_response(str(e))
+
         # ── Cloudinary upload ────────────────────────────────────────────
         current_app.logger.info(
             f"[{request_id}] Starting Cloudinary upload | folder={folder!r} | resource_type={resource_type}"
         )
         result = cloudinary_storage.upload_file(
-            file,
+            upload_target,
             folder,
             generated_filename,
             resource_type=resource_type

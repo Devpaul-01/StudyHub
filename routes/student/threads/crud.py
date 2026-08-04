@@ -3,7 +3,9 @@ StudyHub - Threads: Thread CRUD (create, details, update, delete, close/reopen, 
 
 Split from threads.py per Document 1 (Architecture Refactor) §2.2 as part
 of Phase 2 (God-file splitting). This is a pure move — function bodies,
-decorators, routes, and logic are unchanged from the original threads.py.
+decorators, routes, and logic are unchanged from the original threads.py,
+EXCEPT for the Document 3 §3 upload-validation wiring in
+upload_thread_avatar (this phase, Phase 4).
 See routes/student/threads/__init__.py for the sub-blueprint aggregation
 that re-exposes all routes under the same paths as before.
 """
@@ -29,6 +31,7 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
+from errors import ValidationError
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
@@ -547,13 +550,23 @@ def upload_thread_avatar(current_user, thread_id):
         if not cloudinary_storage:
             return error_response("Storage not configured", 503)
 
+        # Document 3 §3: extension/mimetype-guess check above is cheap
+        # early rejection only — re-encode from decoded pixel data so an
+        # SVG/polyglot payload mislabeled as .jpg/.png can't reach
+        # Cloudinary regardless of what the Content-Type header claims.
+        from services.upload_validation_service import validate_and_normalize_image
+        try:
+            clean_file = validate_and_normalize_image(file)
+        except ValidationError as e:
+            return error_response(str(e))
+
         folder, filename = FilenameService.get_avatar_path(
             f"thread_{thread_id}", file.filename
         )
         folder = "threads/avatars"
 
         result = cloudinary_storage.upload_file(
-            file=file, folder=folder, filename=filename, resource_type="image"
+            file=clean_file, folder=folder, filename=filename, resource_type="image"
         )
         if not result["success"]:
             return error_response("Avatar upload failed")
@@ -729,4 +742,3 @@ def update_thread_settings(current_user, thread_id):
 # ============================================================================
 # OPEN THREADS
 # ============================================================================
-

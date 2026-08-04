@@ -38,6 +38,7 @@ from models import (
     
 )
 from extensions import db
+from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT,
@@ -130,10 +131,40 @@ def upload_message_resource(current_user):
             resource_type = 'document'
         else:
             resource_type = 'file'
-        
+
+        # Document 3 §3: extension check above is cheap early rejection
+        # only. Images get re-encoded from decoded pixel data (structurally
+        # rules out SVG/polyglot content mislabeled as .jpg); documents get
+        # their real magic-number signature checked against what the
+        # extension claims, rather than trusting the extension alone.
+        from services.upload_validation_service import (
+            validate_and_normalize_image, validate_document_mime,
+        )
+        upload_target = file
+        if resource_type == 'image':
+            try:
+                upload_target = validate_and_normalize_image(file)
+            except ValidationError as e:
+                return error_response(str(e), 400)
+        elif resource_type == 'document':
+            doc_mime_map = {
+                'pdf':  'application/pdf',
+                'doc':  'application/msword',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'ppt':  'application/msword',
+                'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                'txt':  'text/plain',
+            }
+            expected_mime = doc_mime_map.get(file_ext)
+            if expected_mime:
+                try:
+                    validate_document_mime(file, {expected_mime})
+                except ValidationError as e:
+                    return error_response(str(e), 400)
+
         # Upload to Cloudinary
         upload_result = cloudinary.uploader.upload(
-            file,
+            upload_target,
             folder=f"messages/{current_user.id}",
             resource_type='auto'
         )

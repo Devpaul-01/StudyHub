@@ -26,6 +26,7 @@ from models import (
     ThreadMeetingNote,
 )
 from extensions import db
+from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
@@ -312,8 +313,28 @@ def upload_thread_attachment(current_user, thread_id):
         else:
             resource_type = "raw"
 
+        # Document 3 §3: the mimetypes.guess_type() check above is
+        # extension-based and can be spoofed. Images get re-encoded from
+        # decoded pixel data (structurally rules out SVG/polyglot content);
+        # non-image, non-video document types get their real magic-number
+        # signature checked against the claimed mime, where one exists.
+        from services.upload_validation_service import (
+            validate_and_normalize_image, validate_document_mime,
+        )
+        upload_target = file
+        if resource_type == "image":
+            try:
+                upload_target = validate_and_normalize_image(file)
+            except ValidationError as e:
+                return error_response(str(e))
+        elif resource_type == "raw":
+            try:
+                validate_document_mime(file, {mime_type})
+            except ValidationError as e:
+                return error_response(str(e))
+
         result = cloudinary_storage.upload_file(
-            file=file, folder=folder, filename=filename, resource_type=resource_type
+            file=upload_target, folder=folder, filename=filename, resource_type=resource_type
         )
 
         if not result["success"]:

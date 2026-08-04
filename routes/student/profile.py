@@ -17,6 +17,7 @@ from models import (
     PostReaction, Bookmark, OnboardingDetails,
 )
 from extensions import db
+from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT,
@@ -415,11 +416,22 @@ def upload_avatar(current_user):
         if ext not in allowed:
             return error_response(f"Invalid file type. Allowed: {', '.join(allowed)}")
 
+        # Document 3 §3: cheap extension check above is early rejection
+        # only — validate_and_normalize_image() is what makes an SVG (or
+        # anything else) mislabeled as .jpg structurally impossible to
+        # sneak through, since it only ever hands Cloudinary bytes that
+        # Pillow itself decoded and re-encoded from a genuine raster image.
+        from services.upload_validation_service import validate_and_normalize_image
+        try:
+            clean_file = validate_and_normalize_image(file)
+        except ValidationError as e:
+            return error_response(str(e))
+
         if CLOUD_AVAILABLE:
             folder             = f"avatars/{current_user.id}"
             generated_filename = f"avatar_{current_user.id}"
             result = cloudinary_storage.upload_file(
-                file, folder, generated_filename, resource_type="image"
+                clean_file, folder, generated_filename, resource_type="image"
             )
             if not result.get("success"):
                 return error_response(f"Upload failed: {result.get('error', 'Unknown error')}")

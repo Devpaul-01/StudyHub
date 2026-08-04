@@ -52,6 +52,7 @@ from flask import (
 
 from extensions import db
 from models import AIConversation, AIUsageQuota, Post, User
+from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
@@ -950,13 +951,42 @@ def upload_post_attachment(current_user):
         if file_size == 0:
             return jsonify({"status": "error", "message": "File is empty"}), 400
 
+        # Document 3 §3: the extension check above (ALLOWED dict) is cheap
+        # early rejection only. Images get re-encoded from decoded pixel
+        # data (structurally rules out SVG/polyglot content mislabeled
+        # with an image extension); documents get their real magic-number
+        # signature checked against the extension they claim.
+        from services.upload_validation_service import (
+            validate_and_normalize_image, validate_document_mime,
+        )
+        upload_target = file
+        if file_category == "image":
+            try:
+                upload_target = validate_and_normalize_image(file)
+            except ValidationError as e:
+                return jsonify({"status": "error", "message": str(e)}), 400
+        elif file_category == "document":
+            doc_mime_map = {
+                "pdf":  "application/pdf",
+                "doc":  "application/msword",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "txt":  "text/plain",
+                "csv":  "text/csv",
+            }
+            expected_mime = doc_mime_map.get(fname_lower.rsplit(".", 1)[-1])
+            if expected_mime:
+                try:
+                    validate_document_mime(file, {expected_mime})
+                except ValidationError as e:
+                    return jsonify({"status": "error", "message": str(e)}), 400
+
         folder, generated_filename = FilenameService.get_post_file_path(
             current_user.id,
             safe_filename,
             file_category
         )
 
-        result = cloudinary_storage.upload_file(file, folder, generated_filename, resource_type)
+        result = cloudinary_storage.upload_file(upload_target, folder, generated_filename, resource_type)
 
         if not result["success"]:
             logger.error(f"❌ Cloudinary upload failed for user {current_user.id}: {result['error']}")
