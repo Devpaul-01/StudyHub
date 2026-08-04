@@ -81,6 +81,34 @@ class MessageWebSocketManager:
         socket_ids = self.online_users.get(user_id, [])
         for socket_id in socket_ids:
             self.socketio.emit(event_name, data, room=socket_id)
+
+    def disconnect_user(self, user_id):
+        """
+        Document 3 §1.5: force-close every socket tracked for `user_id`.
+
+        Called from auth.py::logout after clearing cookies — a small,
+        deliberate addition since access_token is now the WebSocket
+        credential too (once ACCESS_TOKEN_HTTPONLY is on), so logout
+        should proactively end any live WebSocket session rather than
+        leaving it connected until it naturally times out or the next
+        reconnect attempt fails. Previously, logout didn't touch
+        WebSocket state at all.
+
+        Uses flask_socketio's disconnect(sid=...) — safe to call even if
+        the manager has no socketio instance yet (e.g. during tests) or
+        the user has no open sockets (silently a no-op).
+        """
+        if not self.socketio:
+            return
+
+        from flask_socketio import disconnect as _sio_disconnect
+
+        socket_ids = list(self.online_users.get(user_id, []))
+        for socket_id in socket_ids:
+            try:
+                _sio_disconnect(sid=socket_id, namespace='/')
+            except Exception:
+                pass
     
     def sanitize_content(self, text: str) -> str:
         """Sanitize message content"""
@@ -117,7 +145,23 @@ class MessageWebSocketManager:
         @self.socketio.on('connect')
         def handle_connect(auth):
           try:
-            token = auth.get('token') if auth else None
+            # Document 3 §1.1: once access_token is httponly, the client can
+            # no longer read it to put it in the `auth` handshake payload.
+            # Flask-SocketIO's connect handler runs inside a real Flask
+            # request context, so request.cookies is available here exactly
+            # like in a normal HTTP route — and since the handshake is a
+            # same-origin HTTP request, the browser attaches the httponly
+            # cookie automatically. Confirmed (per your infrastructure) that
+            # cookies reach this handshake, so no ws-token fallback is needed.
+            #
+            # While ACCESS_TOKEN_HTTPONLY is False (default, pre-rollout),
+            # this falls back to the original auth-payload token exactly as
+            # before, so nothing changes until the flag is flipped.
+            if current_app.config.get('ACCESS_TOKEN_HTTPONLY', False):
+                token = request.cookies.get('access_token')
+            else:
+                token = auth.get('token') if auth else None
+
             if not token:
               return False  # returning False disconnects the client
             payload = jwt.decode(
@@ -208,9 +252,14 @@ class MessageWebSocketManager:
       
         @self.socketio.on('authenticate')
         def handle_authenticate(data):
-            """Authenticate WebSocket connection"""
+            """Authenticate WebSocket connection (secondary/legacy path — 'connect' above is primary)."""
             try:
-                token = data.get('token')
+                # Document 3 §1.1: same cookie-preference logic as handle_connect.
+                if current_app.config.get('ACCESS_TOKEN_HTTPONLY', False):
+                    token = request.cookies.get('access_token') or (data.get('token') if data else None)
+                else:
+                    token = data.get('token') if data else None
+
                 if not token:
                     emit('auth_error', {'message': 'Token required'})
                     print("Token not found")
