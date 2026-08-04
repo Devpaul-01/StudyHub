@@ -20,12 +20,13 @@ from extensions import db
 from utils import generate_verification_token, send_password_reset, send_verification_email
 from .helpers import (
     generate_tokens_for_user, decode_token, verify_token, token_required,
-    success_response, error_response,
+    success_response, error_response, set_auth_cookies, clear_auth_cookies,
 )
 # Activity/streak recording and password finalization now live in
 # services/auth_service.py (Document 2 §3.10); notification construction
 # goes through services/notification_service.py (Document 2 §3.9).
 from services import auth_service, notification_service
+from errors import ValidationError
 
 auth_bp = Blueprint("student_auth", __name__)
 
@@ -211,8 +212,7 @@ def google_callback():
 
                 access_token, refresh_token_val = generate_tokens_for_user(existing_user)
                 response = make_response(redirect("/student/profile/homepage"))
-                response.set_cookie("access_token",  access_token,      httponly=False, secure=False, samesite="Lax", max_age=30 * 60)
-                response.set_cookie("refresh_token",  refresh_token_val, httponly=True,  secure=False, samesite="Lax", max_age=7 * 24 * 60 * 60)
+                set_auth_cookies(response, access_token, refresh_token_val)
                 current_app.logger.info(f"Google login: existing user {email}")
                 return response
 
@@ -479,8 +479,7 @@ def onboard(email):
                 "redirect": f"/student/complete-registration/{user.email}",
             },
         ))
-        response.set_cookie("access_token",  access_token,  httponly=False, secure=False, samesite="Lax", max_age=30 * 60)
-        response.set_cookie("refresh_token", refresh_token, httponly=True,  secure=False, samesite="Lax", max_age=7 * 24 * 60 * 60)
+        set_auth_cookies(response, access_token, refresh_token)
         return response
 
     except Exception as e:
@@ -782,8 +781,7 @@ def login():
                 "login_streak": user.login_streak,
             },
         ))
-        response.set_cookie("access_token",  access_token,  httponly=False, secure=False, samesite="Lax", max_age=30 * 60)
-        response.set_cookie("refresh_token", refresh_token, httponly=True,  secure=False, samesite="Lax", max_age=7 * 24 * 60 * 60)
+        set_auth_cookies(response, access_token, refresh_token)
         return response
 
     except Exception as e:
@@ -797,7 +795,17 @@ def login():
 # ============================================================================
 @auth_bp.route("/validate-user", methods=["POST"])
 def validate_user():
-    """Validate user and send password reset email."""
+    """
+    Validate user and send password reset email.
+
+    Document 3 §4: issues an opaque, DB-backed PasswordResetToken
+    (services/auth_service.py::issue_password_reset_token) instead of the
+    shared stateless JWT — this flow is now revocable and single-use.
+    Email verification (register/verify-email) is unaffected and keeps
+    using generate_verification_token/verify_token, per §4's explicit
+    scoping ("no comparable account-takeover risk from a verification
+    link being revocable, so adding statefulness there is unnecessary").
+    """
     try:
         data       = request.get_json()
         user_input = data.get("data")
@@ -812,36 +820,48 @@ def validate_user():
         if not result:
             return error_response("User not found, kindly check inputted value")
 
-        email           = result.email
-        reset_token     = generate_verification_token(email)
+        reset_token = auth_service.issue_password_reset_token(result)
+        db.session.commit()
+
         verification_url = url_for("student.student_auth.reset_password_api", token=reset_token, _external=True)
-        send_password_reset(email, verification_url)
+        send_password_reset(result.email, verification_url)
 
         return success_response("A password reset link has been sent to your email.")
 
     except Exception as e:
+        db.session.rollback()
         current_app.logger.error(f"Password reset error: {str(e)}")
         return error_response("Password reset failed. Please try again.")   # FIX: no str(e) leak
 
 
 @auth_bp.route("/verify-reset/<token>", methods=["GET", "POST"])
 def reset_password_api(token):
-    """Verify password reset token."""
+    """
+    Verify password reset token.
+
+    Document 3 §4: this is now a read-only PEEK at the PasswordResetToken
+    row (is_valid() check only — does NOT mark it used) so the link can
+    be safely opened/previewed without burning the single-use token; the
+    token is actually consumed in set_password() below, at the point the
+    password is genuinely changed.
+    """
     if request.method == "GET":
         return render_template("auth/verify_reset.html")
 
-    email = verify_token(token)
-    if isinstance(email, dict) and "error" in email:
-        return error_response(email["error"])
+    from models import PasswordResetToken
 
-    user = User.query.filter_by(email=email).first()
+    reset_row = PasswordResetToken.query.filter_by(token=token).first()
+    if not reset_row or not reset_row.is_valid():
+        return error_response("This password reset link is invalid or has expired.")
+
+    user = User.query.get(reset_row.user_id)
     if not user:
         return error_response("User not found")
 
     return success_response(
         "Password Reset Link Verified!",
         data={
-            "email": email,
+            "email": user.email,
             "token": token,
             "redirect_url": f"/student/set-password?token={token}",
         },
@@ -984,23 +1004,26 @@ def reset_password():
 
 @auth_bp.route("/set-password", methods=["GET", "POST"])
 def set_password():
-    """Set new password after reset."""
+    """
+    Set new password after reset.
+
+    Document 3 §4: consumes the opaque PasswordResetToken (marks it used,
+    single-use enforced) via auth_service.consume_password_reset_token —
+    this is the point the reset link is actually spent, distinct from the
+    read-only peek in reset_password_api() above. finalize_password()
+    still does the actual pin/password_hash write, unchanged.
+    """
     if request.method == "GET":
         return render_template("auth/set_password.html")
 
     data             = request.get_json() or {}
     token            = data.get("token") or request.args.get("token")
-    email            = data.get("email", "").strip().lower()
     password         = data.get("password", "")
     confirm_password = data.get("confirm_password", "")
 
-    if token:
-        decoded_email = verify_token(token)
-        if isinstance(decoded_email, dict) and "error" in decoded_email:
-            return error_response(decoded_email["error"])
-        email = decoded_email
-
-    if not all([email, password, confirm_password]):
+    if not token:
+        return error_response("Reset token is required")
+    if not all([password, confirm_password]):
         return error_response("All fields are required")
     if password != confirm_password:
         return error_response("Passwords do not match")
@@ -1008,8 +1031,14 @@ def set_password():
         return error_response("Password must be at least 6 characters")
 
     try:
-        user = auth_service.finalize_password(email, password)
+        # consume_password_reset_token commits internally (Document 2 §5's
+        # documented second exception) the moment the token is marked used,
+        # independent of whatever finalize_password does below.
+        reset_user = auth_service.consume_password_reset_token(token)
+        user = auth_service.finalize_password(reset_user.email, password)
     except LookupError as e:
+        return error_response(str(e))
+    except ValidationError as e:
         return error_response(str(e))
 
     db.session.commit()
@@ -1055,7 +1084,14 @@ def refresh_token():
             "Token refreshed",
             data={"user": {"id": user.id, "username": user.username, "email": user.email, "name": user.name}},
         ))
-        response.set_cookie("access_token", new_access_token, httponly=False, secure=False, samesite="Lax", max_age=30 * 60)
+        # Document 3 §1.2/§1.3: refresh_token itself is NOT rotated on every
+        # refresh (confirmed out of scope for this phase — rotation-on-use
+        # is a further hardening option, flagged for a future phase, not
+        # required here). set_auth_cookies with no refresh_token argument
+        # reissues access_token (+ csrf_token, since it's tied to
+        # access_token's lifetime per §1.2's table) without touching the
+        # existing refresh_token cookie.
+        set_auth_cookies(response, new_access_token)
         return response
 
     except Exception as e:
@@ -1106,13 +1142,29 @@ def verify_auth():
 def logout():
     """Logout user."""
     try:
+        # Document 3 §1.5: identify the user (if any) before clearing the
+        # cookie, so we can proactively disconnect their active WebSocket
+        # session(s) too — access_token is now the WS credential as well,
+        # so a stale-but-connected socket surviving a logout is a gap this
+        # closes. Best-effort: any failure here must never block logout
+        # itself from succeeding.
+        try:
+            access_token = request.cookies.get("access_token")
+            if access_token:
+                payload = decode_token(access_token)
+                user_id = payload.get("user_id")
+                if user_id:
+                    from services.websocket_messages import message_ws_manager
+                    message_ws_manager.disconnect_user(user_id)
+        except Exception:
+            pass
+
         if request.method == "GET":
             response = make_response(redirect(url_for("student.student_auth.login")))
         else:
             response = make_response(success_response("Logged out successfully"))
 
-        response.set_cookie("access_token",  "", max_age=0)
-        response.set_cookie("refresh_token", "", max_age=0)
+        clear_auth_cookies(response)
         return response
 
     except Exception as e:

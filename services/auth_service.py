@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import secrets
 
 from werkzeug.security import generate_password_hash
 from sqlalchemy.exc import IntegrityError
@@ -195,5 +196,84 @@ def finalize_password(email: str, password: str) -> User:
     student_profile = StudentProfile.query.filter_by(user_id=user.id).first()
     if student_profile:
         student_profile.pin = hashed_password
+
+    return user
+
+
+# ============================================================================
+# PASSWORD RESET TOKENS  (Document 3 §4)
+#
+# PasswordResetToken now used exclusively for the password-reset flow.
+# Unlike the stateless JWT approach still used for email verification,
+# these are opaque random tokens backed by a DB row, so they're
+# individually revocable and single-use. Expiry confirmed at 1 hour
+# (shortened from the JWT's 5h — this token is now revocable/single-use,
+# so a shorter window is reasonable additional hardening).
+# ============================================================================
+
+def issue_password_reset_token(user: "User") -> str:
+    """
+    Generate an opaque, unguessable password-reset token (NOT a JWT — no
+    need for it to be independently verifiable, since it's looked up by
+    exact match against the stored row) and persist it.
+
+    Does not commit — caller (the /validate-user route) commits alongside
+    whatever else it does in that request, consistent with every other
+    service function in this module.
+
+    Returns the raw token string — this, not a JWT, is what gets emailed.
+    """
+    from models import PasswordResetToken
+
+    raw_token = secrets.token_urlsafe(32)
+
+    reset_row = PasswordResetToken(
+        user_id=user.id,
+        token=raw_token,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
+    )
+    db.session.add(reset_row)
+
+    return raw_token
+
+
+def consume_password_reset_token(raw_token: str) -> "User":
+    """
+    Look up `raw_token`, validate it via PasswordResetToken.is_valid()
+    (not used and not expired), mark it used, and return the associated
+    User.
+
+    Raises ValidationError if the token doesn't exist, is expired, or has
+    already been used.
+
+    This is one of the rare service functions that DOES commit
+    immediately upon successfully marking the token used — documented as
+    the second named exception to the Document 2 §5 no-commit convention
+    (the first being badge_service.check_and_award_badge's commit=True
+    parameter). The reasoning (Document 3 §4): "mark this token used"
+    must be atomic with "the password was actually changed" — if the
+    route layer's own commit were the only thing finalizing this, a crash
+    between marking-used and committing could leave a window where the
+    token is reusable. Marking-used commits here, independent of whatever
+    the route does afterward with the new password.
+    """
+    from models import PasswordResetToken
+    from errors import ValidationError
+
+    if not raw_token:
+        raise ValidationError("Reset token is required")
+
+    reset_row = PasswordResetToken.query.filter_by(token=raw_token).first()
+
+    if not reset_row or not reset_row.is_valid():
+        raise ValidationError("This password reset link is invalid or has expired.")
+
+    reset_row.used = True
+    reset_row.used_at = datetime.datetime.utcnow()
+    db.session.commit()
+
+    user = User.query.get(reset_row.user_id)
+    if not user:
+        raise ValidationError("User not found")
 
     return user
