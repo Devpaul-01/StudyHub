@@ -113,93 +113,174 @@ def get_posts_by_tag(current_user, tag):
         query = query.order_by(Post.posted_at.desc())
         
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)
-        
+
+        # ════════════════════════════════════════════════════════════════════
+        # BATCH LOAD EVERYTHING (Document 4 §4 — same batching approach as
+        # posts/crud.py::get_feed, applied here to eliminate the per-post
+        # comments/author/connection/reaction/bookmark/follow/thread N+1s)
+        # ════════════════════════════════════════════════════════════════════
+        page_posts = paginated.items
+        page_post_ids = [p.id for p in page_posts]
+        page_author_ids = list({p.student_id for p in page_posts})
+
+        # Authors
+        authors_map = {u.id: u for u in User.query.filter(User.id.in_(page_author_ids)).all()} if page_author_ids else {}
+
+        # Connections (only need the "other side" of each pair once)
+        other_author_ids = [aid for aid in page_author_ids if aid != current_user.id]
+        connections_map = {}
+        if other_author_ids:
+            conns = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(other_author_ids)),
+                    and_(Connection.receiver_id == current_user.id, Connection.requester_id.in_(other_author_ids))
+                )
+            ).all()
+            for c in conns:
+                other = c.receiver_id if c.requester_id == current_user.id else c.requester_id
+                connections_map[other] = c.status
+
+        # Current-user reactions / bookmarks / follows
+        reactions_map = {
+            r.post_id: r
+            for r in PostReaction.query.filter(
+                PostReaction.post_id.in_(page_post_ids),
+                PostReaction.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        bookmarks_map = {
+            b.post_id: b
+            for b in Bookmark.query.filter(
+                Bookmark.post_id.in_(page_post_ids),
+                Bookmark.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        follows_map = {
+            f.post_id: f
+            for f in PostFollow.query.filter(
+                PostFollow.post_id.in_(page_post_ids),
+                PostFollow.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        # Threads (only for thread-enabled posts on this page)
+        thread_enabled_ids = [p.id for p in page_posts if p.thread_enabled]
+        threads_map = {}
+        thread_join_map = {}
+        thread_member_set = set()
+        if thread_enabled_ids:
+            threads = Thread.query.filter(Thread.post_id.in_(thread_enabled_ids)).all()
+            threads_map = {t.post_id: t for t in threads}
+
+            thread_ids = [t.id for t in threads]
+            if thread_ids:
+                join_reqs = ThreadJoinRequest.query.filter(
+                    ThreadJoinRequest.thread_id.in_(thread_ids),
+                    ThreadJoinRequest.requester_id == current_user.id
+                ).all()
+                thread_join_map = {jr.thread_id: jr for jr in join_reqs}
+
+                members = ThreadMember.query.filter(
+                    ThreadMember.thread_id.in_(thread_ids),
+                    ThreadMember.student_id == current_user.id
+                ).all()
+                thread_member_set = {m.thread_id for m in members}
+
+        # Top-2 comments per post (same windowed-query technique get_feed uses)
+        comments_by_post = defaultdict(list)
+        if page_post_ids:
+            rank_col = func.row_number().over(
+                partition_by=Comment.post_id,
+                order_by=[Comment.is_solution.desc(), Comment.likes_count.desc()]
+            ).label("rn")
+
+            ranked_subq = (
+                db.session.query(Comment, rank_col)
+                .filter(
+                    Comment.post_id.in_(page_post_ids),
+                    Comment.parent_id == None,
+                    Comment.is_deleted == False
+                )
+                .subquery()
+            )
+
+            CommentAlias = aliased(Comment, ranked_subq)
+            top_comments_all = (
+                db.session.query(CommentAlias)
+                .filter(ranked_subq.c.rn <= 2)
+                .all()
+            )
+            for c in top_comments_all:
+                comments_by_post[c.post_id].append(c)
+        else:
+            top_comments_all = []
+
+        # Batch-load comment authors + current-user comment likes
+        comment_author_ids = list({c.student_id for c in top_comments_all})
+        comment_authors_map = {
+            u.id: u for u in User.query.filter(User.id.in_(comment_author_ids)).all()
+        } if comment_author_ids else {}
+
+        all_comment_ids = [c.id for c in top_comments_all]
+        comment_liked_set = set()
+        if all_comment_ids:
+            liked_rows = CommentLike.query.filter(
+                CommentLike.student_id == current_user.id,
+                CommentLike.comment_id.in_(all_comment_ids)
+            ).all()
+            comment_liked_set = {lk.comment_id for lk in liked_rows}
+
         # Build response (same structure as feed)
         posts_data = []
-        for post in paginated.items:
+        for post in page_posts:
             comments_data = []
-            comments = Comment.query.filter_by(
-                post_id=post.id, 
-                parent_id=None,
-                is_deleted=False
-            ).order_by(
-                Comment.is_solution.desc(),
-                Comment.likes_count.desc()
-            ).limit(2).all()
-            
-            for comment in comments:
-                user = User.query.get(comment.student_id)
-                has_liked = CommentLike.query.filter_by(
-                    student_id=current_user.id, 
-                    comment_id=comment.id
-                ).first() is not None
-                
+            for comment in comments_by_post.get(post.id, []):
+                c_author = comment_authors_map.get(comment.student_id)
+                if not c_author:
+                    continue
                 comments_data.append({
                     'id': comment.id,
                     "likes_count": comment.likes_count,
-                    "user_id": user.id,
-                    "username": user.username,
-                    "name": user.name,
-                    "avatar": user.avatar,
+                    "user_id": c_author.id,
+                    "username": c_author.username,
+                    "name": c_author.name,
+                    "avatar": c_author.avatar,
                     "posted_at": comment.posted_at.isoformat(),
                     "is_solution": comment.is_solution,
                     "helpful_count": comment.helpful_count,
                     "resources": comment.resources,
-                    "has_liked": has_liked,
+                    "has_liked": comment.id in comment_liked_set,
                     "text_content": comment.text_content
                 })
-            
+
             # Get post author
-            author = User.query.get(post.student_id)
-            
+            author = authors_map.get(post.student_id)
+
             # Initialize default values
             connection_status = None
             is_solved = None
             is_pinned = None
             requested_thread = False
             is_member = False
-            
+
             # Check connection status
             if author and author.id != current_user.id:
-                connection = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == author.id),
-                        and_(Connection.requester_id == author.id, Connection.receiver_id == current_user.id)
-                    )
-                ).first()
-                
-                if connection:
-                    connection_status = connection.status
-            
+                connection_status = connections_map.get(author.id)
+
             # Check user reactions
-            user_reacted = PostReaction.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_bookmarked = Bookmark.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_followed = PostFollow.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
+            user_reacted = reactions_map.get(post.id)
+            user_bookmarked = bookmarks_map.get(post.id)
+            user_followed = follows_map.get(post.id)
+
             # Check thread request
             if post.thread_enabled:
-                thread = Thread.query.filter_by(post_id=post.id).first()
+                thread = threads_map.get(post.id)
                 if thread:
-                    requested_thread = ThreadJoinRequest.query.filter_by(
-                        requester_id=current_user.id, 
-                        thread_id=thread.id
-                    ).first()
-                    is_member = ThreadMember.query.filter_by(
-                        thread_id=thread.id,
-                        student_id=current_user.id
-                    ).first() is not None
-               
+                    requested_thread = thread_join_map.get(thread.id)
+                    is_member = thread.id in thread_member_set
+
             # Check if solvable type
             if post.post_type in ["problem", "question"]:
                 is_solved = post.is_solved

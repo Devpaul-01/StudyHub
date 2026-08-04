@@ -730,36 +730,57 @@ def get_posts_by_type(current_user):
         
         # Paginate
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)
-        
+
+        # ── Batch load everything for this page instead of per-post queries
+        # (Document 4 §4: same author/reaction/bookmark batching pattern
+        # get_feed() already uses) ──────────────────────────────────────────
+        page_posts = paginated.items
+        page_post_ids = [p.id for p in page_posts]
+        page_author_ids = list({p.student_id for p in page_posts})
+
+        authors_map = {u.id: u for u in User.query.filter(User.id.in_(page_author_ids)).all()} if page_author_ids else {}
+
+        reactions_map = {
+            r.post_id: r
+            for r in PostReaction.query.filter(
+                PostReaction.post_id.in_(page_post_ids),
+                PostReaction.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        bookmarks_map = {
+            b.post_id: b
+            for b in Bookmark.query.filter(
+                Bookmark.post_id.in_(page_post_ids),
+                Bookmark.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        other_author_ids = [aid for aid in page_author_ids if aid != current_user.id]
+        connections_map = {}
+        if other_author_ids:
+            conns = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(other_author_ids)),
+                    and_(Connection.receiver_id == current_user.id, Connection.requester_id.in_(other_author_ids))
+                )
+            ).all()
+            for c in conns:
+                other = c.receiver_id if c.requester_id == current_user.id else c.requester_id
+                connections_map[other] = c.status
+
         # Build response
         posts_data = []
-        for post in paginated.items:
-            author = User.query.get(post.student_id)
-            
+        for post in page_posts:
+            author = authors_map.get(post.student_id)
+
             # Check user interactions
-            user_reacted = PostReaction.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_bookmarked = Bookmark.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
+            user_reacted = reactions_map.get(post.id)
+            user_bookmarked = bookmarks_map.get(post.id)
+
             # Check connection status
-            connection_status = None
-            if author and author.id != current_user.id:
-                connection = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == author.id),
-                        and_(Connection.requester_id == author.id, Connection.receiver_id == current_user.id)
-                    )
-                ).first()
-                
-                if connection:
-                    connection_status = connection.status
-            
+            connection_status = connections_map.get(author.id) if author and author.id != current_user.id else None
+
             posts_data.append({
                 "id": post.id,
                 "title": post.title,
@@ -985,33 +1006,63 @@ def get_posts_by_status(current_user):
         
         solved_count = total_query.filter_by(is_solved=True).count()
         unsolved_count = total_query.filter_by(is_solved=False).count()
-        
+
+        # ── Batch load everything for this page instead of per-post queries
+        # (Document 4 §4: same author/reaction/bookmark batching pattern
+        # get_feed() already uses) ──────────────────────────────────────────
+        page_posts = paginated.items
+        page_post_ids = [p.id for p in page_posts]
+        page_author_ids = list({p.student_id for p in page_posts})
+        solved_post_ids = [p.id for p in page_posts if p.is_solved]
+
+        authors_map = {u.id: u for u in User.query.filter(User.id.in_(page_author_ids)).all()} if page_author_ids else {}
+
+        reactions_map = {
+            r.post_id: r
+            for r in PostReaction.query.filter(
+                PostReaction.post_id.in_(page_post_ids),
+                PostReaction.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        bookmarks_map = {
+            b.post_id: b
+            for b in Bookmark.query.filter(
+                Bookmark.post_id.in_(page_post_ids),
+                Bookmark.student_id == current_user.id
+            ).all()
+        } if page_post_ids else {}
+
+        # Solution comments (one per solved post) + their authors, batched
+        solutions_map = {}
+        solution_authors_map = {}
+        if solved_post_ids:
+            solutions = Comment.query.filter(
+                Comment.post_id.in_(solved_post_ids),
+                Comment.is_solution == True
+            ).all()
+            solutions_map = {s.post_id: s for s in solutions}
+            solution_author_ids = list({s.student_id for s in solutions})
+            if solution_author_ids:
+                solution_authors_map = {
+                    u.id: u for u in User.query.filter(User.id.in_(solution_author_ids)).all()
+                }
+
         # Build response
         posts_data = []
-        for post in paginated.items:
-            author = User.query.get(post.student_id)
-            
+        for post in page_posts:
+            author = authors_map.get(post.student_id)
+
             # Check user interactions
-            user_reacted = PostReaction.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
-            user_bookmarked = Bookmark.query.filter_by(
-                post_id=post.id, 
-                student_id=current_user.id
-            ).first()
-            
+            user_reacted = reactions_map.get(post.id)
+            user_bookmarked = bookmarks_map.get(post.id)
+
             # Get solution comment if solved
             solution_comment = None
             if post.is_solved:
-                solution = Comment.query.filter_by(
-                    post_id=post.id,
-                    is_solution=True
-                ).first()
-                
+                solution = solutions_map.get(post.id)
                 if solution:
-                    solution_author = User.query.get(solution.student_id)
+                    solution_author = solution_authors_map.get(solution.student_id)
                     solution_comment = {
                         "id": solution.id,
                         "text_preview": solution.text_content[:100] + "..." if len(solution.text_content) > 100 else solution.text_content,
