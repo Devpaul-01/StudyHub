@@ -27,6 +27,7 @@ import datetime as _dt
 
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import or_, and_, func, desc
+from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta
 
 from models import (
@@ -1014,7 +1015,14 @@ def get_my_help_requests(current_user):
         helper_ids = {r.helper_id for r in help_requests}
         assignment_ids = {r.assignment_id for r in help_requests if r.assignment_id}
 
-        helpers_map = {u.id: u for u in User.query.filter(User.id.in_(helper_ids)).all()} if helper_ids else {}
+        # N+1 fix (Document 4 §4): joinedload(User.student_profile) so the
+        # `helper.student_profile.department` access in the loop below
+        # doesn't trigger a lazy-load query per helper.
+        helpers_map = (
+            {u.id: u for u in User.query.options(joinedload(User.student_profile))
+             .filter(User.id.in_(helper_ids)).all()}
+            if helper_ids else {}
+        )
         assignments_map = (
             {a.id: a for a in Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()}
             if assignment_ids else {}
@@ -1089,7 +1097,14 @@ def get_homework_im_helping_with(current_user):
         student_ids = {h.requester_id for h in helping_with}
         assignment_ids = {h.assignment_id for h in helping_with if h.assignment_id}
 
-        students_map = {u.id: u for u in User.query.filter(User.id.in_(student_ids)).all()} if student_ids else {}
+        # N+1 fix (Document 4 §4): joinedload(User.student_profile) so the
+        # `student.student_profile.department` access in the loop below
+        # doesn't trigger a lazy-load query per student.
+        students_map = (
+            {u.id: u for u in User.query.options(joinedload(User.student_profile))
+             .filter(User.id.in_(student_ids)).all()}
+            if student_ids else {}
+        )
         assignments_map = (
             {a.id: a for a in Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()}
             if assignment_ids else {}
