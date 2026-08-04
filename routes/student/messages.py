@@ -25,7 +25,8 @@ was not touched further this phase.
 from __future__ import annotations
 
 from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import or_, and_, func, desc
+from sqlalchemy import or_, and_, func, desc, case
+from sqlalchemy.orm import aliased
 from werkzeug.utils import secure_filename
 import cloudinary.uploader
 import uuid
@@ -567,47 +568,113 @@ def get_conversations(current_user):
             partner_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
             connected_user_ids.add(partner_id)
 
-        # Get all messages where user is sender or receiver
-        messages_query = Message.query.filter(
-            or_(
-                Message.sender_id == current_user.id,
-                Message.receiver_id == current_user.id
+        # Document 4 §4 (C-3): the previous implementation loaded every
+        # message the user ever sent/received into memory and grouped it in
+        # Python — unbounded, and only two things are actually needed per
+        # partner: (a) an unread COUNT, and (b) the single most recent
+        # visible message. Neither needs the full history in memory.
+        #
+        # (a) Unread counts — a GROUP BY aggregate, never hydrates full rows.
+        unread_rows = (
+            db.session.query(Message.sender_id, func.count(Message.id))
+            .filter(
+                Message.receiver_id == current_user.id,
+                Message.is_read == False,
+                Message.is_deleted == False,
+                Message.deleted_by_receiver == False,
             )
-        ).order_by(Message.sent_at.desc()).all()
+            .group_by(Message.sender_id)
+            .all()
+        )
+        unread_count_by_partner = {sender_id: cnt for sender_id, cnt in unread_rows}
 
-        # Group by conversation partner
+        # (b) Most recent visible message per partner — a windowed query
+        # (same ROW_NUMBER()-per-partition technique posts/crud.py::get_feed
+        # already uses for its top-2-comments-per-post query), bounded by
+        # BOTH a date window and a per-partner message cap (Option D):
+        #   - date window: only messages from the last 90 days are considered
+        #   - message cap: within that window, only the 200 most recent
+        #     messages per partner are ever materialized/ranked
+        # This keeps the preview accurate for active conversations (whose
+        # latest message is always well inside 200) while putting a hard
+        # ceiling on how much a single very chatty conversation can force
+        # the window function to rank, independent of the date window.
+        RECENT_WINDOW_DAYS = 90
+        MAX_MESSAGES_PER_PARTNER = 200
+        window_cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=RECENT_WINDOW_DAYS)
+
+        partner_expr = case(
+            (Message.sender_id == current_user.id, Message.receiver_id),
+            else_=Message.sender_id,
+        )
+
+        visibility_filter = and_(
+            Message.is_deleted == False,
+            or_(
+                and_(Message.sender_id == current_user.id, Message.deleted_by_sender == False),
+                and_(Message.receiver_id == current_user.id, Message.deleted_by_receiver == False),
+            )
+        )
+
+        rank_col = func.row_number().over(
+            partition_by=partner_expr,
+            order_by=Message.sent_at.desc()
+        ).label("rn")
+
+        # Stage 1: cap each partner's candidate pool to their most recent
+        # MAX_MESSAGES_PER_PARTNER messages within the date window.
+        capped_subq = (
+            db.session.query(Message, partner_expr.label("partner_id"), rank_col)
+            .filter(
+                or_(
+                    Message.sender_id == current_user.id,
+                    Message.receiver_id == current_user.id
+                ),
+                Message.sent_at >= window_cutoff,
+                visibility_filter,
+            )
+            .subquery()
+        )
+        CappedMessageAlias = aliased(Message, capped_subq)
+        capped_pool = (
+            db.session.query(CappedMessageAlias, capped_subq.c.partner_id)
+            .filter(capped_subq.c.rn <= MAX_MESSAGES_PER_PARTNER)
+            .subquery()
+        )
+
+        # Stage 2: within the capped pool, take the single latest message
+        # per partner. capped_pool already carries every Message column
+        # (via CappedMessageAlias) plus partner_id — no need to re-select
+        # sent_at separately, avoiding a duplicate-column subquery.
+        final_rank_col = func.row_number().over(
+            partition_by=capped_pool.c.partner_id,
+            order_by=capped_pool.c.sent_at.desc()
+        ).label("rn")
+        ranked_subq = (
+            db.session.query(capped_pool, final_rank_col)
+            .subquery()
+        )
+
+        MessageAlias = aliased(Message, ranked_subq)
+        last_messages_raw = (
+            db.session.query(MessageAlias, ranked_subq.c.partner_id)
+            .filter(ranked_subq.c.rn == 1)
+            .all()
+        )
+
+        last_msg_by_partner = {}
+        for msg, partner_id in last_messages_raw:
+            if partner_id in connected_user_ids:
+                last_msg_by_partner[partner_id] = msg
+
+        # Group by conversation partner (now just assembling the two pieces
+        # above, not iterating the full message history)
         conversations = {}
-
-        for message in messages_query:
-            partner_id = message.receiver_id if message.sender_id == current_user.id else message.sender_id
-
-            if partner_id not in connected_user_ids:
-                continue
-
-            if partner_id not in conversations:
-                conversations[partner_id] = {
-                    "partner_id": partner_id,
-                    "messages": [],
-                    "unread_count": 0
-                }
-
-            conversations[partner_id]["messages"].append(message)
-
-            # Count unread: messages TO current user that are unread and not deleted
-            if (message.receiver_id == current_user.id
-                    and not message.is_read
-                    and not message.is_deleted
-                    and not message.deleted_by_receiver):
-                conversations[partner_id]["unread_count"] += 1
-
-        # Add connections with no messages
         for partner_id in connected_user_ids:
-            if partner_id not in conversations:
-                conversations[partner_id] = {
-                    "partner_id": partner_id,
-                    "messages": [],
-                    "unread_count": 0
-                }
+            conversations[partner_id] = {
+                "partner_id": partner_id,
+                "unread_count": unread_count_by_partner.get(partner_id, 0)
+            }
 
         # ── Batch pre-loads (eliminates N+1 queries) ─────────────────────────
 
@@ -649,12 +716,8 @@ def get_conversations(current_user):
                 elif bc.blocked_by_id == other_id:
                     blocked_by_partner_set.add(other_id)
 
-        # 3. First pass: find the last visible message per partner
-        last_msg_by_partner = {}
-        for partner_id, conv_data in conversations.items():
-            visible = [m for m in conv_data["messages"] if _visible_to_me(m, current_user.id)]
-            if visible:
-                last_msg_by_partner[partner_id] = max(visible, key=lambda m: m.sent_at)
+        # 3. last_msg_by_partner was already computed above via the windowed
+        # SQL query — no Python re-scan of full message history needed here.
 
         # 4. Batch load reactions for all last messages in one query
         last_msg_ids = [msg.id for msg in last_msg_by_partner.values()]
