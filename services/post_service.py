@@ -27,14 +27,28 @@ call db.session.commit() — that stays the calling route's responsibility,
 same as their original behavior in posts.py.
 
 Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`.
+
+Phase 5a addition — popular_tags:
+    Per Document 4 §3.4/§4 (C-3), popular_tags is a full-table-scan-and-
+    count-in-Python utility. It's a posts.py/search.py-adjacent utility
+    rather than strictly a "search" function, so per Document 4's C-3 note
+    it's consolidated here rather than into services/search_service.py.
+    Wrapped in @cache_service.cached(..., ttl_seconds=300) per Document 4
+    §2.2's first-rollout-targets list — this is the first real beneficiary
+    of Role B caching described there. No schema redesign (e.g. a
+    normalized post_tags table) is attempted this phase; caching solves
+    the request-rate problem Document 4 §4 (C-3) cares about without also
+    taking on that larger, separate change.
 """
 
 import re
 import datetime
+from collections import Counter
 
 from models import User, Post, Comment, Mention, Notification, UserActivity, PostReaction
 from extensions import db
 from services import badge_service
+from services.cache_service import cached
 
 
 def extract_public_id(url):
@@ -214,3 +228,65 @@ def check_helpful_milestones(user_id):
         badge_service.check_and_award_badge(user_id, "Helpful Contributor")
     elif helpful_count == 50:
         badge_service.check_and_award_badge(user_id, "Helpful Hero")
+
+
+@cached("popular_tags", ttl_seconds=300)
+def _popular_tags_full():
+    """
+    Compute and return the FULL most-used-tags list across all posts,
+    most popular first — every distinct tag, uncapped.
+
+    This is the function actually wrapped in @cached, deliberately taking
+    no arguments: caching a superset once and letting callers slice it
+    (see popular_tags() below) means every caller shares one cache entry
+    regardless of what `limit` they asked for, which is both correct and
+    the cheapest way to serve this per Document 4 §2.2's caching design.
+    (An earlier version of this function accepted `limit` directly under
+    the cache decorator — that made `limit` inert on a cache hit, since
+    the decorator returns whatever was stored on the first call without
+    re-slicing. Splitting the uncapped compute from the slice step fixes
+    that correctness gap.)
+
+    Post.tags is a JSON list column (MutableList.as_mutable(db.JSON));
+    there's no normalized tags table to GROUP BY against yet (Document 4
+    §4 (C-3) notes a normalized post_tags table as a future improvement,
+    deferred rather than built this phase), so this pulls tag lists and
+    counts them in Python — the same approach the pre-existing
+    implementations in posts.py/search.py used.
+    """
+    counter = Counter()
+
+    rows = db.session.query(Post.tags).filter(Post.tags.isnot(None)).all()
+    for (tags,) in rows:
+        if not tags:
+            continue
+        for tag in tags:
+            if not tag:
+                continue
+            counter[tag.strip().lower()] += 1
+
+    most_common = counter.most_common()
+    return [{"tag": tag, "count": count} for tag, count in most_common]
+
+
+def popular_tags(limit=20):
+    """
+    Return the most-used tags across all posts, most popular first,
+    capped at `limit`.
+
+    Tag popularity doesn't need to be near-real-time (Document 4 §2.2),
+    so the underlying computation (_popular_tags_full) is cached for 5
+    minutes — the existing full-table-scan-and-count-in-Python logic
+    still runs, just at most once every 5 minutes instead of on every
+    request, per Document 4 §4 (C-3)'s framing.
+
+    `limit` is applied here, on every call, AFTER the cached (or freshly
+    computed) full result is retrieved — so a cache hit with a different
+    `limit` than a previous caller used still returns the correctly
+    capped result, not a stale limit from whichever call happened to
+    populate the cache first.
+
+    Returns a list of dicts: [{"tag": str, "count": int}, ...].
+    """
+    full_result = _popular_tags_full()
+    return full_result[:limit] if limit else full_result
