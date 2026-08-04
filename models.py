@@ -12,9 +12,73 @@ Changes vs original (Alembic will auto-detect these):
 """
 
 import datetime
+from enum import Enum
 from flask_login import UserMixin
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from extensions import db
+
+# ============================================================================
+# STATUS ENUMS  (Document 3 §5)
+#
+# db.Enum(..., native_enum=False) at the SQLAlchemy level rather than a raw
+# CheckConstraint string — this gets Python-side validation for free
+# (assigning an invalid value raises immediately in the application,
+# before it ever reaches the database) in addition to the database-level
+# CHECK constraint that native_enum=False still generates.
+#
+# native_enum=False is deliberate: stores as VARCHAR + CHECK constraint
+# rather than a native Postgres ENUM type, since native Postgres enums
+# require an awkward `ALTER TYPE ... ADD VALUE` migration every time a
+# new status value is added — exactly the kind of migration friction that
+# discourages evolving a status set later. A CHECK-constraint-backed enum
+# is altered with an ordinary `ALTER TABLE ... DROP/ADD CONSTRAINT`.
+#
+# Per your instruction, the columns below are updated directly (no
+# separate migration file) — running `db.create_all()` / an Alembic
+# autogenerate against this file will pick up the new CHECK constraints
+# on next migration, same as any other model change.
+# ============================================================================
+
+class MessageStatus(str, Enum):
+    SENT      = "sent"
+    DELIVERED = "delivered"
+    READ      = "read"
+
+
+class ConnectionStatus(str, Enum):
+    PENDING  = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    BLOCKED  = "blocked"
+
+
+class ThreadJoinRequestStatus(str, Enum):
+    PENDING  = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    INVITED  = "invited"
+
+
+class HomeworkSubmissionStatus(str, Enum):
+    PENDING    = "pending"
+    ACCEPTED   = "accepted"
+    COMPLETED  = "completed"
+    DECLINED   = "declined"
+    CANCELLED  = "cancelled"
+
+
+class StudySessionCalendarStatus(str, Enum):
+    PENDING    = "pending"
+    CONFIRMED  = "confirmed"
+    DECLINED   = "declined"
+    CANCELLED  = "cancelled"
+    COMPLETED  = "completed"
+
+
+class ThreadMessageStatus(str, Enum):
+    SENT      = "sent"
+    DELIVERED = "delivered"
+    READ      = "read"
 
 # ============================================================================
 # CORE USER MODELS
@@ -261,7 +325,7 @@ class StudySessionCalendar(db.Model):
     proposed_times  = db.Column(db.JSON)
     confirmed_time  = db.Column(db.DateTime)
     duration_minutes= db.Column(db.Integer, default=60)
-    status          = db.Column(db.String(20), default='pending')
+    status          = db.Column(db.Enum(StudySessionCalendarStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=StudySessionCalendarStatus.PENDING.value)
 
     created_at   = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     confirmed_at = db.Column(db.DateTime)
@@ -364,7 +428,7 @@ class HomeworkSubmission(db.Model):
     feedback_resources = db.Column(MutableList.as_mutable(db.JSON), default=list)
     feedback_at        = db.Column(db.DateTime)
 
-    status               = db.Column(db.String(20), default="pending", index=True)
+    status               = db.Column(db.Enum(HomeworkSubmissionStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=HomeworkSubmissionStatus.PENDING.value, index=True)
     reaction_type        = db.Column(db.String(50))
     response_time_seconds= db.Column(db.Integer, nullable=True)
     reaction_at          = db.Column(db.DateTime, nullable=True)
@@ -828,8 +892,7 @@ class ThreadJoinRequest(db.Model):
     requester_id = db.Column(db.Integer, db.ForeignKey("users.id"),   nullable=False, index=True)
 
     message     = db.Column(db.Text)
-    status      = db.Column(db.String(20), default="pending", index=True)
-    requested_at= db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    status      = db.Column(db.Enum(ThreadJoinRequestStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=ThreadJoinRequestStatus.PENDING.value, index=True)
     reviewed_at = db.Column(db.DateTime)
     reviewed_by = db.Column(db.Integer, db.ForeignKey("users.id"))
 
@@ -883,7 +946,7 @@ class ThreadMessage(db.Model):
     # ── NEW: Delivery / read status ───────────────────────────────────────
     # Values: 'sent' | 'delivered' | 'read'
     # Alembic will generate: ALTER TABLE thread_messages ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sent'
-    status = db.Column(db.String(20), nullable=False, default='sent')
+    status = db.Column(db.Enum(ThreadMessageStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=ThreadMessageStatus.SENT.value)
 
     # Timestamps
     sent_at   = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)
@@ -1076,10 +1139,7 @@ class Connection(db.Model):
     requester_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     receiver_id  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
 
-    status       = db.Column(db.String(20), default="pending", index=True)
-    requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    responded_at = db.Column(db.DateTime)
-    is_seen      = db.Column(db.Boolean, default=False)
+    status       = db.Column(db.Enum(ConnectionStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=ConnectionStatus.PENDING.value, index=True)
 
     connection_type  = db.Column(db.String(30), default="connection")
     requester_notes  = db.Column(db.Text)
@@ -1151,7 +1211,7 @@ class Message(db.Model):
 
     subject        = db.Column(db.String(200), nullable=True)
     body           = db.Column(db.Text, nullable=False)
-    status         = db.Column(db.String(200), default='pending')
+    status         = db.Column(db.Enum(MessageStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=MessageStatus.SENT.value)
     client_temp_id = db.Column(db.String(300))
 
     sent_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
