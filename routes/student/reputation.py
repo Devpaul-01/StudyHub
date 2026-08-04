@@ -321,61 +321,17 @@ def reputation_stats(current_user):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. ADMIN AWARD  (admin/system only)
+# 5. ADMIN AWARD — REMOVED (Document 3 §6.3, confirmed)
+#
+# POST /reputation/award was unreachable dead code: token_required (before
+# Document 3 §6.1's role_required fix) hardcoded a student-only role check,
+# so no account could ever pass both that gate AND this endpoint's own
+# inline "admin/system only" check. There is no admin blueprint, admin UI,
+# or CLI tool anywhere in the codebase that calls this route, and every
+# legitimate reputation award already happens automatically via
+# award_reputation()/check_and_award_milestone() triggered by real user
+# actions. Confirmed for outright removal rather than fix-and-keep.
 # ─────────────────────────────────────────────────────────────────────────────
-
-@reputation_bp.route("/reputation/award", methods=["POST"])
-@token_required
-def award_reputation_endpoint(current_user):
-    # FIX: previously had no authorization check — any authenticated student
-    # could grant arbitrary reputation points to any account (including their own).
-    #
-    # NOTE (Document 3 §6.3): this endpoint is flagged for possible removal
-    # outright, pending confirmation per the security-review document —
-    # left in place, still admin-gated, until that's decided separately.
-    if current_user.role not in ("admin", "system"):
-        return error_response("Forbidden", 403)
-
-    try:
-        data = request.get_json()
-        user_id = data.get("user_id")
-        action = data.get("action")
-        related_type = data.get("related_type")
-        related_id = data.get("related_id")
-        custom_points = data.get("points")
-
-        if not user_id or (not action and not custom_points):
-            return error_response("user_id and (action or points) required")
-
-        history = award_reputation(user_id, action, related_type, related_id, custom_points)
-
-        if not history:
-            return error_response("Failed to award reputation")
-
-        # Document 2 §5 fix: award_reputation() no longer commits internally
-        # (services don't commit — that's the route's job). This route
-        # previously relied entirely on that internal commit; committed
-        # explicitly here so the reputation change is actually persisted.
-        db.session.commit()
-
-        user = User.query.get(user_id)
-
-        return success_response(
-            "Reputation awarded",
-            data={
-                "user_id": user_id,
-                "points_change": history.points_change,
-                "new_reputation": user.reputation,
-                "new_level": user.reputation_level,
-            },
-        ), 201
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Award reputation error: {str(e)}")
-        return error_response("Failed to award reputation")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. LEVELS LOOKUP  (public — no auth required)
 # ─────────────────────────────────────────────────────────────────────────────

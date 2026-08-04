@@ -295,56 +295,18 @@ def feature_badge(current_user, badge_id):
         return error_response("Failed to feature badge")
 
 
-@badges_bp.route("/badges/award", methods=["POST"])
-@token_required
-def award_badge_endpoint(current_user):
-    """
-    Internal endpoint to award a badge directly. Restricted to admin and
-    system accounts only.
-
-    NOTE (Document 3 §6.3): this endpoint is flagged for possible removal
-    outright — pending your confirmation per the security-review document.
-    Left in place, still admin-gated, until that's decided.
-
-    Body: {"user_id": 123, "badge_name": "Helpful Hero"}
-    """
-    if current_user.role not in ("admin", "system"):
-        return error_response("Forbidden", 403)
-
-    try:
-        data = request.get_json()
-
-        user_id = data.get("user_id")
-        badge_name = data.get("badge_name")
-
-        if not user_id or not badge_name:
-            return error_response("user_id and badge_name required")
-
-        user_badge = badge_service.check_and_award_badge(user_id, badge_name)
-
-        if not user_badge:
-            return error_response("Badge already earned or user doesn't qualify")
-
-        badge = Badge.query.get(user_badge.badge_id)
-
-        return success_response(
-            f"Badge '{badge.name}' awarded",
-            data={
-                "user_id": user_id,
-                "badge": {
-                    "id": badge.id,
-                    "name": badge.name,
-                    "icon": badge.icon,
-                    "rarity": badge.rarity
-                },
-                "earned_at": user_badge.earned_at.isoformat()
-            }
-        ), 201
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Award badge error: {str(e)}")
-        return error_response("Failed to award badge")
+# ─────────────────────────────────────────────────────────────────────────
+# POST /badges/award — REMOVED (Document 3 §6.3, confirmed)
+#
+# Was unreachable dead code: token_required (before Document 3 §6.1's
+# role_required fix) hardcoded a student-only role check, so no account
+# could ever pass both that gate AND this endpoint's own inline
+# "admin/system only" check. There is no admin blueprint, admin UI, or
+# CLI tool anywhere in the codebase that calls this route, and every
+# legitimate badge award already happens automatically via
+# check_and_award_badge()/check_all_badges_for_user() triggered by real
+# user actions. Confirmed for outright removal rather than fix-and-keep.
+# ─────────────────────────────────────────────────────────────────────────
 
 
 @badges_bp.route("/badges/top-earners", methods=["GET"])
