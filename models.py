@@ -15,7 +15,30 @@ import datetime
 from enum import Enum
 from flask_login import UserMixin
 from sqlalchemy.ext.mutable import MutableDict, MutableList
+from sqlalchemy.dialects import postgresql
 from extensions import db
+
+# ============================================================================
+# JSONB MIGRATION  (Document 4 §3.4)
+#
+# Post.tags / User.skills move from plain db.JSON to a dialect-conditional
+# JSONB: postgresql.JSONB in production, ordinary db.JSON everywhere else
+# (SQLite local dev in particular). db.JSON().with_variant(postgresql.JSONB,
+# "postgresql") is what makes this work unchanged in both environments —
+# SQLite keeps working exactly as it does today; Postgres gets binary
+# JSONB storage plus the ability to add GIN indexes for containment
+# queries (see the GIN indexes added in each model's __table_args__ below).
+#
+# NOTE: editing this file alone does not change any already-deployed
+# database's actual on-disk column type or add any index — an Alembic
+# autogenerate (or equivalent manual DDL) still has to run against a real
+# database for any of this to take effect there. JSON -> JSONB in
+# particular is a full column rewrite on Postgres and needs a maintenance
+# window per Document 4 §3.4 / Document 5 §3 item 9, not a routine
+# autogenerate-and-apply.
+# ============================================================================
+
+JSONB_VARIANT = db.JSON().with_variant(postgresql.JSONB, "postgresql")
 
 # ============================================================================
 # STATUS ENUMS  (Document 3 §5)
@@ -475,7 +498,9 @@ class User(UserMixin, db.Model):
     total_posts   = db.Column(db.Integer, default=0)
     total_helpful = db.Column(db.Integer, default=0)
 
-    skills         = db.Column(MutableList.as_mutable(db.JSON), default=list)
+    # Document 4 §3.4: JSONB on Postgres (dialect-conditional), plain JSON
+    # on SQLite. GIN index added below in __table_args__.
+    skills         = db.Column(MutableList.as_mutable(JSONB_VARIANT), default=list)
     learning_goals = db.Column(MutableList.as_mutable(db.JSON), default=list)
     study_schedule = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
 
@@ -527,6 +552,12 @@ class User(UserMixin, db.Model):
     threads_created    = db.relationship("Thread", foreign_keys="Thread.creator_id", backref="creator", lazy="dynamic")
     badges             = db.relationship("UserBadge", backref="user", lazy="dynamic", cascade="all, delete-orphan")
     bookmark_relations = db.relationship("Bookmark", backref="user", lazy="dynamic", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Document 4 §3.4: GIN index on skills for containment queries
+        # (Postgres-specific — see the identical note on Post.__table_args__).
+        db.Index("idx_users_skills_gin", "skills", postgresql_using="gin"),
+    )
 
     @property
     def is_active(self):
@@ -652,7 +683,13 @@ class Post(db.Model):
 
     resources  = db.Column(MutableList.as_mutable(db.JSON))
     department = db.Column(db.String(100), index=True)
-    tags       = db.Column(MutableList.as_mutable(db.JSON), default=list)
+    # Document 4 §3.4: JSONB on Postgres (dialect-conditional — see
+    # JSONB_VARIANT at module scope), plain JSON on SQLite. GIN index
+    # (below, in __table_args__) is the actual performance payoff — tag
+    # containment queries go from a sequential scan to an index scan on
+    # Postgres. GIN indexes are Postgres-specific; this is a no-op on
+    # SQLite (see __table_args__ note).
+    tags       = db.Column(MutableList.as_mutable(JSONB_VARIANT), default=list)
 
     positive_reactions_count = db.Column(db.Integer, default=0)
     dislikes_count           = db.Column(db.Integer, default=0)
@@ -685,6 +722,15 @@ class Post(db.Model):
     views     = db.relationship("PostView",      backref="post", lazy="dynamic", cascade="all, delete-orphan")
     follows   = db.relationship("PostFollow",     backref="post", lazy="dynamic", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        # Document 4 §3.4: GIN index on tags for containment queries.
+        # postgresql_using="gin" makes this Postgres-specific by
+        # construction — Alembic/SQLAlchemy will skip it (or it must be
+        # excluded from a SQLite create_all path) on other dialects,
+        # since GIN is not a SQLite index type.
+        db.Index("idx_posts_tags_gin", "tags", postgresql_using="gin"),
+    )
+
     def __repr__(self):
         return f"<Post {self.id}: {self.title[:30]}>"
 
@@ -710,7 +756,12 @@ class Comment(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     post_id    = db.Column(db.Integer, db.ForeignKey("posts.id"), nullable=False, index=True)
     student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    parent_id  = db.Column(db.Integer, db.ForeignKey("comments.id"), nullable=True)
+    # Document 4 §3.2: CASCADE — deleting a top-level comment should remove
+    # its replies. This matches the existing ORM-level
+    # cascade="all, delete-orphan" on Comment.replies below; adding
+    # ondelete="CASCADE" here enforces the same behavior at the DB level
+    # too, as defense-in-depth for any bulk delete that bypasses the ORM.
+    parent_id  = db.Column(db.Integer, db.ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
 
     text_content = db.Column(db.Text, nullable=False)
     resources    = db.Column(MutableList.as_mutable(db.JSON))
@@ -1157,11 +1208,48 @@ class Connection(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('requester_id', 'receiver_id', name='unique_connection'),
-        db.CheckConstraint('requester_id != receiver_id', name='no_self_connection')
+        db.CheckConstraint('requester_id != receiver_id', name='no_self_connection'),
     )
 
     def __repr__(self):
         return f"<Connection: {self.requester_id} -> {self.receiver_id} [{self.status}]>"
+
+
+# ----------------------------------------------------------------------------
+# Document 4 §3.1: functional (expression) index on the normalized/unordered
+# connection pair plus status, serving every or_(and_(...), and_(...))
+# bidirectional connection lookup across connections.py/messages.py/search.py.
+#
+# NOTE — this is a *lookup-speed* index only, and is deliberately NOT unique
+# and NOT the same thing as the reverse-duplicate-prevention index specced in
+# Document 1 §5 / Document 4 §3.1's own "or, more efficiently, a single
+# expression index..." aside. That one is a separate, UNIQUE functional index
+# on just (LEAST(requester_id,receiver_id), GREATEST(requester_id,receiver_id))
+# with no status column, whose job is to make a reverse-direction duplicate
+# connection row impossible to insert. Implementing both here would conflate
+# a constraint with a performance index; only the lookup-speed index
+# requested for this phase is added. The uniqueness guarantee remains a
+# separate, not-yet-implemented item — flag if you want it added too.
+#
+# LEAST/GREATEST are Postgres functions with no SQLite equivalent. Unlike
+# postgresql_using=... on a plain db.Index() (which only changes the index
+# *type* on Postgres but still emits the same DDL, including the LEAST/
+# GREATEST expressions, on every dialect — this was tested and confirmed to
+# break `db.create_all()` on SQLite), a raw DDL() gated with
+# .execute_if(dialect="postgresql") is skipped entirely on non-Postgres
+# dialects, which is what actually makes this Postgres-only.
+# ----------------------------------------------------------------------------
+from sqlalchemy import event, DDL  # noqa: E402
+
+_connections_pair_status_index = DDL(
+    "CREATE INDEX IF NOT EXISTS idx_connections_pair_status "
+    "ON connections (LEAST(requester_id, receiver_id), GREATEST(requester_id, receiver_id), status)"
+)
+event.listen(
+    Connection.__table__,
+    "after_create",
+    _connections_pair_status_index.execute_if(dialect="postgresql"),
+)
 
 
 class Mention(db.Model):
@@ -1205,6 +1293,14 @@ class Message(db.Model):
     __tablename__ = "messages"
 
     id          = db.Column(db.Integer, primary_key=True)
+    # Document 4 §3.2: deliberately left as RESTRICT (Postgres/SQLAlchemy's
+    # default when no ondelete= is given) rather than CASCADE — cascading a
+    # user deletion into these would silently delete the *other* user's
+    # message history too, which is not the intended behavior. Confirmed
+    # with the user (2026-08-04). If account deletion is ever built as a
+    # feature, the right model is a soft-delete/anonymization flow on User,
+    # not a hard DELETE — that's a separate product decision, not addressed
+    # here.
     sender_id   = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     resources   = db.Column(MutableList.as_mutable(db.JSON), default=list)
     receiver_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
@@ -1370,6 +1466,9 @@ class CommentLike(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('comment_id', 'student_id', name='unique_comment_like'),
+        # Document 4 §3.1: serves batch "did I like any of these comments"
+        # reverse lookups (WHERE student_id = X AND comment_id IN (...)).
+        db.Index("idx_comment_likes_student_comment", "student_id", "comment_id"),
     )
 
     def __repr__(self):
@@ -1388,6 +1487,9 @@ class PostReaction(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('post_id', 'student_id', name='unique_post_reaction'),
+        # Document 4 §3.1: serves batch "did I react to any of these posts"
+        # reverse lookups (WHERE student_id = X AND post_id IN (...)).
+        db.Index("idx_post_reactions_student_post", "student_id", "post_id"),
     )
 
     def __repr__(self):
@@ -1459,7 +1561,8 @@ class ReputationHistory(db.Model):
     __tablename__ = "reputation_history"
 
     id             = db.Column(db.Integer, primary_key=True)
-    user_id        = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    # Document 4 §3.2: CASCADE — meaningless without the user.
+    user_id        = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     action         = db.Column(db.String(100), nullable=False)
     points_change  = db.Column(db.Integer, nullable=False)
     related_type   = db.Column(db.String(20))
@@ -1528,7 +1631,8 @@ class UserActivity(db.Model):
     __tablename__ = "user_activity"
 
     id            = db.Column(db.Integer, primary_key=True)
-    user_id       = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    # Document 4 §3.2: CASCADE — meaningless without the user.
+    user_id       = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     activity_date = db.Column(db.Date, default=datetime.date.today, nullable=False, index=True)
 
     posts_created   = db.Column(db.Integer, default=0)
@@ -1584,7 +1688,10 @@ class Notification(db.Model):
     __tablename__ = "notifications"
 
     id                = db.Column(db.Integer, primary_key=True)
-    user_id           = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Document 4 §3.2: CASCADE — a notification is meaningless without its
+    # user; if a user account is ever hard-deleted, their notifications
+    # should go with it.
+    user_id           = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     title             = db.Column(db.String(200), nullable=False)
     body              = db.Column(db.Text, nullable=False)
     link              = db.Column(db.String(200))
