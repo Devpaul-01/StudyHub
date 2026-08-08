@@ -31,6 +31,9 @@ from routes.student.helpers import (
 # same name so every existing call site in this file keeps working
 # unchanged.
 from services.study_buddy_service import calculate_match_score
+# Phase 5b (Document 4 §1): WRITE_HEAVY for preference/request/session
+# mutations, BURST_OK for the cancel/remove actions (low-risk cleanup).
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 study_buddy_bp = Blueprint("student_study_buddy", __name__)
 
@@ -40,6 +43,7 @@ study_buddy_bp = Blueprint("student_study_buddy", __name__)
 # ============================================================================
 
 @study_buddy_bp.route("/study-buddy/preferences", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def set_preferences(current_user):
     try:
@@ -84,6 +88,7 @@ def set_preferences(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/preferences", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_preferences(current_user):
     try:
@@ -109,6 +114,7 @@ def get_preferences(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/preferences", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_preferences(current_user):
     try:
@@ -162,6 +168,7 @@ def update_preferences(current_user):
 #   Total extra queries: 2 (flat, regardless of candidate count)
 # ---------------------------------------------------------------------------
 @study_buddy_bp.route("/study-buddy/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_suggestions(current_user):
     """
@@ -344,6 +351,7 @@ def get_suggestions(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/suggestions/details/<int:user_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_match_details(current_user, user_id):
     try:
@@ -421,6 +429,7 @@ def get_match_details(current_user, user_id):
 # ============================================================================
 
 @study_buddy_bp.route("/study-buddy/request/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def send_request(current_user, user_id):
     try:
@@ -484,6 +493,7 @@ def send_request(current_user, user_id):
 
 
 @study_buddy_bp.route("/study-buddy/match/<int:match_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_match_details_partnership(current_user, match_id):
     try:
@@ -531,6 +541,7 @@ def get_match_details_partnership(current_user, match_id):
 
 
 @study_buddy_bp.route("/study-buddy/session", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def log_study_session(current_user):
     try:
@@ -566,6 +577,7 @@ def log_study_session(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/sessions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_session_history(current_user):
     try:
@@ -610,6 +622,7 @@ def get_session_history(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/remove/<int:match_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def end_partnership(current_user, match_id):
     try:
@@ -643,6 +656,7 @@ def end_partnership(current_user, match_id):
 
 
 @study_buddy_bp.route("/study-buddy/requests/sent", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_sent_requests(current_user):
     try:
@@ -683,6 +697,7 @@ def get_sent_requests(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/requests/received", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_received_requests(current_user):
     try:
@@ -748,6 +763,7 @@ def get_received_requests(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/requests/connected", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_buddy_connections(current_user):
     try:
@@ -804,6 +820,7 @@ def get_buddy_connections(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/cancel/<int:request_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def cancel_request(current_user, request_id):
     try:
@@ -830,6 +847,7 @@ def cancel_request(current_user, request_id):
 # ============================================================================
 
 @study_buddy_bp.route("/study-buddy/success-stories", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_success_stories(current_user):
     try:
@@ -884,6 +902,7 @@ def get_success_stories(current_user):
 
 
 @study_buddy_bp.route("/study-buddy/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_platform_stats(current_user):
     try:
