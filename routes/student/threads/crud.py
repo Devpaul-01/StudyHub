@@ -35,6 +35,9 @@ from errors import ValidationError
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Phase 5b (Document 4 §1): WRITE_HEAVY for thread create/update/delete/
+# settings mutations.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 import sys
 import os
@@ -53,6 +56,7 @@ def threads_page(current_user):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/create", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_thread(current_user):
     """Create thread from a post."""
@@ -166,6 +170,7 @@ def create_thread(current_user):
 
 
 @threads_crud_bp.route("/threads/create-standalone", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_standalone_thread(current_user):
     """Create thread WITHOUT a post (standalone study group)."""
@@ -275,6 +280,7 @@ def create_standalone_thread(current_user):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/<int:resource_id>/details", methods=["POST"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def thread_details(current_user, resource_id):
     try:
@@ -378,6 +384,7 @@ def thread_details(current_user, resource_id):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/<int:thread_id>/close", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def close_thread(current_user, thread_id):
     """
@@ -404,6 +411,7 @@ def close_thread(current_user, thread_id):
 
 
 @threads_crud_bp.route("/threads/<int:thread_id>/reopen", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def reopen_thread(current_user, thread_id):
     try:
@@ -426,6 +434,7 @@ def reopen_thread(current_user, thread_id):
 
 
 @threads_crud_bp.route("/threads/<int:thread_id>", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_thread(current_user, thread_id):
     """Update thread details (creator only)."""
@@ -494,6 +503,7 @@ def update_thread(current_user, thread_id):
 
 
 @threads_crud_bp.route("/threads/<int:thread_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_thread(current_user, thread_id):
     """Delete thread (creator only). Cascade deletes all members, messages, requests."""
@@ -542,6 +552,7 @@ def delete_thread(current_user, thread_id):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/<int:thread_id>/avatar", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_thread_avatar(current_user, thread_id):
     """Upload/replace thread avatar (creator only). Uses Cloudinary."""
@@ -634,6 +645,7 @@ def upload_thread_avatar(current_user, thread_id):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/<int:thread_id>/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_thread_stats(current_user, thread_id):
     """Get thread statistics (members only)."""
@@ -699,6 +711,7 @@ def get_thread_stats(current_user, thread_id):
 # ============================================================================
 
 @threads_crud_bp.route("/threads/<int:thread_id>/settings", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_thread_settings(current_user, thread_id):
     try:
@@ -726,6 +739,7 @@ def get_thread_settings(current_user, thread_id):
 
 
 @threads_crud_bp.route("/threads/<int:thread_id>/settings", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_thread_settings(current_user, thread_id):
     try:

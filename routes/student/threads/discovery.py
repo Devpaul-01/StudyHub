@@ -33,6 +33,8 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Phase 5b (Document 4 §1): PUBLIC_READ for discovery/recommendation reads.
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
 import sys
 import os
@@ -41,6 +43,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_discovery_bp = Blueprint("threads_discovery", __name__)
 @threads_discovery_bp.route("/threads/departments", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_department_stats(current_user):
     """Get thread statistics by department. FIX: case() now imported."""
@@ -93,6 +96,7 @@ def get_department_stats(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/popular", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_popular_threads_by_members(current_user):
     """Get most popular threads by member count (excluding user's department)."""
@@ -195,6 +199,7 @@ def get_popular_threads_by_members(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/recommended", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_recommended_threads(current_user):
     """Get personalized thread recommendations. FIX: SQL pre-filter limits in-memory set."""
@@ -363,6 +368,7 @@ def get_recommended_threads(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/help/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_help_suggestions(current_user):
     """Find users the current user can help based on onboarding details."""
@@ -504,6 +510,7 @@ def get_help_suggestions(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/my-threads", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_threads(current_user):
     """Get all threads user is a member of. Includes last_message preview."""
@@ -600,6 +607,7 @@ def get_my_threads(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/open", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def open_thread(current_user):
     """List all open threads, ordered by department match then activity."""
@@ -650,6 +658,7 @@ def open_thread(current_user):
 # ============================================================================
 
 @threads_discovery_bp.route("/threads/<int:thread_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_thread(current_user, thread_id):
     """

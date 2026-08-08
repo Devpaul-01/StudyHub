@@ -32,6 +32,11 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Phase 5b (Document 4 §1): AI_EXPENSIVE — meeting-notes generation is a
+# real AI-provider call, exactly the kind of per-call-cost endpoint this
+# tier exists for. GET (fetch existing notes) -> BURST_OK, a cheap DB read
+# but still worth a light guard since it's per-thread and easy to loop.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 import sys
 import os
@@ -40,6 +45,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_ai_bp = Blueprint("threads_ai", __name__)
 @threads_ai_bp.route("/threads/<int:thread_id>/meeting-notes", methods=["POST"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def generate_meeting_notes(current_user, thread_id):
     membership = ThreadMember.query.filter_by(thread_id=thread_id, student_id=current_user.id).first()
@@ -124,6 +130,7 @@ No markdown, no explanation."""
 
 
 @threads_ai_bp.route("/threads/<int:thread_id>/meeting-notes", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_meeting_notes(current_user, thread_id):
     membership = ThreadMember.query.filter_by(thread_id=thread_id, student_id=current_user.id).first()

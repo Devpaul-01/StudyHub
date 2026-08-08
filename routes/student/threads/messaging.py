@@ -33,6 +33,9 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Phase 5b (Document 4 §1): WRITE_HEAVY for send/edit/delete/upload,
+# BURST_OK for the message-list GET (polled frequently by chat UIs).
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 import sys
 import os
@@ -104,6 +107,7 @@ def detect_mentions_in_thread(text_content, sender_id, thread_id, message_id):
 # ============================================================================
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_thread_messages(current_user, thread_id):
     """
@@ -273,6 +277,7 @@ MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages/upload", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_thread_attachment(current_user, thread_id):
     """
@@ -368,6 +373,7 @@ def upload_thread_attachment(current_user, thread_id):
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages/search", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_thread_messages(current_user, thread_id):
     """Search messages within a thread by keyword."""
@@ -422,6 +428,7 @@ def search_thread_messages(current_user, thread_id):
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages/pinned", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_pinned_messages(current_user, thread_id):
     """Return all pinned messages for a thread (members only)."""
@@ -461,6 +468,7 @@ def get_pinned_messages(current_user, thread_id):
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def send_thread_message(current_user, thread_id):
     """Send message in thread (REST fallback — primary path is WebSocket)."""
@@ -514,6 +522,7 @@ def send_thread_message(current_user, thread_id):
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages/<int:message_id>", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def edit_thread_message(current_user, thread_id, message_id):
     """Edit your own message."""
@@ -550,6 +559,7 @@ def edit_thread_message(current_user, thread_id, message_id):
 
 
 @threads_messaging_bp.route("/threads/<int:thread_id>/messages/<int:message_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_thread_message(current_user, thread_id, message_id):
     """Delete your own message (soft delete)."""

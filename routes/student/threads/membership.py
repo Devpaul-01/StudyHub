@@ -32,6 +32,10 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Phase 5b (Document 4 §1): WRITE_HEAVY for membership mutations (join,
+# leave, remove, invite, role change, add-members); BURST_OK for the
+# cheaper accept/decline/cancel actions on an already-existing row.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 import sys
 import os
@@ -40,6 +44,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_membership_bp = Blueprint("threads_membership", __name__)
 @threads_membership_bp.route("/threads/<int:thread_id>/leave", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def leave_thread(current_user, thread_id):
     """Leave a thread you're a member of."""
@@ -82,6 +87,7 @@ def leave_thread(current_user, thread_id):
 
 
 @threads_membership_bp.route("/threads/<int:thread_id>/remove/<int:user_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def remove_member(current_user, thread_id, user_id):
     """Remove a member from thread (creator/moderator only)."""
@@ -143,6 +149,7 @@ def remove_member(current_user, thread_id, user_id):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/<int:thread_id>/members", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_thread_members(current_user, thread_id):
     """
@@ -200,6 +207,7 @@ def get_thread_members(current_user, thread_id):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/pending-requests", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_pending_requests(current_user):
     """Get all pending join requests for threads you created."""
@@ -246,6 +254,7 @@ def get_pending_requests(current_user):
 
 
 @threads_membership_bp.route("/threads/my-requests", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_join_requests(current_user):
     """Get all join requests YOU sent that are still pending."""
@@ -285,6 +294,7 @@ def get_my_join_requests(current_user):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/<int:thread_id>/members/<int:user_id>/role", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_member_role(current_user, thread_id, user_id):
     """Update member's role (creator only). Roles: member, moderator."""
@@ -339,6 +349,7 @@ def update_member_role(current_user, thread_id, user_id):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/requests/<int:request_id>/cancel", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def cancel_join_request(current_user, request_id):
     """Cancel your own pending join request. FIX: dead code block removed."""
@@ -362,6 +373,7 @@ def cancel_join_request(current_user, request_id):
 
 
 @threads_membership_bp.route("/threads/<int:resource_id>/join", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def request_join_thread(current_user, resource_id):
     """
@@ -468,6 +480,7 @@ def request_join_thread(current_user, resource_id):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/<int:thread_id>/requests/<int:request_id>/approve", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def approve_join_request(current_user, thread_id, request_id):
     """
@@ -575,6 +588,7 @@ def approve_join_request(current_user, thread_id, request_id):
 
 
 @threads_membership_bp.route("/threads/<int:thread_id>/requests/<int:request_id>/reject", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def reject_join_request(current_user, thread_id, request_id):
     """
@@ -611,6 +625,7 @@ def reject_join_request(current_user, thread_id, request_id):
 # ============================================================================
 
 @threads_membership_bp.route("/threads/<int:thread_id>/invite/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def invite_to_thread(current_user, thread_id, user_id):
     """
@@ -688,6 +703,7 @@ def invite_to_thread(current_user, thread_id, user_id):
 
 
 @threads_membership_bp.route("/threads/invites", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_invites(current_user):
     """Get all thread invites for the current user."""
@@ -734,6 +750,7 @@ def get_my_invites(current_user):
 
 
 @threads_membership_bp.route("/threads/invites/<int:invite_id>/accept", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def accept_thread_invite(current_user, invite_id):
     """
@@ -849,6 +866,7 @@ def accept_thread_invite(current_user, invite_id):
 
 
 @threads_membership_bp.route("/threads/invites/<int:invite_id>/decline", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def decline_thread_invite(current_user, invite_id):
     """Decline a thread invitation."""
@@ -873,6 +891,7 @@ def decline_thread_invite(current_user, invite_id):
 
 
 @threads_membership_bp.route("/threads/<int:thread_id>/members/add", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def add_members_to_thread(current_user, thread_id):
     """
