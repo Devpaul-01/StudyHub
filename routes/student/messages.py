@@ -54,6 +54,9 @@ from routes.student.helpers import (
 # arrive via the routes.student.helpers shim). Imported here at the same
 # name so every existing call site in this file keeps working unchanged.
 from services.connection_service import can_message
+# Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on message send/delete/
+# block actions, BURST_OK for lightweight read-receipt-style actions.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 messages_bp = Blueprint("student_messages", __name__)
 
@@ -93,6 +96,7 @@ def _visible_to_me(msg, current_user_id: int) -> bool:
     return True
 
 @messages_bp.route("/messages/resources/upload", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_message_resource(current_user):
     """
@@ -205,6 +209,7 @@ def upload_message_resource(current_user):
 # ============================================================================
 
 @messages_bp.route("/messages/shared-media/<int:partner_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_shared_media(current_user, partner_id):
     """
@@ -408,6 +413,7 @@ def detect_media_type(url):
     return "unknown"
 
 @messages_bp.route("/messages/shared-media/<int:partner_id>/count", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_shared_media_count(current_user, partner_id):
     """
@@ -475,6 +481,7 @@ def get_shared_media_count(current_user, partner_id):
         return error_response("Failed to get media count")
     
 @messages_bp.route("/messages/<int:message_id>/delete-for-everyone", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_message_for_everyone(current_user, message_id):
     try:
@@ -497,6 +504,7 @@ def delete_message_for_everyone(current_user, message_id):
         return error_response("Failed to delete message")
     
 @messages_bp.route("/messages/<int:message_id>/delete-for-me", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_message(current_user, message_id):
     try:
@@ -520,6 +528,7 @@ def delete_message(current_user, message_id):
         
         
 @messages_bp.route("/messages/clear/<int:partner_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def clear_conversation(current_user, partner_id):
     try:
@@ -543,6 +552,7 @@ def clear_conversation(current_user, partner_id):
         current_app.logger.error(f"Clear chat error: {str(e)}")
         return error_response("Failed to clear chat")
 @messages_bp.route("/messages/conversations", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_conversations(current_user):
     """
@@ -832,6 +842,7 @@ def get_conversations(current_user):
 
 
 @messages_bp.route("/messages/conversation/<int:partner_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_conversation_messages(current_user, partner_id):
     """
@@ -995,6 +1006,7 @@ def get_conversation_messages(current_user, partner_id):
 
 
 @messages_bp.route("/messages/<int:message_id>/mark-read", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_message_read(current_user, message_id):
     """
@@ -1023,6 +1035,7 @@ def mark_message_read(current_user, message_id):
 
 
 @messages_bp.route("/messages/mark-all-read/<int:partner_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_all_read(current_user, partner_id):
     """
@@ -1048,6 +1061,7 @@ def mark_all_read(current_user, partner_id):
         return error_response("Failed to mark messages as read")
 
 @messages_bp.route("/messages/unread-count", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_unread_count(current_user):
     """
@@ -1076,6 +1090,7 @@ def get_unread_count(current_user):
 
 
 @messages_bp.route("/messages/search", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_messages(current_user):
     """
@@ -1161,6 +1176,7 @@ def search_messages(current_user):
 
 
 @messages_bp.route("/messages/can-message/<int:user_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def check_can_message(current_user, user_id):
     """
@@ -1247,6 +1263,7 @@ def check_can_message(current_user, user_id):
 
 
 @messages_bp.route("/messages/block/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def block_user_messaging(current_user, user_id):
     """
@@ -1274,6 +1291,7 @@ def block_user_messaging(current_user, user_id):
 
 
 @messages_bp.route("/messages/unblock/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def unblock_user_messaging(current_user, user_id):
     """
@@ -1302,6 +1320,7 @@ def unblock_user_messaging(current_user, user_id):
 
 
 @messages_bp.route("/messages/report/<int:message_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def report_message(current_user, message_id):
     """
