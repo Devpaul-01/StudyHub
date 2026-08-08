@@ -22,6 +22,12 @@ from flask import Blueprint, request, jsonify, current_app
 
 from routes.student.helpers import token_required, success_response, error_response
 from services import leaderboard_service
+# Phase 5b (Document 4 §1): PUBLIC_READ-tier limiting on leaderboard reads —
+# this file's own docstring already notes students check leaderboards
+# "obsessively," making it exactly the kind of read-heavy endpoint the
+# ticket's table calls out. WRITE_HEAVY for the admin snapshot-trigger
+# route (a genuine write, low frequency, but still worth guarding).
+from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
 
 leaderboard_bp = Blueprint("student_leaderboard", __name__)
 
@@ -45,6 +51,7 @@ def _validate_period_or_error(period: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/global", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_global_leaderboard(current_user):
     """
@@ -81,6 +88,7 @@ def get_global_leaderboard(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/department", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_department_leaderboard(current_user):
     """
@@ -124,6 +132,7 @@ def get_department_leaderboard(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/me", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_rank(current_user):
     """Full rank card: rank, score breakdown, nearby users, streaks, progress."""
@@ -152,6 +161,7 @@ def get_my_rank(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/nearby", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_nearby_users(current_user):
     """
@@ -198,6 +208,7 @@ def get_nearby_users(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/connections", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_connections_leaderboard(current_user):
     """Leaderboard scoped to current user's accepted connections (+ self)."""
@@ -220,6 +231,7 @@ def get_connections_leaderboard(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/rising", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_rising_stars(current_user):
     """Users with the biggest reputation gain in the past 7 days."""
@@ -240,6 +252,7 @@ def get_rising_stars(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_leaderboard_stats(current_user):
     """Platform-wide engagement statistics."""
@@ -274,6 +287,7 @@ def get_leaderboard_filters(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/rank-history", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_rank_history(current_user):
     """Returns current user's rank over the last N weekly snapshots."""
@@ -298,6 +312,7 @@ def get_rank_history(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/snapshot", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_snapshot(current_user):
     """
@@ -336,6 +351,7 @@ def create_snapshot(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @leaderboard_bp.route("/leaderboard/breakdown", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_score_breakdown(current_user):
     """Transparent breakdown of how the current user's score is composed."""
