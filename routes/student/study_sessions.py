@@ -21,11 +21,18 @@ from models import (
     StudySessionCalendar, LiveStudySession, ConversationAnalytics, Assignment
 )
 from extensions import db
-from utils import limiter
-# PHASE-1 WIRING FIX: was `from utils import limiter, can_message` — utils.py
-# still re-exports can_message as a shim, but this file now goes straight
-# to the canonical implementation, matching Document 2 §3.4.
 from services.connection_service import can_message
+# Phase 5b (Document 4 §1): import the app-wide limiter + key function
+# directly from services/rate_limit_service.py rather than via the
+# `utils.limiter` re-export — this file's two routes are being refined to
+# use the new rate-limit-service infrastructure (user-based keying) as
+# part of this phase, per the explicit decision to consolidate on one
+# limiter. Existing per-route limits (20/day, 30/hour) are intentionally
+# kept as-is rather than widened to the nearest named tier (WRITE_HEAVY,
+# AI_EXPENSIVE) — those tiers are looser than what's already enforced here,
+# and this phase's job is adding rate limiting where it's missing, not
+# loosening a limit someone already deliberately tightened.
+from services.rate_limit_service import limiter, user_or_ip_key, ip_key, RateLimitTier
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
@@ -90,6 +97,7 @@ def _validate_proposed_times(times_list: list, max_times: int = 10):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/<int:session_id>/set-goal", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def set_session_goal(current_user, session_id):
     """Set goal for study session BEFORE or DURING session."""
@@ -129,6 +137,7 @@ def set_session_goal(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/update-progress", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def update_session_progress(current_user, session_id):
     """Update progress during session (increment completed count)."""
@@ -174,6 +183,7 @@ def update_session_progress(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/rate", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def rate_session(current_user, session_id):
     """Simple thumbs up/down rating after session."""
@@ -210,6 +220,7 @@ def rate_session(current_user, session_id):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/<int:session_id>/pomodoro/start", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def start_pomodoro(current_user, session_id):
     """Start a Pomodoro focus cycle (25 min)."""
@@ -249,6 +260,7 @@ def start_pomodoro(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/pomodoro/break", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def start_break(current_user, session_id):
     """Start a 5-minute break. Requires an active focus cycle."""
@@ -294,6 +306,7 @@ def start_break(current_user, session_id):
 # ============================================================================
 
 @study_sessions_bp.route("/study-session/templates", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_session_templates(current_user):
     """Get pre-made session templates."""
@@ -304,6 +317,7 @@ def get_session_templates(current_user):
 
 
 @study_sessions_bp.route("/study-session/schedule-with-template", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def schedule_session_with_template(current_user):
     """Schedule session using a template."""
@@ -378,6 +392,7 @@ def schedule_session_with_template(current_user):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/<int:session_id>/link-assignment", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def link_assignment_to_session(current_user, session_id):
     """Link an assignment to an active study session."""
@@ -415,6 +430,7 @@ def link_assignment_to_session(current_user, session_id):
 # ============================================================================
 
 @study_sessions_bp.route("/study-session/<int:session_id>/details", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_study_session_details(current_user, session_id):
     """Get single study session details."""
@@ -477,6 +493,7 @@ def get_study_session_details(current_user, session_id):
 
 
 @study_sessions_bp.route("/study-session/<int:session_id>/reschedule", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def edit_study_session(current_user, session_id):
     """Edit / reschedule a study session (requester only)."""
@@ -548,6 +565,7 @@ def edit_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/study-session/<int:session_id>/cancel", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def cancel_study_session(current_user, session_id):
     """Cancel a scheduled study session (requester only)."""
@@ -591,6 +609,7 @@ def cancel_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/study-session/<int:session_id>/decline", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def decline_study_session(current_user, session_id):
     """Decline or withdraw from a study session (receiver only)."""
@@ -637,6 +656,7 @@ def decline_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/study-session/request", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def request_study_session(current_user):
     """Request a study session with proposed times."""
@@ -716,6 +736,7 @@ def request_study_session(current_user):
 
 
 @study_sessions_bp.route("/study-session/<int:session_id>/confirm", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def confirm_study_session(current_user, session_id):
     """Confirm study session by choosing one of the proposed times."""
@@ -771,6 +792,7 @@ def confirm_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/study-session/upcoming", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_upcoming_study_sessions(current_user):
     """Get all upcoming confirmed study sessions."""
@@ -829,6 +851,7 @@ def get_upcoming_study_sessions(current_user):
 
 
 @study_sessions_bp.route("/study-session/all", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_all_study_sessions(current_user):
     """Get all study sessions (pending, confirmed, completed, cancelled)."""
@@ -939,7 +962,7 @@ def get_all_study_sessions(current_user):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/start", methods=["POST"])
-@limiter.limit("20 per day")
+@limiter.limit("20 per day", key_func=user_or_ip_key)
 @token_required
 def start_live_study_session(current_user):
     """Start a live study session with a partner."""
@@ -1003,6 +1026,7 @@ def start_live_study_session(current_user):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_live_study_session(current_user, session_id):
     """Get live session details."""
@@ -1052,6 +1076,7 @@ def get_live_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/end", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def end_live_study_session(current_user, session_id):
     """End live study session and generate summary."""
@@ -1114,6 +1139,7 @@ def end_live_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/cancel", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def cancel_live_study_session(current_user, session_id):
     """Cancel an active live study session."""
@@ -1169,6 +1195,7 @@ def cancel_live_study_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:partner_id>/history", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_live_session_history(current_user, partner_id):
     """Get completed live session history with a specific partner."""
@@ -1225,7 +1252,7 @@ def get_live_session_history(current_user, partner_id):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/<int:session_id>/ai/ask", methods=["POST"])
-@limiter.limit("30 per hour")
+@limiter.limit("30 per hour", key_func=user_or_ip_key)
 @token_required
 def ai_ask_in_session(current_user, session_id):
     """Ask the AI study assistant a question within a live session (streaming)."""
@@ -1383,6 +1410,7 @@ def ai_ask_in_session(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/ai/history", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_ai_history(current_user, session_id):
     """Get AI conversation history for this session."""
@@ -1406,6 +1434,7 @@ def get_ai_history(current_user, session_id):
 # ============================================================================
 
 @study_sessions_bp.route("/live-session/<int:session_id>/resource/add", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def add_session_resource(current_user, session_id):
     """Add a resource to a live study session."""
@@ -1450,6 +1479,7 @@ def add_session_resource(current_user, session_id):
 
 
 @study_sessions_bp.route("/live-session/<int:session_id>/resource/<resource_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def remove_session_resource(current_user, session_id, resource_id):
     """Remove a resource from a live study session."""
