@@ -41,11 +41,15 @@ from services.connection_service import (
     get_user_onboarding_preview,
 )
 from services import search_service
+# Phase 5b (Document 4 §1): PUBLIC_READ across the board — this file is
+# entirely discovery/suggestion/search reads.
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
 logger = logging.getLogger(__name__)
 
 connections_discovery_bp = Blueprint("connections_discovery", __name__)
 @connections_discovery_bp.route("/connections/mutual/<int:user_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_mutual_connections(current_user, user_id):
     """Get ALL mutual connections with another user (no pagination)"""
@@ -197,6 +201,7 @@ def get_mutual_connections(current_user, user_id):
 
 
 @connections_discovery_bp.route("/connections/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def connection_suggestions(current_user):
     """Get connection suggestions with study partners and mentors"""
@@ -450,6 +455,7 @@ def connection_suggestions(current_user):
 # ============================================================================
 
 @connections_discovery_bp.route("/connections/search", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_users(current_user):
     """
@@ -760,6 +766,7 @@ def _get_generic_user_suggestions(current_user, limit=20, message=None):
         })
 
 @connections_discovery_bp.route("/connections/mutuals/discover", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def discover_mutual_connections(current_user):
     """
@@ -975,6 +982,7 @@ def discover_mutual_connections(current_user):
 
 
 @connections_discovery_bp.route("/connections/suggestions/flat", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def connection_suggestions_flat(current_user):
     """
@@ -1197,6 +1205,7 @@ def connection_suggestions_flat(current_user):
 # ============================================================================
 
 @connections_discovery_bp.route("/connections/available-now", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_available_connections(current_user):
     try:

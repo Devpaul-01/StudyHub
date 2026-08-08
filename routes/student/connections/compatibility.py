@@ -40,11 +40,15 @@ from services.connection_service import (
     get_connection_health,
     get_user_onboarding_preview,
 )
+# Phase 5b (Document 4 §1): AI_EXPENSIVE — this is the AI-streaming
+# compatibility overview, a real AI-provider call.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 logger = logging.getLogger(__name__)
 
 connections_compatibility_bp = Blueprint("connections_compatibility", __name__)
 @connections_compatibility_bp.route('/connections/overview/<int:user_id>', methods=['GET'])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def get_connection_overview(current_user, user_id):
     """

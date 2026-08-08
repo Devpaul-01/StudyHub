@@ -40,11 +40,16 @@ from services.connection_service import (
     get_connection_health,
     get_user_onboarding_preview,
 )
+# Phase 5b (Document 4 §1): block/unblock -> WRITE_HEAVY (security-sensitive
+# per this file's own docstring, worth guarding against abuse); blocked-list
+# reads -> PUBLIC_READ.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 logger = logging.getLogger(__name__)
 
 connections_blocking_bp = Blueprint("connections_blocking", __name__)
 @connections_blocking_bp.route("/connections/blocked/list", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def list_blocked_users_detailed(current_user):
     """
@@ -122,6 +127,7 @@ def list_blocked_users_detailed(current_user):
         
 
 @connections_blocking_bp.route("/connections/block/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def block_user(current_user, user_id):
     """
@@ -166,6 +172,7 @@ def block_user(current_user, user_id):
 
 
 @connections_blocking_bp.route("/connections/unblock/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def unblock_user(current_user, user_id):
     """
@@ -196,6 +203,7 @@ def unblock_user(current_user, user_id):
 
 
 @connections_blocking_bp.route("/connections/blocked", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def list_blocked_users(current_user):
     """

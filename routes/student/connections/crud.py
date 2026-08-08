@@ -40,11 +40,18 @@ from services.connection_service import (
     get_connection_health,
     get_user_onboarding_preview,
 )
+# Phase 5b (Document 4 §1): send/accept/reject requests, help-broadcast/
+# volunteer, block-adjacent actions -> WRITE_HEAVY; mark-seen/status checks
+# -> BURST_OK; list/received/sent -> PUBLIC_READ; onboarding routes (no
+# token yet, pre-auth) -> SENSITIVE_AUTH + ip_key since they mutate
+# connection state before a session exists, same risk profile as auth.py.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 logger = logging.getLogger(__name__)
 
 connections_crud_bp = Blueprint("connections_crud", __name__)
 @connections_crud_bp.route("/connections/suggestions-by-email/<email>", methods=["GET"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def connections_suggestions_by_email(email):
     """
     Onboarding suggestions using email. No token required.
@@ -183,6 +190,7 @@ def connections_suggestions_by_email(email):
 # 2. SINGLE DIRECT-ACCEPT CONNECT (ONBOARDING)
 
 @connections_crud_bp.route("/connections/onboard-connect/<email>/<int:target_user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def onboard_connect_single(email, target_user_id):
     """
     Onboarding: connect with a single user and immediately set status=accepted.
@@ -254,6 +262,7 @@ def onboard_connect_single(email, target_user_id):
 # 3. BULK DIRECT-ACCEPT CONNECT (ONBOARDING "CONNECT ALL")
 
 @connections_crud_bp.route("/connections/onboard-connect-all/<email>", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def onboard_connect_all(email):
     """
     Onboarding: connect with all supplied user IDs at once, all accepted immediately.
@@ -338,6 +347,7 @@ def onboard_connect_all(email):
 # ADD TO connections.py (after other endpoints)
 
 @connections_crud_bp.route("/connections/help/broadcast", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def broadcast_help_request(current_user):
     """
@@ -481,6 +491,7 @@ def broadcast_help_request(current_user):
   
 
 @connections_crud_bp.route("/connections/help/<int:request_id>/volunteer", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def volunteer_for_help(current_user, request_id):
     """
@@ -584,6 +595,7 @@ def volunteer_for_help(current_user, request_id):
         return error_response("Failed to volunteer")
 
 @connections_crud_bp.route("/connections/help/<int:request_id>/volunteers", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_help_volunteers(current_user, request_id):
     """
@@ -616,6 +628,7 @@ def get_help_volunteers(current_user, request_id):
 
 
 @connections_crud_bp.route("/connections/help/find", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def find_help_with_subject(current_user):
     """Find users who can help with a specific subject"""
@@ -713,6 +726,7 @@ def find_help_with_subject(current_user):
         return error_response("Failed to find help")
 
 @connections_crud_bp.route("/connections/requests/received", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def received_connection_requests(current_user):
     """Get ALL pending connection requests sent TO you (no pagination)"""
@@ -856,6 +870,7 @@ def received_connection_requests(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/requests/sent", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def sent_connection_requests(current_user):
     """Get ALL pending connection requests YOU sent (no pagination)"""
@@ -999,6 +1014,7 @@ def sent_connection_requests(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/list", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def list_connections(current_user):
     """List ALL connections (no pagination, max 200)"""
@@ -1145,6 +1161,7 @@ def list_connections(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/unseen/received", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unseen_received_count(current_user):
     """
@@ -1171,6 +1188,7 @@ def unseen_received_count(current_user):
 
 
 @connections_crud_bp.route("/connections/unseen/sent", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unseen_sent_count(current_user):
     """
@@ -1198,6 +1216,7 @@ def unseen_sent_count(current_user):
 
 
 @connections_crud_bp.route("/connections/unseen/all", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unseen_all_count(current_user):
     """
@@ -1237,6 +1256,7 @@ def unseen_all_count(current_user):
 
 
 @connections_crud_bp.route("/study-sessions/unseen", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unseen_study_sessions_count(current_user):
     """
@@ -1271,6 +1291,7 @@ def unseen_study_sessions_count(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/mark-seen/<int:connection_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_connection_seen(current_user, connection_id):
     """
@@ -1299,6 +1320,7 @@ def mark_connection_seen(current_user, connection_id):
 
 
 @connections_crud_bp.route("/connections/mark-received-seen", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_received_connections_seen(current_user):
     """
@@ -1326,6 +1348,7 @@ def mark_received_connections_seen(current_user):
 
 
 @connections_crud_bp.route("/connections/mark-sent-seen", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_sent_connections_seen(current_user):
     """
@@ -1354,6 +1377,7 @@ def mark_sent_connections_seen(current_user):
 
 
 @connections_crud_bp.route("/connections/mark-all-seen", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_all_connections_seen(current_user):
     """
@@ -1405,6 +1429,7 @@ def mark_all_connections_seen(current_user):
             
 
 @connections_crud_bp.route("/connections/request/<int:user_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def send_connection_request(current_user, user_id):
     """
@@ -1695,6 +1720,7 @@ def send_connection_request(current_user, user_id):
         return error_response("Failed to send connection request")
 
 @connections_crud_bp.route("/connections/accept/<int:request_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def accept_connection(current_user, request_id):
     """
@@ -1753,6 +1779,7 @@ def accept_connection(current_user, request_id):
 
 
 @connections_crud_bp.route("/connections/reject/<int:request_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def reject_connection(current_user, request_id):
     """
@@ -1786,6 +1813,7 @@ def reject_connection(current_user, request_id):
 
 
 @connections_crud_bp.route("/connections/cancel/<int:request_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def cancel_connection_request(current_user, request_id):
     """
@@ -1817,6 +1845,7 @@ def cancel_connection_request(current_user, request_id):
 
 
 @connections_crud_bp.route("/connections/remove/<int:user_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def remove_connection(current_user, user_id):
     """
@@ -1854,6 +1883,7 @@ def remove_connection(current_user, user_id):
 # multiple pairs. Imported at the top of this file under the same names.
 
 @connections_crud_bp.route("/connections/status/<int:user_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def connection_status(current_user, user_id):
     """
@@ -1930,6 +1960,7 @@ def connection_status(current_user, user_id):
 # =========================================================================
 
 @connections_crud_bp.route("/connections/settings", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def connections_settings(current_user):
     try:
