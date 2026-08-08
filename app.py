@@ -10,6 +10,7 @@ from flask_migrate import Migrate
 from sqlalchemy import text
 from services.websocket_messages import init_message_websocket
 from services.websocket_threads import thread_ws_manager
+from services.rate_limit_service import init_app as init_rate_limiter
 from extensions import db, mail
 import os
 from routes.student.helpers import (
@@ -64,6 +65,12 @@ def create_app(config_class=None):
     db.init_app(app)
     mail.init_app(app)
     migrate.init_app(app, db)
+
+    # Rate limiter — must init AFTER app.config is populated (config.from_object
+    # above) since it reads RATE_LIMIT_STORAGE_URI/RATE_LIMIT_ENABLED from it.
+    # Fails open if the storage backend (Redis) is unreachable at request time —
+    # see services/rate_limit_service.py's module docstring.
+    init_rate_limiter(app)
     
     # ========================================================================
     # H-11: this app currently assumes a SINGLE process (see the

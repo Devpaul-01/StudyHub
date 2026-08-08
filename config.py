@@ -90,6 +90,7 @@ class Config:
     # nothing reads these yet.
     REDIS_URL = os.environ.get("REDIS_URL")  # None if unset
     RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://")
+    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
     CORS_ALLOWED_ORIGINS = [
         origin.strip() for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
     ]
@@ -111,6 +112,12 @@ class TestingConfig(Config):
 
 class ProductionConfig(Config):
     DEBUG = False
+    # Reuse REDIS_URL for rate-limit storage when it's set, so provisioning
+    # one Redis instance is enough (Document 4 §2.5's "one Redis, logically
+    # namespaced by key prefix" — Flask-Limiter prefixes its own keys).
+    # Falls back to memory:// (single-process only) if REDIS_URL is unset,
+    # same as every other Redis-optional piece in this codebase.
+    RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI") or os.environ.get("REDIS_URL") or "memory://"
 
 
 _ENV_TO_CONFIG = {

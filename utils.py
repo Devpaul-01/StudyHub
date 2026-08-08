@@ -11,19 +11,24 @@ from threading import Thread
 # Third-party imports
 import jwt
 from flask import current_app
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from flask_mail import Message
 
 # Local imports
 from extensions import mail
 from models import User
 
-# Initialize limiter
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
-)
+# ============================================================================
+# Phase 5b (Document 4 §1) consolidation:
+#
+# limiter used to be independently constructed here as its own Limiter()
+# instance, separate from any app-wide rate-limit configuration (storage
+# backend, tiers, fail-open behavior). It's now a re-export of the single
+# app-wide instance from services/rate_limit_service.py, so every existing
+# `from utils import limiter` call site keeps working unchanged, but there
+# is exactly one Limiter for the whole app (one Redis-backed store, one set
+# of tiers, one 429 handler) instead of two independently-configured ones.
+# ============================================================================
+from services.rate_limit_service import limiter  # noqa: F401
 
 
 
