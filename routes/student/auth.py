@@ -22,6 +22,12 @@ from .helpers import (
     generate_tokens_for_user, decode_token, verify_token, token_required,
     success_response, error_response, set_auth_cookies, clear_auth_cookies,
 )
+# Phase 5b (Document 4 §1): SENSITIVE_AUTH-tier rate limiting on every
+# pre-auth route in this file (login, register, password-reset trigger,
+# complete-registration) — the specific gap Document 03 §C flagged as
+# unthrottled brute-force/email-enumeration risk. ip_key() since these are
+# all pre-authentication (no user identity yet to key on).
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 # Activity/streak recording and password finalization now live in
 # services/auth_service.py (Document 2 §3.10); notification construction
 # goes through services/notification_service.py (Document 2 §3.9).
@@ -317,6 +323,7 @@ def demo():
 # ONBOARDING
 # ============================================================================
 @auth_bp.route("/onboard/suggestions-by-email/<email>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def onboard_suggestions_by_email(email):
     """Get study-buddy suggestions using email directly."""
     try:
@@ -361,6 +368,7 @@ def onboard_suggestions_by_email(email):
 
 
 @auth_bp.route("/onboard/request-all/<email>", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def request_all(email):
     """Send connection requests to a list of user IDs during onboarding."""
     try:
@@ -405,6 +413,7 @@ def request_all(email):
 
 
 @auth_bp.route("/onboard/<email>", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def onboard(email):
     """Handle onboarding — GET renders the page, POST saves data."""
 
@@ -580,6 +589,7 @@ def generate_onboarding_matches(user_id):
 
 
 @auth_bp.route("/onboard/suggestions/<token>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def onboard_suggestions(token):
     """Get study-buddy suggestions based on onboarding data (token-based)."""
     try:
@@ -629,6 +639,7 @@ def onboard_suggestions(token):
 # REGISTER
 # ============================================================================
 @auth_bp.route("/register", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def register():
     """Registration endpoint."""
     if request.method == "GET":
@@ -726,6 +737,7 @@ def register():
 # LOGIN
 # ============================================================================
 @auth_bp.route("/login", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def login():
     """Login endpoint."""
     if request.method == "GET":
@@ -794,6 +806,7 @@ def login():
 # PASSWORD RESET / EMAIL VERIFICATION
 # ============================================================================
 @auth_bp.route("/validate-user", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def validate_user():
     """
     Validate user and send password reset email.
@@ -835,6 +848,7 @@ def validate_user():
 
 
 @auth_bp.route("/verify-reset/<token>", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def reset_password_api(token):
     """
     Verify password reset token.
@@ -869,6 +883,7 @@ def reset_password_api(token):
 
 
 @auth_bp.route("/verify-email/<token>", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def verify_email_api(token):
     """API endpoint for email verification."""
     if request.method == "GET":
@@ -911,6 +926,7 @@ def verify_email_api(token):
 
 
 @auth_bp.route("/check-username", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def check_username():
     """Check if a username is available."""
     try:
@@ -936,6 +952,7 @@ def check_username():
 
 
 @auth_bp.route("/complete-registration", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def complete_registration():
     """Complete registration with username and password."""
     if request.method == "GET":
@@ -1003,6 +1020,7 @@ def reset_password():
 
 
 @auth_bp.route("/set-password", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def set_password():
     """
     Set new password after reset.
@@ -1049,6 +1067,7 @@ def set_password():
 
 
 @auth_bp.route("/refresh-token", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def refresh_token():
     """Refresh access token using the refresh-token cookie."""
     try:
@@ -1100,6 +1119,7 @@ def refresh_token():
 
 
 @auth_bp.route("/verify-auth", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=ip_key)
 def verify_auth():
     """Verify if user is authenticated."""
     try:
@@ -1139,6 +1159,7 @@ def verify_auth():
 
 
 @auth_bp.route("/logout", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=ip_key)
 def logout():
     """Logout user."""
     try:
