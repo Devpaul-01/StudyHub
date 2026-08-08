@@ -30,6 +30,10 @@ from services import badge_service
 # exactly one implementation of "batch load users" and "batch load
 # connection status relative to viewer" in the codebase, not two.
 from services.leaderboard_service import _user_map, _connection_map, _profile_map
+# Phase 5b (Document 4 §1): BURST_OK for the feature-toggle/check-all write
+# actions (low-risk, small state changes); PUBLIC_READ for the top-earners
+# leaderboard-style read.
+from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
 
 badges_bp = Blueprint("student_badges", __name__)
 
@@ -39,6 +43,7 @@ badges_bp = Blueprint("student_badges", __name__)
 # ============================================================================
 
 @badges_bp.route("/badges/available", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_available_badges(current_user):
     """
@@ -107,6 +112,7 @@ def get_available_badges(current_user):
 
 
 @badges_bp.route("/badges/my-badges", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_badges(current_user):
     """Get all badges earned by current user."""
@@ -150,6 +156,7 @@ def get_my_badges(current_user):
 
 
 @badges_bp.route("/badges/progress", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_badge_progress(current_user):
     """Get progress toward all unearned badges."""
@@ -194,6 +201,7 @@ def get_badge_progress(current_user):
 
 
 @badges_bp.route("/badges/<int:badge_id>/details", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_badge_details(current_user, badge_id):
     """Get detailed information about a specific badge, including requirements and progress."""
@@ -261,6 +269,7 @@ def get_badge_details(current_user, badge_id):
 
 
 @badges_bp.route("/badges/feature/<int:badge_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def feature_badge(current_user, badge_id):
     """Feature a badge on profile (show prominently). Max 3 featured badges per user."""
@@ -310,6 +319,7 @@ def feature_badge(current_user, badge_id):
 
 
 @badges_bp.route("/badges/top-earners", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def top_earners(current_user):
     """
@@ -388,6 +398,7 @@ def top_earners(current_user):
 
 
 @badges_bp.route("/badges/check-all", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def check_all_badges(current_user):
     """Manually trigger badge check for current user."""
@@ -415,6 +426,7 @@ def check_all_badges(current_user):
 
 
 @badges_bp.route("/badges/user-badges/<int:id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_user_badges(current_user, id):
     """Get all badges earned by a particular user."""
