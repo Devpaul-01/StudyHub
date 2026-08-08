@@ -36,6 +36,11 @@ from services.badge_service import calculate_badge_progress
 # DB querying, and generate_insights depends on routes/student/badges.py,
 # which isn't a service yet).
 from services.analytics_service import calculate_engagement_rate, get_activity_level
+# Phase 5b (Document 4 §1): PUBLIC_READ across the board — every route in
+# this file is a computed stats/analytics read, several doing non-trivial
+# aggregation (overview, engagement, comparison) that's worth protecting
+# from being hammered.
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
 analytics_bp = Blueprint("student_analytics", __name__)
 
@@ -227,6 +232,7 @@ def get_average_user_stats():
 # ============================================================================
 
 @analytics_bp.route("/analytics/overview", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_analytics_overview(current_user):
     """
@@ -315,6 +321,7 @@ def get_analytics_overview(current_user):
 
 
 @analytics_bp.route("/analytics/activity-heatmap", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_activity_heatmap(current_user):
     """
@@ -409,6 +416,7 @@ def get_activity_heatmap(current_user):
 
 
 @analytics_bp.route("/analytics/engagement", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_engagement_stats(current_user):
     """
@@ -491,6 +499,7 @@ def get_engagement_stats(current_user):
 
 
 @analytics_bp.route("/analytics/impact", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_impact_metrics(current_user):
     """
@@ -570,6 +579,7 @@ def get_impact_metrics(current_user):
 
 
 @analytics_bp.route("/analytics/insights", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_insights(current_user):
     """
@@ -592,6 +602,7 @@ def get_insights(current_user):
 
 
 @analytics_bp.route("/analytics/comparison", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_comparison_stats(current_user):
     """
@@ -657,6 +668,7 @@ def get_comparison_stats(current_user):
 
 
 @analytics_bp.route("/analytics/post/<int:post_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_post_analytics(current_user, post_id):
     """
@@ -734,6 +746,7 @@ def get_post_analytics(current_user, post_id):
 
 
 @analytics_bp.route("/analytics/weekly-summary", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_weekly_summary(current_user):
     """
@@ -806,6 +819,7 @@ def get_weekly_summary(current_user):
 
 
 @analytics_bp.route("/analytics/export", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def export_analytics(current_user):
     """
