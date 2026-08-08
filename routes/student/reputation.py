@@ -71,6 +71,9 @@ from services.reputation_service import (
 # Document 1 §6.2: rising-stars now has exactly one implementation, shared
 # with leaderboard.py's /leaderboard/rising route.
 from services import leaderboard_service
+# Phase 5b (Document 4 §1): PUBLIC_READ-tier limiting on reputation reads —
+# same reasoning as leaderboard.py (checked frequently, cheap to abuse).
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
 reputation_bp = Blueprint("student_reputation", __name__)
 
@@ -92,6 +95,7 @@ def next_level(points: int) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/rising-stars", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_rising_stars(current_user):
     """
@@ -118,6 +122,7 @@ def get_rising_stars(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/me", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_reputation(current_user):
     try:
@@ -216,6 +221,7 @@ def get_my_reputation(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/history", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_reputation_history(current_user):
     try:
@@ -287,6 +293,7 @@ def get_reputation_history(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def reputation_stats(current_user):
     try:
@@ -337,6 +344,7 @@ def reputation_stats(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/levels", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def get_reputation_levels():
     return jsonify({
         "status": "success",
