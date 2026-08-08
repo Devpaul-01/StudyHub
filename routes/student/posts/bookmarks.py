@@ -52,6 +52,13 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+# Phase 5b (Document 4 §1): rate limiting is infrastructure, not bookmark
+# business logic, so it's applied here despite this file's own "verbatim
+# move only, no logic changes" scope note (Document 1 §2.3) — that note
+# covers bookmark behavior/error-handling, not cross-cutting HTTP-layer
+# concerns like rate limits. Toggle/bulk/single-bookmark -> BURST_OK
+# (low-risk, frequent); bookmarked-list GET -> PUBLIC_READ.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 import cloudinary
 
@@ -70,6 +77,7 @@ import base64
 
 posts_bookmarks_bp = Blueprint("posts_bookmarks", __name__)
 @posts_bookmarks_bp.route("/posts/bookmark/toggle", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def toggle_bookmarks(current_user):
     """
@@ -193,6 +201,7 @@ def toggle_bookmarks(current_user):
         
 
 @posts_bookmarks_bp.route("/posts/bulk/bookmark", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def bulk_bookmark(current_user):
     """
@@ -256,6 +265,7 @@ def bulk_bookmark(current_user):
         return error_response("Failed to bookmark posts")
 
 @posts_bookmarks_bp.route("/posts/<int:post_id>/bookmark", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def bookmark_post(current_user, post_id):
     try:
@@ -303,6 +313,7 @@ def bookmark_post(current_user, post_id):
         return error_response("Failed to bookmark post")
 
 @posts_bookmarks_bp.route("/posts/bookmarked", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_bookmarked_posts(current_user):
     """

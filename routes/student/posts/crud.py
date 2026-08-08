@@ -48,6 +48,11 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+# Phase 5b (Document 4 §1): react_to_post -> BURST_OK; create/edit/delete/
+# report/upload -> WRITE_HEAVY; feed/by-type/by-status/my-posts (read-heavy,
+# cache-worthy per Document 4 §2.2) -> PUBLIC_READ; view/quick-view/options-
+# menu/metrics -> BURST_OK (cheap, high-frequency reads).
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 import cloudinary
 
@@ -80,6 +85,7 @@ def decode_cursor(cursor: str):
         return None
 
 @posts_crud_bp.route("/posts/feed", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_feed(current_user):
     start_time = time.time()
@@ -481,6 +487,7 @@ def get_feed(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @posts_crud_bp.route("/posts/<int:post_id>/react", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def react_to_post(current_user, post_id):
     """
@@ -551,6 +558,7 @@ def react_to_post(current_user, post_id):
         return error_response("Failed to toggle like")
 
 @posts_crud_bp.route("/posts/resource/upload", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_post_resource(current_user):
     request_id = f"upload_{current_user.id}_{int(time.time())}"
@@ -675,6 +683,7 @@ def upload_post_resource(current_user):
 # Add these endpoints to your posts.py file
 
 @posts_crud_bp.route("/posts/by-type", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_posts_by_type(current_user):
     """
@@ -838,6 +847,7 @@ def get_posts_by_type(current_user):
         return error_response("Failed to load posts")
 
 @posts_crud_bp.route("/posts/<int:post_id>/options-menu", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_post_options_menu(current_user, post_id):
     """
@@ -934,6 +944,7 @@ def get_post_options_menu(current_user, post_id):
 
 
 @posts_crud_bp.route("/posts/by-status", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_posts_by_status(current_user):
     """
@@ -1136,6 +1147,7 @@ def get_posts_by_status(current_user):
         
 
 @posts_crud_bp.route("/posts/<int:post_id>/view", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def view_post(current_user, post_id):
     try:
@@ -1160,6 +1172,7 @@ def view_post(current_user, post_id):
         
 
 @posts_crud_bp.route("/posts/<int:post_id>/metrics", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_post_metrics(current_user, post_id):
     """
@@ -1215,6 +1228,7 @@ def get_post_metrics(current_user, post_id):
         
 
 @posts_crud_bp.route("/posts/<int:post_id>/report", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def report_post(current_user, post_id):
     """
@@ -1261,6 +1275,7 @@ def report_post(current_user, post_id):
         return error_response("Failed to submit report")
 
 @posts_crud_bp.route("/posts/create", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_post(current_user):
     """
@@ -1428,6 +1443,7 @@ def create_post(current_user):
         return error_response("Failed to create post")
 
 @posts_crud_bp.route("/posts/<int:post_id>/quick-view", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def quick_view_post(current_user, post_id):
     """Get single post with full details"""
@@ -1452,6 +1468,7 @@ def quick_view_post(current_user, post_id):
         return error_response("Failed to get post")
 
 @posts_crud_bp.route("/posts/<int:post_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_post(current_user, post_id):
     """Get single post with full details"""
@@ -1566,6 +1583,7 @@ def get_post(current_user, post_id):
         return error_response("Failed to load post")
 
 @posts_crud_bp.route("/posts/<int:post_id>/edit", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def edit_post(current_user, post_id):
     """
@@ -1650,6 +1668,7 @@ def edit_post(current_user, post_id):
 
 
 @posts_crud_bp.route("/posts/<int:post_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_post(current_user, post_id):
     """
@@ -1722,6 +1741,7 @@ def delete_post(current_user, post_id):
 
 
 @posts_crud_bp.route("/posts/<int:post_id>/mark-solved", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def mark_solved(current_user, post_id):
     try:
@@ -1749,6 +1769,7 @@ def mark_solved(current_user, post_id):
         
 
 @posts_crud_bp.route("/posts/<int:post_id>/unmark-solved", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def unmark_solved(current_user, post_id):
     try:
@@ -1775,6 +1796,7 @@ def unmark_solved(current_user, post_id):
         return error_response("Failed to unmark post as solved")
 
 @posts_crud_bp.route("/posts/<int:post_id>/follow", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def follow_post(current_user, post_id):
     """
@@ -1808,6 +1830,7 @@ def follow_post(current_user, post_id):
         return error_response("Failed to follow post")
 
 @posts_crud_bp.route("/posts/<int:post_id>/unfollow", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unfollow_post(current_user, post_id):
     """
@@ -1838,6 +1861,7 @@ def unfollow_post(current_user, post_id):
 # ============================================================================
 
 @posts_crud_bp.route("/posts/my-posts", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_posts(current_user):
     """

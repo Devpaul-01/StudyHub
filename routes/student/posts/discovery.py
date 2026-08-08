@@ -47,6 +47,9 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+# Phase 5b (Document 4 §1): PUBLIC_READ across the board — this file is
+# entirely discovery/read endpoints (resources, tag search, tag popularity).
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
 import cloudinary
 
@@ -65,6 +68,7 @@ import base64
 
 posts_discovery_bp = Blueprint("posts_discovery", __name__)
 @posts_discovery_bp.route("/comments/<int:comment_id>/resources", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def comment_resources(current_user, comment_id):
     try:
@@ -78,6 +82,7 @@ def comment_resources(current_user, comment_id):
         return jsonify({"status": "error", "message": "Failed to load comment resources"}), 500
 
 @posts_discovery_bp.route("/posts/<int:post_id>/resources", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def post_resources(current_user, post_id):
     try:
@@ -99,6 +104,7 @@ def post_resources(current_user, post_id):
 # above, rather than restoring this block.
 
 @posts_discovery_bp.route("/posts/tags/<tag>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_posts_by_tag(current_user, tag):
     """
@@ -347,6 +353,7 @@ def get_posts_by_tag(current_user, tag):
 
 
 @posts_discovery_bp.route("/posts/tags", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def popular_tags(current_user):
     try:

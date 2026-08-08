@@ -47,6 +47,10 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+# Phase 5b (Document 4 §1): like_comment/mark_comment_helpful -> BURST_OK
+# (low-risk, high-frequency); create/edit/delete comment, mark/unmark
+# solution -> WRITE_HEAVY; comment list/replies GETs -> BURST_OK.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 import cloudinary
 
@@ -65,6 +69,7 @@ import base64
 
 posts_comments_bp = Blueprint("posts_comments", __name__)
 @posts_comments_bp.route("/posts/<int:post_id>/unmark-solution", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def unmark_solution(current_user, post_id):  # Changed from mark_solution
     """
@@ -106,6 +111,7 @@ def unmark_solution(current_user, post_id):  # Changed from mark_solution
    
 
 @posts_comments_bp.route("/posts/<int:post_id>/mark-solution", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def mark_solution(current_user, post_id):
     """
@@ -192,6 +198,7 @@ def mark_solution(current_user, post_id):
         return error_response("Failed to mark as solved")
 
 @posts_comments_bp.route("/comments/<int:comment_id>/like", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def like_comment(current_user, comment_id):
     try:
@@ -242,6 +249,7 @@ def like_comment(current_user, comment_id):
         return error_response("Failed to like comment")    
 
 @posts_comments_bp.route("/comments/<int:comment_id>/mark-helpful", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_comment_helpful(current_user, comment_id):
     """
@@ -317,6 +325,7 @@ def mark_comment_helpful(current_user, comment_id):
     
 
 @posts_comments_bp.route("/comments/<int:comment_id>", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def edit_comment(current_user, comment_id):
     """
@@ -375,6 +384,7 @@ def edit_comment(current_user, comment_id):
 
 
 @posts_comments_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_comment(current_user, comment_id):
     """
@@ -414,6 +424,7 @@ def delete_comment(current_user, comment_id):
 from models import ThreadMember
 
 @posts_comments_bp.route("/comments/create", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_comment(current_user):
     """
@@ -586,6 +597,7 @@ def create_comment(current_user):
 
 
 @posts_comments_bp.route("/posts/<int:post_id>/comments", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def post_comments(current_user, post_id):
     """
@@ -736,6 +748,7 @@ def post_comments(current_user, post_id):
 
 
 @posts_comments_bp.route("/comments/<int:comment_id>/replies", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def comment_replies(current_user, comment_id):
     """

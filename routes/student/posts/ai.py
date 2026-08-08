@@ -47,6 +47,11 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+# Phase 5b (Document 4 §1): AI_EXPENSIVE for both routes here — ask-learnora
+# is a real AI-provider call; apply-refinement persists AI-refined content
+# generated from a prior AI call in the same user flow, so it's grouped
+# with the AI tier rather than a plain WRITE_HEAVY edit.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 import cloudinary
 
@@ -65,6 +70,7 @@ import base64
 
 posts_ai_bp = Blueprint("posts_ai", __name__)
 @posts_ai_bp.route("/posts/<int:post_id>/ask-learnora", methods=["POST", "GET"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def ask_learnora_about_post(current_user, post_id):
     """
@@ -138,6 +144,7 @@ def ask_learnora_about_post(current_user, post_id):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @posts_ai_bp.route("/posts/<int:post_id>/apply-refinement", methods=["PATCH"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def apply_refinement(current_user, post_id):
     """
