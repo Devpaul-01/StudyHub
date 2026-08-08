@@ -79,6 +79,12 @@ from services.ai_provider_service import (
     OPENROUTER_VISION_MODELS,
     PROVIDER_ORDER,
 )
+# Phase 5b (Document 4 §1): AI_EXPENSIVE on the routes that call an AI
+# provider (chat, new-conversation seeding/title-gen, reset-title) — these
+# cost real money per call, per the ticket's explicit table entry for this
+# file. Lighter, non-AI routes (list/get/delete/clear/title-PUT/upload/
+# stats) get WRITE_HEAVY or BURST_OK instead.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 learnora_bp = Blueprint('learnora', __name__, url_prefix='/learnora')
 
@@ -173,6 +179,7 @@ def learnora_page(current_user):
 
 
 @learnora_bp.route("/api/chat", methods=["POST"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def chat(current_user):
     """
@@ -520,6 +527,7 @@ def chat(current_user):
 # -----------------------------------------------------------
 
 @learnora_bp.route("/api/conversation/new", methods=["POST"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def create_conversation(current_user):
     """
@@ -612,6 +620,7 @@ def create_conversation(current_user):
 
 
 @learnora_bp.route("/api/conversation/list", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_conversations(current_user):
     """
@@ -653,6 +662,7 @@ def get_conversations(current_user):
 
 
 @learnora_bp.route("/api/conversations/<int:conversation_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_conversation(current_user, conversation_id):
     """
@@ -707,6 +717,7 @@ def get_conversation(current_user, conversation_id):
 
 
 @learnora_bp.route("/api/conversation/<int:conversation_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def delete_conversation(current_user, conversation_id):
     """
@@ -741,6 +752,7 @@ def delete_conversation(current_user, conversation_id):
 
 
 @learnora_bp.route("/api/conversation/<int:conversation_id>/clear", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def clear_conversation(current_user, conversation_id):
     """
@@ -782,6 +794,7 @@ def clear_conversation(current_user, conversation_id):
 # -----------------------------------------------------------
 
 @learnora_bp.route("/api/conversation/<int:conversation_id>/title", methods=["PUT"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def update_conversation_title(current_user, conversation_id):
     """
@@ -825,6 +838,7 @@ def update_conversation_title(current_user, conversation_id):
 
 
 @learnora_bp.route("/api/chat/reset-title", methods=["POST"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
 @token_required
 def reset_conversation_title(current_user):
     """
@@ -887,6 +901,7 @@ def reset_conversation_title(current_user):
 # -----------------------------------------------------------
 
 @learnora_bp.route("/api/upload/attachment", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_post_attachment(current_user):
     """
@@ -1024,6 +1039,7 @@ def upload_post_attachment(current_user):
 # -----------------------------------------------------------
 
 @learnora_bp.route("/api/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_stats(current_user):
     """
