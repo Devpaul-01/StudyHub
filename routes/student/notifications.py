@@ -9,6 +9,10 @@ from datetime import datetime
 from models import User, Notification
 from extensions import db
 from routes.student.helpers import token_required, success_response, error_response
+# Phase 5b (Document 4 §1): BURST_OK for mark-read/delete actions (low-risk,
+# high-frequency as users clear notifications), WRITE_HEAVY for the settings
+# update (less frequent, more consequential).
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 notifications_bp = Blueprint("student_notifications", __name__)
 
@@ -17,6 +21,7 @@ notifications_bp = Blueprint("student_notifications", __name__)
 # GET NOTIFICATIONS WITH CURSOR PAGINATION
 # ============================================================================
 @notifications_bp.route("/profile/notifications/all", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_notifications(current_user):
     '''
@@ -156,6 +161,7 @@ def _build_type_filter(notif_type):
 # ============================================================================
 
 @notifications_bp.route("/profile/notifications/mark-all-read", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_all_notifications_read(current_user):
     """
@@ -227,6 +233,7 @@ def mark_all_notifications_read(current_user):
 # ============================================================================
 
 @notifications_bp.route("/profile/notifications/<int:notification_id>/mark-read", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def mark_notification_read(current_user, notification_id):
     """Mark a single notification as read"""
@@ -259,6 +266,7 @@ def mark_notification_read(current_user, notification_id):
 # ============================================================================
 
 @notifications_bp.route("/profile/notifications/<int:notification_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def delete_notification(current_user, notification_id):
     """Delete a single notification"""
@@ -287,6 +295,7 @@ def delete_notification(current_user, notification_id):
 # ============================================================================
 
 @notifications_bp.route("/profile/notifications/delete-all", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def delete_all_notifications(current_user):
     """
@@ -336,6 +345,7 @@ def delete_all_notifications(current_user):
 # ============================================================================
 
 @notifications_bp.route("/profile/notifications/settings", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_notification_settings(current_user):
     """Get user's notification settings"""
@@ -370,6 +380,7 @@ def get_notification_settings(current_user):
 
 
 @notifications_bp.route("/profile/notifications/settings", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_notification_settings(current_user):
     """
