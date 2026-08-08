@@ -31,6 +31,12 @@ from routes.student.helpers import (
     token_required, success_response, error_response
 )
 from services import search_service
+# Phase 5b (Document 4 §1): PUBLIC_READ-tier limiting on search endpoints —
+# these are read-only, can be hit anonymously-in-spirit even though most
+# require a token, and are the kind of expensive-query endpoint that's
+# cheap to hammer and costly to serve. ip_key() per the ticket's explicit
+# table entry for search.py.
+from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
 
 
 search_bp = Blueprint("student_search", __name__)
@@ -56,6 +62,7 @@ def _parse_bool_arg(args, key: str) -> bool | None:
 
 
 @search_bp.route("/search/unified", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def unified_search(current_user):
     """
@@ -151,6 +158,7 @@ def unified_search(current_user):
 
 
 @search_bp.route("/search/users", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_users(current_user):
     """
@@ -195,6 +203,7 @@ def search_users(current_user):
 
 
 @search_bp.route("/search/users/top-contributors", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def top_contributors(current_user):
     """
@@ -264,6 +273,7 @@ def top_contributors(current_user):
 # ============================================================================
 
 @search_bp.route("/search/posts", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_posts(current_user):
     """
@@ -305,6 +315,7 @@ def search_posts(current_user):
 
 
 @search_bp.route("/search/posts/unanswered", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def unanswered_posts(current_user):
     """
@@ -367,6 +378,7 @@ def unanswered_posts(current_user):
 
 
 @search_bp.route("/search/posts/trending", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def trending_posts(current_user):
     """
@@ -428,6 +440,7 @@ def trending_posts(current_user):
 # ============================================================================
 
 @search_bp.route("/search/threads", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_threads(current_user):
     """
@@ -465,6 +478,7 @@ def search_threads(current_user):
 
 
 @search_bp.route("/search/threads/open", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def open_threads(current_user):
     """
@@ -530,6 +544,7 @@ def open_threads(current_user):
 # ============================================================================
 
 @search_bp.route("/search/global", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def global_search(current_user):
     """
@@ -568,6 +583,7 @@ def global_search(current_user):
 
 
 @search_bp.route("/search/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def search_suggestions(current_user):
     """
@@ -654,6 +670,7 @@ def search_suggestions(current_user):
 
 
 @search_bp.route("/search/tags/popular", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def popular_tags():
     """
     Get most popular tags across all posts
@@ -706,6 +723,7 @@ def popular_tags():
 # ============================================================================
 
 @search_bp.route("/search/filters/departments", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def get_departments():
     """
     Get list of all departments with student counts
@@ -735,6 +753,7 @@ def get_departments():
 
 
 @search_bp.route("/search/filters/class-levels", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def get_class_levels():
     """
     Get list of all class levels with student counts
@@ -763,6 +782,7 @@ def get_class_levels():
 
 
 @search_bp.route("/search/discovery/for-you", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def personalized_discovery(current_user):
     """
@@ -879,6 +899,7 @@ def personalized_discovery(current_user):
 # ============================================================================
 
 @search_bp.route("/search/history", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def search_history(current_user):
     """
@@ -902,6 +923,7 @@ def search_history(current_user):
 
 
 @search_bp.route("/search/history", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def save_search_query(current_user):
     """
@@ -943,6 +965,7 @@ def save_search_query(current_user):
 
 
 @search_bp.route("/search/history", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def clear_search_history(current_user):
     """
