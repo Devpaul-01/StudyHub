@@ -22,6 +22,11 @@ from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT,
 )
+# Phase 5b (Document 4 §1): PUBLIC_READ on profile/stats reads (own and
+# others'), WRITE_HEAVY on edits (academic info, avatar, update, skills,
+# goals, pin/unpin, study schedule, visibility settings), BURST_OK on
+# avatar delete (cheap state change).
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 profile_bp = Blueprint("student_profile", __name__)
 
@@ -31,6 +36,7 @@ profile_bp = Blueprint("student_profile", __name__)
 # ============================================================================
 
 @profile_bp.route("/profile/me/data", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_profile_data(current_user):
     """Return full profile data for the logged-in user's own profile view."""
@@ -96,6 +102,7 @@ def get_my_profile_data(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/my-posts", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_posts(current_user):
     """
@@ -222,6 +229,7 @@ def get_my_posts(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/my-stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_stats(current_user):
     """Comprehensive stats for the Stats tab."""
@@ -303,6 +311,7 @@ def get_my_stats(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/academic-info", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_academic_info(current_user):
     """Returns the current user's academic / onboarding details."""
@@ -343,6 +352,7 @@ def get_academic_info(current_user):
 
 
 @profile_bp.route("/profile/academic-info", methods=["PUT"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_academic_info(current_user):
     """Update academic / onboarding details."""
@@ -393,6 +403,7 @@ def update_academic_info(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/avatar/upload", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_avatar(current_user):
     """Upload profile picture to Cloudinary (or local fallback)."""
@@ -452,6 +463,7 @@ def upload_avatar(current_user):
 
 
 @profile_bp.route("/profile/avatar", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def remove_avatar(current_user):
     """Remove profile picture (reset to default)."""
@@ -470,6 +482,7 @@ def remove_avatar(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/help/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def help_suggestions(current_user):
     """
@@ -561,6 +574,7 @@ def help_suggestions(current_user):
 
 
 @profile_bp.route("/profile/can-help/suggestions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def can_help_suggestions(current_user):
     """
@@ -655,6 +669,7 @@ def can_help_suggestions(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/me", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key, methods=["POST"])
 @token_required
 def get_own_profile(current_user):
     """Get current user's full profile including stats, badges, and activity."""
@@ -818,6 +833,7 @@ def get_own_profile(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/visibility-settings", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def visibility_settings(current_user):
     try:
@@ -849,6 +865,7 @@ def visibility_settings(current_user):
 
 
 @profile_bp.route("/profile/visibility-settings", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_visibility_settings(current_user):
     try:
@@ -884,6 +901,7 @@ def get_visibility_settings(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/<username>", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def view_profile(current_user, username):
     """View any user's complete profile."""
@@ -1110,6 +1128,7 @@ def view_profile(current_user, username):
 # ============================================================================
 
 @profile_bp.route("/profile/update", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_profile(current_user):
     """Update profile info: name, bio, department, class."""
@@ -1179,6 +1198,7 @@ def update_profile(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/skills", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def add_skill(current_user):
     """Add a skill to profile. Body: {"skill": "Python"}"""
@@ -1211,6 +1231,7 @@ def add_skill(current_user):
 
 
 @profile_bp.route("/profile/skills/<skill_name>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def remove_skill(current_user, skill_name):
     """Remove a skill from profile."""
@@ -1227,6 +1248,7 @@ def remove_skill(current_user, skill_name):
 
 
 @profile_bp.route("/profile/learning-goals", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def add_learning_goal(current_user):
     """Add learning goal. Body: {"goal": "Learn Machine Learning"}"""
@@ -1259,6 +1281,7 @@ def add_learning_goal(current_user):
 
 
 @profile_bp.route("/profile/learning-goals/<int:index>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def remove_learning_goal(current_user, index):
     """Remove learning goal by index."""
@@ -1285,6 +1308,7 @@ def remove_learning_goal(current_user, index):
 # ============================================================================
 
 @profile_bp.route("/profile/pin-post/<int:post_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def pin_post(current_user, post_id):
     """Pin a post to profile."""
@@ -1310,6 +1334,7 @@ def pin_post(current_user, post_id):
 
 
 @profile_bp.route("/profile/unpin-post/<int:post_id>", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unpin_post(current_user, post_id):
     """Unpin a post from profile."""
@@ -1333,6 +1358,7 @@ def unpin_post(current_user, post_id):
 # ============================================================================
 
 @profile_bp.route("/profile/study-schedule", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_study_schedule(current_user):
     """Get user's study schedule."""
@@ -1350,6 +1376,7 @@ def get_study_schedule(current_user):
 
 
 @profile_bp.route("/profile/study-schedule", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_study_schedule(current_user):
     """Update study schedule."""
@@ -1389,6 +1416,7 @@ def update_study_schedule(current_user):
 # ============================================================================
 
 @profile_bp.route("/skills/popular", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 def get_popular_skills():
     """Get list of popular skills across all users."""
     try:
