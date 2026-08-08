@@ -40,6 +40,10 @@ from routes.student.helpers import (
 )
 from services.online_status_service import get_user_online_status, get_online_status_batch
 from services import homework_service, notification_service
+# Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
+# request create/update/delete/offer-help/submit-solution/give-feedback
+# routes.
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 homework_bp = Blueprint("student_homework", __name__)
 
@@ -154,6 +158,7 @@ def _create_activity(user_id: int, activity_type: str, data: dict):
 # ============================================================================
 
 @homework_bp.route("/homework/<int:assignment_id>/helpers", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_assignment_helpers(current_user, assignment_id):
     """Get all helpers for a specific assignment."""
@@ -234,6 +239,7 @@ def get_assignment_helpers(current_user, assignment_id):
 
 
 @homework_bp.route("/activity/feed", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_activity_feed(current_user):
     """Get recent homework activities from connections."""
@@ -319,6 +325,7 @@ def get_activity_feed(current_user):
 
 
 @homework_bp.route("/homework/my-streak", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_streak(current_user):
     """Get current user's help streak information."""
@@ -348,6 +355,7 @@ def get_my_streak(current_user):
 
 
 @homework_bp.route("/homework/champions", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_current_champions(current_user):
     """Get this week's champions."""
@@ -434,6 +442,7 @@ def get_current_champions(current_user):
 
 
 @homework_bp.route("/assignments", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_assignments(current_user):
     """
@@ -534,6 +543,7 @@ def get_my_assignments(current_user):
 
 
 @homework_bp.route("/assignments", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def create_assignment(current_user):
     """
@@ -615,6 +625,7 @@ def create_assignment(current_user):
 
 
 @homework_bp.route("/assignments/<int:assignment_id>", methods=["PUT"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_assignment(current_user, assignment_id):
     """Update assignment details. Body: any assignment fields to update."""
@@ -675,6 +686,7 @@ def update_assignment(current_user, assignment_id):
 
 
 @homework_bp.route("/assignments/<int:assignment_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_assignment(current_user, assignment_id):
     """Delete assignment (and all associated help requests)."""
@@ -701,6 +713,7 @@ def delete_assignment(current_user, assignment_id):
 
 
 @homework_bp.route("/assignments/<int:assignment_id>/quick-actions", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def assignment_quick_actions(current_user, assignment_id):
     """
@@ -761,6 +774,7 @@ def assignment_quick_actions(current_user, assignment_id):
 # ============================================================================
 
 @homework_bp.route("/homework/feed", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_homework_feed(current_user):
     """
@@ -918,6 +932,7 @@ def get_homework_feed(current_user):
 
 
 @homework_bp.route("/homework/<int:assignment_id>/offer-help", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def offer_homework_help(current_user, assignment_id):
     """
@@ -997,6 +1012,7 @@ def offer_homework_help(current_user, assignment_id):
 
 
 @homework_bp.route("/homework/my-help-requests", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_help_requests(current_user):
     """
@@ -1079,6 +1095,7 @@ def get_my_help_requests(current_user):
 
 
 @homework_bp.route("/homework/helping", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_homework_im_helping_with(current_user):
     """
@@ -1162,6 +1179,7 @@ def get_homework_im_helping_with(current_user):
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def get_submission_details(current_user, submission_id):
     """Get detailed information about a specific homework submission (requester or helper)."""
@@ -1230,6 +1248,7 @@ def get_submission_details(current_user, submission_id):
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/submit-solution", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def submit_solution(current_user, submission_id):
     """
@@ -1291,6 +1310,7 @@ def submit_solution(current_user, submission_id):
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/give-feedback", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def give_feedback(current_user, submission_id):
     """Give feedback on homework solution with quick reactions."""
@@ -1358,6 +1378,7 @@ def give_feedback(current_user, submission_id):
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/cancel", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def cancel_help_request(current_user, submission_id):
     """
@@ -1403,6 +1424,7 @@ def cancel_help_request(current_user, submission_id):
 # ============================================================================
 
 @homework_bp.route("/homework/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_homework_stats(current_user):
     """Get comprehensive homework statistics for current user."""
@@ -1448,6 +1470,7 @@ def get_homework_stats(current_user):
 
 
 @homework_bp.route("/homework/stats/charts", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_homework_chart_data(current_user):
     """
