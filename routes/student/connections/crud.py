@@ -18,7 +18,7 @@ import logging
 import random
 
 from models import (
-    User, StudentProfile, Connection, Notification,
+    User, StudentProfile, Connection,
     HelpRequest, Thread, ThreadMember,
     OnboardingDetails, Message
 )
@@ -40,6 +40,14 @@ from services.connection_service import (
     get_connection_health,
     get_user_onboarding_preview,
 )
+# Plan §5.3/§17.6: every direct Notification(...) construction in this file
+# is migrated to call notification_service.notify() (or a named template)
+# instead — this is the prerequisite for the unread-notification-count
+# Redis counter (services/counter_cache_service.py, incremented inside
+# notify() itself) to be accurate for connection/help-request notifications.
+# Before this migration, notifications created via direct construction here
+# never triggered the increment, silently undercounting.
+from services import notification_service
 # Phase 5b (Document 4 §1): send/accept/reject requests, help-broadcast/
 # volunteer, block-adjacent actions -> WRITE_HEAVY; mark-seen/status checks
 # -> BURST_OK; list/received/sent -> PUBLIC_READ; onboarding routes (no
@@ -236,15 +244,14 @@ def onboard_connect_single(email, target_user_id):
         )
         db.session.add(connection)
 
-        notification = Notification(
-            user_id           = target_user_id,
-            title             = f"{user.name} connected with you!",
-            body              = f"{user.name} just joined StudyHub and connected with you.",
-            notification_type = "connection_accepted",
-            related_type      = "user",
-            related_id        = user.id
+        notification_service.notify(
+            user_id=target_user_id,
+            title=f"{user.name} connected with you!",
+            body=f"{user.name} just joined StudyHub and connected with you.",
+            notification_type="connection_accepted",
+            related_type="user",
+            related_id=user.id,
         )
-        db.session.add(notification)
         db.session.commit()
 
         return jsonify({
@@ -316,15 +323,14 @@ def onboard_connect_all(email):
             )
             db.session.add(connection)
 
-            notification = Notification(
-                user_id           = target_id,
-                title             = f"{user.name} connected with you!",
-                body              = f"{user.name} just joined and connected with you on StudyHub.",
-                notification_type = "connection_accepted",
-                related_type      = "user",
-                related_id        = user.id
+            notification_service.notify(
+                user_id=target_id,
+                title=f"{user.name} connected with you!",
+                body=f"{user.name} just joined and connected with you on StudyHub.",
+                notification_type="connection_accepted",
+                related_type="user",
+                related_id=user.id,
             )
-            db.session.add(notification)
             connected.append(target_id)
 
         db.session.commit()
@@ -460,16 +466,15 @@ def broadcast_help_request(current_user):
 
         # Create in-app notifications
         for user in targets:
-            notif = Notification(
+            notification_service.notify(
                 user_id=user.id,
                 title=notif_title,
                 body=notif_body,
                 notification_type='help_request',
                 related_type='help_request',
                 related_id=help_request.id,
-                link=f'/help-request/{help_request.id}'
+                link=f'/help-request/{help_request.id}',
             )
-            db.session.add(notif)
 
         help_request.broadcast_sent = True
         db.session.commit()
@@ -552,16 +557,15 @@ def volunteer_for_help(current_user, request_id):
             )
 
         # In-app notification to requester
-        notif = Notification(
+        notification_service.notify(
             user_id=requester.id,
             title=notif_title,
             body=notif_body,
             notification_type='help_volunteer',
             related_type='help_request',
             related_id=request_id,
-            link=f'/help-request/{request_id}'
+            link=f'/help-request/{request_id}',
         )
-        db.session.add(notif)
 
         # Emit websocket event to requester if they're online
         try:
@@ -1505,15 +1509,9 @@ def send_connection_request(current_user, user_id):
                     existing.responded_at = datetime.datetime.utcnow()
                     
                     # Notify original requester
-                    notification = Notification(
-                        user_id=existing.requester_id,
-                        title="Connection Accepted",
-                        body=f"{current_user.name} accepted your connection request",
-                        notification_type="connection_accepted",
-                        related_type="user",
-                        related_id=current_user.id
+                    notification_service.notify_connection_accepted(
+                        existing.requester_id, current_user.name, current_user.id
                     )
-                    db.session.add(notification)
                     db.session.commit()
                     
                     return jsonify({
@@ -1553,15 +1551,14 @@ def send_connection_request(current_user, user_id):
                 existing.requested_at = datetime.datetime.utcnow()
                 existing.responded_at = None
                 
-                notification = Notification(
+                notification_service.notify(
                     user_id=user_id,
                     title="New Connection Request",
                     body=f"{current_user.name} sent you a connection request again",
                     notification_type="connection_request",
                     related_type="user",
-                    related_id=current_user.id
+                    related_id=current_user.id,
                 )
-                db.session.add(notification)
                 db.session.commit()
                 
                 return jsonify({
@@ -1619,25 +1616,14 @@ def send_connection_request(current_user, user_id):
             db.session.add(connection)
             
             # Notify both users about instant connection
-            notification_receiver = Notification(
-                user_id=user_id,
-                title=f"🎉 Instant Connection with {current_user.name}",
-                body=f"You're {compatibility_score}% compatible! Start chatting now.",
-                notification_type="instant_connection",
-                related_type="user",
-                related_id=current_user.id
+            notification_service.notify_instant_connection(
+                user_id, current_user.name, current_user.id, compatibility_score,
+                is_receiver=True,
             )
-            db.session.add(notification_receiver)
-            
-            notification_sender = Notification(
-                user_id=current_user.id,
-                title=f"🎉 Instantly Connected with {target_user.name}",
-                body=f"High compatibility match ({compatibility_score}%)! Start chatting now.",
-                notification_type="instant_connection",
-                related_type="user",
-                related_id=user_id
+            notification_service.notify_instant_connection(
+                current_user.id, target_user.name, user_id, compatibility_score,
+                is_receiver=False,
             )
-            db.session.add(notification_sender)
             
             db.session.commit()
             
@@ -1680,15 +1666,9 @@ def send_connection_request(current_user, user_id):
             db.session.add(connection)
             
             # Create notification
-            notification = Notification(
-                user_id=user_id,
-                title="New Connection Request",
-                body=f"{current_user.name} wants to connect with you",
-                notification_type="connection_request",
-                related_type="user",
-                related_id=current_user.id
+            notification_service.notify_connection_request(
+                user_id, current_user.name, current_user.id
             )
-            db.session.add(notification)
             
             db.session.commit()
             
@@ -1744,15 +1724,9 @@ def accept_connection(current_user, request_id):
         connection.responded_at = datetime.datetime.utcnow()
         
         # Create notification for requester
-        notification = Notification(
-            user_id=connection.requester_id,
-            title="Connection Accepted",
-            body=f"{current_user.name} accepted your connection request",
-            notification_type="connection_accepted",
-            related_type="user",
-            related_id=current_user.id
+        notification_service.notify_connection_accepted(
+            connection.requester_id, current_user.name, current_user.id
         )
-        db.session.add(notification)
         
         db.session.commit()
         
