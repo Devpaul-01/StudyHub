@@ -73,17 +73,40 @@ def create_app(config_class=None):
     init_rate_limiter(app)
     
     # ========================================================================
-    # H-11: this app currently assumes a SINGLE process (see the
-    # 'Keep -w 1' note further down for the scheduler-specific case,
-    # and ARCHITECTURE_NOTES.md at the repo root for the full picture -
-    # websocket presence/typing state and the Learnora multi-provider
-    # failover state are ALSO in-process-only today, not just the
-    # scheduler).
+    # HORIZONTAL SCALING (see 01-DESIGN-horizontal-scaling.md):
+    # This app previously assumed a SINGLE process — WebSocket presence/
+    # active-thread state, the per-user thread-message rate limit, and
+    # scheduler job execution all lived in process-local memory with no
+    # cross-instance coordination. That is no longer true for the three
+    # items below, each now backed by Redis:
+    #   - WebSocket presence (online/offline) and active-thread tracking
+    #     -> services/presence_service.py
+    #   - Thread-message rate limiting -> services/websocket_rate_limiter.py
+    #     (RedisFixedWindowLimiter)
+    #   - Scheduler job execution -> services/distributed_lock.py, wired
+    #     into scheduler.py's three jobs (see that file's own docstring —
+    #     the "Keep -w 1" constraint below is now obsolete as a result)
+    # Two things are still explicitly OUT of this refactor's scope, left
+    # exactly as in-process-only as before (see design doc §2 for why):
+    #   - Typing-indicator dedup bookkeeping (TypingStatusManager) — stays
+    #     local by design, not by omission; the actual broadcast already
+    #     reaches every instance via message_queue regardless.
+    #   - The Learnora multi-provider failover/cooldown state
+    #     (services/ai_provider_service.py's MultiProviderManager) — out
+    #     of the stated scope of this refactor, flagged in the design doc,
+    #     not addressed here.
+    # websocket_events.py is not part of any of the above — it's confirmed
+    # unused (not imported by this file or anywhere else) and was
+    # deliberately left untouched.
     # WebSocket Initialization (CRITICAL - must be in correct order)
     # ========================================================================
     # Step 1: Initialize base message WebSocket (creates socketio instance).
     #         Uses async_mode='threading' + simple-websocket (Python 3.13 safe).
     #         Install dep: pip install simple-websocket
+    #         Also wires message_queue=REDIS_URL into the SocketIO
+    #         constructor (see websocket_messages.py::init_app) — this is
+    #         what makes emit(..., room=X) calls reach clients connected
+    #         to OTHER application instances, not just this one.
     socketio = init_message_websocket(app)
     
     # Step 2: Initialize thread WebSocket handlers using the same socketio instance.
@@ -375,11 +398,38 @@ if __name__ == "__main__":
 # because create_app() ran when the module loaded.
 #
 # Run with threading mode (no special worker class needed):
-#   gunicorn -w 1 app:app
+#   gunicorn -w N app:app
 #
-# To disable the scheduler in a specific dyno/container (e.g. a web replica):
-#   SCHEDULER_ENABLED=false gunicorn -w 1 app:app
+# HORIZONTAL SCALING (see 01-DESIGN-horizontal-scaling.md §7.4): N can now
+# be greater than 1, and SCHEDULER_ENABLED=true is safe to leave on for
+# every worker/instance simultaneously. This was NOT true before this
+# refactor — the warning below used to require -w 1 specifically because
+# APScheduler's BackgroundScheduler had no cross-process coordination, so
+# every worker independently running scheduler.py would fire the exact
+# same job on the exact same cron tick, producing duplicate leaderboard
+# snapshots (and, less dangerously but still wastefully, duplicate
+# reconciliation scans). scheduler.py's three jobs are now each wrapped in
+# a Redis distributed lock (services/distributed_lock.py) — on any given
+# tick, every scheduler-enabled worker attempts the lock, exactly one
+# wins and runs the job, the rest log a skip and return immediately. Cron
+# schedules and job bodies are unchanged; only the "can more than one
+# instance safely have SCHEDULER_ENABLED=true" answer changed, from no to
+# yes.
 #
-# ⚠️  Keep -w 1 if using APScheduler to avoid duplicate scheduled jobs.
-#     If you need multiple workers, set SCHEDULER_ENABLED=false on all
-#     but one worker, or switch to a distributed scheduler (e.g. Celery Beat).
+# WebSocket cross-instance delivery for N > 1 additionally requires
+# REDIS_URL to be set in the environment (see websocket_messages.py::
+# init_app) — without it, WebSocket events won't cross worker/instance
+# boundaries (a loud [WS_MESSAGE_QUEUE_DISABLED] warning is logged at
+# startup if this is missed), even though the scheduler-lock behavior
+# above works either way (it only ever needed Redis for the lock itself,
+# which fails closed — see distributed_lock.py — rather than silently
+# degrading).
+#
+# It remains fine to disable the scheduler on a specific dyno/container if
+# you'd rather not have every instance participate in the lock race at all
+# (e.g. a pure web-traffic replica with no interest in running background
+# jobs):
+#   SCHEDULER_ENABLED=false gunicorn -w N app:app
+# This is now an operational choice, not a correctness requirement — with
+# SCHEDULER_ENABLED=true everywhere, the lock still guarantees exactly one
+# execution per tick regardless of how many instances are enabled.
