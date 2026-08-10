@@ -53,6 +53,7 @@ from models import User, ReputationHistory, Post
 from extensions import db
 from services.reputation_levels import get_reputation_level
 from services import notification_service
+from services import cache_service
 
 
 class ReputationAction(str, Enum):
@@ -138,6 +139,27 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
         reputation_after=user.reputation
     )
     db.session.add(history)
+
+    # ── Cache invalidation (plan §5.1) ──────────────────────────────────
+    # Hard-invalidate the acting user's own point-total/rank/breakdown/
+    # analytics caches immediately — these reflect this exact reputation
+    # change and must never serve stale-past-this-request data.
+    #
+    # Deliberately NOT invalidated here: sh:1:lb:global:* (any period/
+    # department/page combination). A single user's reputation change can,
+    # in principle, shift every other user's *relative rank* on a global
+    # leaderboard page — hard-invalidating every cached leaderboard page on
+    # every single reputation-changing action would mean the leaderboard
+    # cache is invalidated on nearly every write in the whole gamification
+    # system, defeating the purpose of caching it at all. The 60-second TTL
+    # on lb:global:* is the deliberate trade-off (plan §4.2/§5.1): this
+    # user's own point total is always fresh via the invalidation below;
+    # leaderboard *position* pages (their own and everyone else's) can lag
+    # by up to 60 seconds. Do not "fix" this into fan-out invalidation.
+    cache_service.delete(f"sh:1:rep:me:{user_id}")
+    cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")
+    cache_service.delete_pattern(f"sh:1:lb:breakdown:{user_id}:*")
+    cache_service.delete(f"sh:1:an:overview:{user_id}")
 
     old_level = get_reputation_level(reputation_before)
     new_level = get_reputation_level(user.reputation)

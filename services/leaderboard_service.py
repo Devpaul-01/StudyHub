@@ -39,6 +39,7 @@ from models import (
     Connection, UserBadge, Badge, WeeklyChampion,
 )
 from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
+from services import cache_service
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,11 +364,46 @@ def _build_entry(
 # 1. GLOBAL / DEPARTMENT LEADERBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_global_leaderboard(
-    period: str, department: str | None, page: int, limit: int, *, viewer_id: int
+def _dept_key(department: str | None) -> str:
+    """Missing/absent scope uses a literal underscore, never an empty
+    string or None — plan §3.2. Keeps a typo-empty-string department from
+    being visually indistinguishable from "no department filter" in a
+    redis-cli SCAN/KEYS listing."""
+    return department if department else "_"
+
+
+@cache_service.cached(
+    "sh:1:lb:global:{period}:{department_key}:{page}:{limit}", ttl_seconds=60
+)
+def _get_global_leaderboard_page(
+    period: str, department_key: str, page: int, limit: int
 ) -> dict:
-    """Main leaderboard with period & department filtering. Returns a dict
-    (LeaderboardPage.to_dict()) ready for jsonify."""
+    """
+    Viewer-INDEPENDENT leaderboard page: entries (with is_you always False
+    and connection_status always None — placeholders, never real per-viewer
+    data) plus pagination. Cached, shared across every viewer who requests
+    the same period/department/page/limit combination, per plan §3.2/§11 —
+    the leaderboard's content genuinely doesn't vary by viewer, so this is
+    the piece worth sharing one Redis entry for.
+
+    `your_position` is deliberately NOT computed or returned here — it's
+    viewer-specific and is layered on live, per-request, by the public
+    get_global_leaderboard() below, exactly as plan §11/§17.3 specify:
+    "the only viewer-specific piece of a leaderboard response is
+    your_position ... computed OUTSIDE the cached page specifically so the
+    shared cache entry never needs to vary by viewer." The `is_you`/
+    `connection_status` fields on each entry are the same category of
+    viewer-specific data and get the identical treatment here (real values
+    filled in after the cache lookup, never baked into the cached blob) —
+    caching them as `is_you: True` for whichever viewer's request happened
+    to populate the cache would leak that viewer's identity into every
+    other viewer's response.
+
+    department_key is the already-`_dept_key()`-normalized department
+    string (never None) purely so it interpolates cleanly into the cache
+    key template — the underscore-for-missing convention from plan §3.2.
+    """
+    department = None if department_key == "_" else department_key
     limit = min(limit, MAX_LIMIT)
     offset = (page - 1) * limit
 
@@ -379,7 +415,6 @@ def get_global_leaderboard(
     user_ids = [r.user_id for r in rows]
     umap = _user_map(user_ids)
     pmap = _profile_map(user_ids)
-    cmap = _connection_map(viewer_id, user_ids)
     old_ranks = _old_rank_map(user_ids)
 
     entries = []
@@ -390,7 +425,52 @@ def get_global_leaderboard(
         rank = offset + i + 1
         old_rank = old_ranks.get(user.id)
         rank_change = (old_rank - rank) if old_rank else None
-        entries.append(_build_entry(rank, user, pmap.get(user.id), int(row.score or 0), viewer_id, cmap, rank_change))
+        # current_user_id=None -> is_you always False; conn_map={} -> every
+        # connection_status is None. Both are overwritten with real,
+        # per-viewer values by get_global_leaderboard() after the cache
+        # lookup, never persisted in this shared cache entry.
+        entries.append(_build_entry(rank, user, pmap.get(user.id), int(row.score or 0), None, {}, rank_change))
+
+    return {
+        "entries": entries,
+        "period": period,
+        "department": department,
+        "pagination": {
+            "page": page, "limit": limit, "total": total,
+            "has_more": (offset + limit) < total,
+        },
+    }
+
+
+def get_global_leaderboard(
+    period: str, department: str | None, page: int, limit: int, *, viewer_id: int
+) -> dict:
+    """Main leaderboard with period & department filtering. Returns a dict
+    (LeaderboardPage.to_dict()-shaped) ready for jsonify.
+
+    Cache-aside per plan §4.2 (60s TTL, key includes period/department/
+    page/limit per plan §10's pagination-key-correctness requirement). The
+    shared, viewer-independent part of the page (entries + pagination) is
+    handled by _get_global_leaderboard_page above, which is what actually
+    carries the @cached decorator; this function's own job is exactly the
+    per-viewer overlay described there: real is_you/connection_status per
+    entry, plus your_position, computed live on every call regardless of
+    whether the shared page was a cache hit or miss.
+    """
+    page_data = _get_global_leaderboard_page(period, _dept_key(department), page, limit)
+
+    limit = page_data["pagination"]["limit"]
+    total = page_data["pagination"]["total"]
+
+    # Overlay live per-viewer data onto the (possibly cached, possibly
+    # shared-with-other-viewers) entries: real connection status and
+    # is_you, never trusted from the cached blob itself.
+    entries = page_data["entries"]
+    user_ids = [e["user"]["id"] for e in entries]
+    cmap = _connection_map(viewer_id, user_ids)
+    for entry in entries:
+        entry["is_you"] = entry["user"]["id"] == viewer_id
+        entry["connection_status"] = cmap.get(entry["user"]["id"])
 
     your_score = _user_period_score(viewer_id, period)
     your_rank = get_user_rank(viewer_id, period, department)
@@ -398,12 +478,9 @@ def get_global_leaderboard(
 
     return LeaderboardPage(
         entries=entries,
-        period=period,
-        department=department,
-        pagination={
-            "page": page, "limit": limit, "total": total,
-            "has_more": (offset + limit) < total,
-        },
+        period=page_data["period"],
+        department=page_data["department"],
+        pagination=page_data["pagination"],
         your_position={
             "rank": your_rank, "score": your_score,
             "percentile": your_percentile, "total_users": total,
@@ -510,12 +587,42 @@ def _get_nearby_for_user(
     return entries
 
 
-def get_nearby_users(
-    user_id: int, period: str = "weekly", department: str | None = None, n_range: int = DEFAULT_NEARBY_RANGE
+@cache_service.cached(
+    "sh:1:lb:rank:{user_id}:nearby:{period}:{department_key}:{n_range}", ttl_seconds=60
+)
+def _get_nearby_users_cached(
+    user_id: int, period: str, department_key: str, n_range: int
 ) -> list:
-    """Users immediately surrounding `user_id` in the rankings, with
-    connection-status annotated in (this is the route-facing entry point;
-    _get_nearby_for_user is also called internally by get_my_rank)."""
+    """
+    Cached body of get_nearby_users, below. Requires `department_key` as an
+    already-normalized, non-None string — see get_nearby_users' docstring
+    and get_my_rank's identical split for why: @cached interpolates its
+    key template from the RAW arguments a caller passes, not from any
+    value the function body reassigns internally, so a parameter that
+    defaults to None and gets normalized inside the function body would
+    have the literal string "None" (not the normalized "_") baked into
+    the cache key on every real call, since real callers never pass the
+    normalized form explicitly.
+
+    Cache-aside per plan §4.2's `/leaderboard/nearby` row: 60s TTL fallback
+    + hard invalidation on the viewing user's own reputation change. The
+    key is deliberately placed under the `sh:1:lb:rank:{user_id}:` prefix
+    (rather than a separate `lb:nearby:` prefix) specifically so it's
+    covered by reputation_service.py::award_reputation's existing
+    `cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")` call
+    (plan §5.1) with no separate invalidation hook needed here — the
+    pattern-delete wildcard already reaches this key.
+
+    Unlike the global leaderboard, this is entirely scoped to `user_id` —
+    every entry is built with current_user_id=user_id (real, not a
+    placeholder), so is_you is already correct regardless of who's asking
+    (there's no "other viewer" for this endpoint, it's inherently "my own
+    surrounding context"). connection_status is the one piece that could
+    go stale within the 60s TTL — an accepted trade-off, same category as
+    the global leaderboard's connection_status staleness.
+    """
+    department = None if department_key == "_" else department_key
+
     n_range = min(n_range, MAX_NEARBY_RANGE)
     my_score = _user_period_score(user_id, period)
     my_rank = get_user_rank(user_id, period, department)
@@ -530,13 +637,66 @@ def get_nearby_users(
     return nearby
 
 
+def get_nearby_users(
+    user_id: int, period: str = "weekly", department: str | None = None,
+    n_range: int = DEFAULT_NEARBY_RANGE,
+) -> list:
+    """
+    Users immediately surrounding `user_id` in the rankings, with
+    connection-status annotated in (this is the route-facing entry point;
+    _get_nearby_for_user is also called internally by get_my_rank, which
+    calls _get_nearby_for_user directly and is NOT cached at that level).
+
+    Thin public entry point: normalizes `department` into the `_`-for-
+    missing convention (plan §3.2) BEFORE calling the actual @cached
+    implementation (_get_nearby_users_cached, above) — same ordering
+    requirement as get_my_rank's identical split, see that function's
+    docstring for the full explanation of why normalization can't happen
+    inside the decorated function itself.
+    """
+    return _get_nearby_users_cached(user_id, period, _dept_key(department), n_range)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MY RANK CARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_my_rank(user_id: int, period: str = "weekly", department: str | None = None) -> dict:
-    """Full rank card: rank, score breakdown, nearby users, streaks,
-    progress, and weekly champion status."""
+@cache_service.cached(
+    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
+)
+@cache_service.cached(
+    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
+)
+def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
+    """
+    Cached body of get_my_rank, below. Requires `department_key` as an
+    already-normalized, non-None string (never the raw, possibly-None
+    `department` argument) — see get_my_rank's docstring for why this
+    split exists: the @cached decorator interpolates its key template from
+    the RAW arguments a caller passes, not from any value the function body
+    reassigns internally, so normalization has to happen before this
+    function is ever called, not inside it.
+
+    Cache-aside per plan §4.2's `/leaderboard/me` row: 60s TTL fallback +
+    hard invalidation on the viewing user's own reputation change. Key is
+    `sh:1:lb:rank:{user_id}:{period}:{department|_}`, matching plan §3.2's
+    table exactly — this is the key reputation_service.py::award_reputation
+    pattern-deletes via `sh:1:lb:rank:{user_id}:*` immediately on every
+    reputation change for this user (plan §5.1), so point-total-driven
+    fields here are always fresh; only fields that could change for a
+    reason OTHER than this user's own reputation (e.g. someone else's
+    weekly_champion status, or a connection accepting them, changing
+    connection_status inside `nearby`) rely on the 60s TTL fallback.
+
+    Entirely scoped to `user_id` throughout (rank, nearby users, streaks,
+    connection_status relative to user_id) — there is no "other viewer"
+    concept for this endpoint, so unlike get_global_leaderboard there's no
+    split needed between a shared cached blob and a live per-viewer
+    overlay; the whole return value is safe to cache and serve back
+    verbatim on a hit.
+    """
+    department = None if department_key == "_" else department_key
+
     n_nearby = 3
 
     user = User.query.get(user_id)
@@ -664,12 +824,40 @@ def get_my_rank(user_id: int, period: str = "weekly", department: str | None = N
     }
 
 
+def get_my_rank(user_id: int, period: str = "weekly", department: str | None = None) -> dict:
+    """
+    Full rank card: rank, score breakdown, nearby users, streaks,
+    progress, and weekly champion status.
+
+    Thin public entry point: normalizes `department` into the `_`-for-
+    missing convention (plan §3.2) BEFORE calling the actual @cached
+    implementation (_get_my_rank_cached, above) — this ordering matters:
+    @cached interpolates its key template from the raw arguments the
+    caller passes in, so the normalization has to happen out here, not
+    inside the decorated function, or every real call (which never passes
+    department_key explicitly) would bake the literal string "None" into
+    the cache key instead of "_".
+    """
+    return _get_my_rank_cached(user_id, period, _dept_key(department))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. CONNECTIONS LEADERBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:lb:connections:{user_id}:{period}", ttl_seconds=60)
 def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
-    """Leaderboard scoped to a user's accepted connections (+ self)."""
+    """Leaderboard scoped to a user's accepted connections (+ self).
+
+    Cache-aside per plan §4.2's `/leaderboard/connections` row: TTL
+    fallback only, 60s. Genuinely per-viewer (depends on the specific
+    connection graph, not a shared page like the global leaderboard), and
+    deliberately NOT hard-invalidated: a per-viewer key makes the
+    invalidation fan-out unbounded (any of this user's connections'
+    reputation changes, or a new connection being accepted, would need to
+    invalidate this exact cache entry — plan §4.2's own reasoning for why
+    this specific cache is TTL-only by design, not an oversight).
+    """
     conns = Connection.query.filter(
         or_(
             and_(Connection.requester_id == user_id, Connection.status == "accepted"),
@@ -741,15 +929,22 @@ def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
 # 5. RISING STARS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_id: int) -> dict:
+@cache_service.cached("sh:1:lb:rising:{limit}:{department_key}", ttl_seconds=300)
+def _get_rising_stars_page(limit: int, department_key: str) -> dict:
     """
-    Users with the biggest reputation gain in the past 7 days.
+    Viewer-INDEPENDENT rising-stars page. Cached, shared across every
+    viewer who requests the same limit/department, per plan §3.2's key
+    pattern (`sh:1:lb:rising:{limit}:{department|_}` — deliberately no
+    user_id in the key, since "who gained the most this week" doesn't vary
+    by who's asking).
 
-    Document 1 §6.2: this is now the SOLE rising-stars implementation —
-    reputation.py's route becomes a thin wrapper calling this, since
-    reputation.py::get_rising_stars and this file's version used to compute
-    the same thing slightly differently.
+    is_you/connection_status are NOT computed here — same split as
+    _get_global_leaderboard_page above, and for the identical reason: this
+    cache entry is shared, so it must never bake in one particular
+    viewer's identity or connection graph. The public get_rising_stars()
+    below overlays real per-viewer values after the cache lookup.
     """
+    department = None if department_key == "_" else department_key
     limit = min(limit, 30)
     week_ago = datetime.datetime.utcnow() - timedelta(days=7)
 
@@ -783,10 +978,7 @@ def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_i
         .all()
     )
 
-    rising_ids = [r.user_id for r in rows]
-    cmap = _connection_map(viewer_id, rising_ids)
     level_cache = {}
-
     data = []
     for idx, row in enumerate(rows, start=1):
         rep = row.reputation or 0
@@ -796,8 +988,8 @@ def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_i
         data.append({
             "rank": idx,
             "weekly_gain": int(row.weekly_gain or 0),
-            "is_you": row.user_id == viewer_id,
-            "connection_status": cmap.get(row.user_id),
+            "is_you": False,  # placeholder — overwritten per-viewer below
+            "connection_status": None,  # placeholder — overwritten per-viewer below
             "user": {
                 "id": row.user_id, "username": row.username, "name": row.name,
                 "avatar": row.avatar, "department": row.department, "class_level": row.class_name,
@@ -815,12 +1007,49 @@ def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_i
     return {"rising_stars": data, "period_days": 7, "department": department}
 
 
+def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_id: int) -> dict:
+    """
+    Users with the biggest reputation gain in the past 7 days.
+
+    Document 1 §6.2: this is now the SOLE rising-stars implementation —
+    reputation.py's route becomes a thin wrapper calling this, since
+    reputation.py::get_rising_stars and this file's version used to compute
+    the same thing slightly differently.
+
+    Cache-aside per plan §4.2's `/leaderboard/rising` row: TTL fallback
+    only, 300s — "who gained the most this week" tolerates several minutes
+    of staleness by nature. The shared computation is delegated to
+    _get_rising_stars_page above; this function's job is only the live
+    per-viewer overlay (is_you, connection_status), computed fresh on
+    every call regardless of whether the shared page was a cache hit.
+    """
+    page = _get_rising_stars_page(limit, _dept_key(department))
+
+    data = page["rising_stars"]
+    rising_ids = [entry["user"]["id"] for entry in data]
+    cmap = _connection_map(viewer_id, rising_ids)
+    for entry in data:
+        entry["is_you"] = entry["user"]["id"] == viewer_id
+        entry["connection_status"] = cmap.get(entry["user"]["id"])
+
+    return {"rising_stars": data, "period_days": page["period_days"], "department": page["department"]}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. LEADERBOARD STATS
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:lb:stats", ttl_seconds=300)
 def get_leaderboard_stats() -> dict:
-    """Platform-wide engagement statistics."""
+    """Platform-wide engagement statistics.
+
+    Cache-aside per plan §4.2's `/leaderboard/stats` row: TTL fallback
+    only, 300s. Platform-wide, not user-scoped — no natural per-mutation
+    hook makes sense at this granularity (every reputation change on the
+    platform could in principle move one of these aggregates), so this
+    relies on its TTL alone, same reasoning as get_leaderboard_stats'
+    sibling platform-wide aggregates elsewhere in this module.
+    """
     week_ago = datetime.datetime.utcnow() - timedelta(days=7)
 
     total_users = db.session.query(func.count(User.id)).filter(User.status == "approved").scalar() or 0
@@ -911,8 +1140,17 @@ def get_leaderboard_stats() -> dict:
 # 7. FILTERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_leaderboard_filters(viewer_id: int) -> dict:
-    """Valid filter options: departments, periods, viewer's default department."""
+@cache_service.cached("sh:1:lb:filters:shared", ttl_seconds=1800)
+def _get_leaderboard_filters_shared() -> dict:
+    """
+    The department list + static periods list — shared across every
+    viewer, cached per plan §4.2.1's split: `your_department` is NOT
+    included here (see get_leaderboard_filters below), avoiding a wasteful
+    {user_id}-scoped cache entry for data that's 95% identical across
+    every user. 1800s TTL: department changes are rare (a profile edit),
+    and departments are drawn from a fixed enum-like list, so a half-hour
+    staleness window on a newly-added department is a non-issue.
+    """
     departments = (
         db.session.query(StudentProfile.department)
         .join(User, User.id == StudentProfile.user_id)
@@ -923,9 +1161,6 @@ def get_leaderboard_filters(viewer_id: int) -> dict:
     )
     dept_list = [row[0] for row in departments]
 
-    profile = StudentProfile.query.filter_by(user_id=viewer_id).first()
-    my_dept = profile.department if profile else None
-
     periods = [
         {"key": "daily", "label": "Today", "description": "Points earned in last 24 hours"},
         {"key": "weekly", "label": "This Week", "description": "Points earned in last 7 days"},
@@ -933,15 +1168,49 @@ def get_leaderboard_filters(viewer_id: int) -> dict:
         {"key": "all_time", "label": "All Time", "description": "Total lifetime reputation"},
     ]
 
-    return {"periods": periods, "departments": dept_list, "your_department": my_dept}
+    return {"periods": periods, "departments": dept_list}
+
+
+def get_leaderboard_filters(viewer_id: int) -> dict:
+    """Valid filter options: departments, periods, viewer's default department.
+
+    Split cache per plan §4.2.1: the shared `departments`/`periods` part is
+    cached (see _get_leaderboard_filters_shared, 1800s TTL); `your_department`
+    is read live off the viewer's own StudentProfile on every call — it's
+    already a single cheap indexed lookup with zero extra query cost worth
+    caching, and composing it here means this cache never needs a
+    per-viewer key.
+    """
+    shared = _get_leaderboard_filters_shared()
+
+    profile = StudentProfile.query.filter_by(user_id=viewer_id).first()
+    my_dept = profile.department if profile else None
+
+    return {
+        "periods": shared["periods"],
+        "departments": shared["departments"],
+        "your_department": my_dept,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. RANK HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:lb:history:{user_id}:{weeks}", ttl_seconds=3600)
 def get_rank_history(user_id: int, weeks: int = 8) -> dict:
-    """Return the viewer's rank over the last N weekly snapshots."""
+    """Return the viewer's rank over the last N weekly snapshots.
+
+    Cache-aside per plan §4.2's `/leaderboard/rank-history` row: TTL
+    fallback only, 3600s — the underlying data provably cannot change more
+    than once a week (only take_snapshot() writes LeaderboardSnapshot
+    rows), so an hour of cache staleness is a bound, not a typical case.
+    Deliberately NOT hard-invalidated by take_snapshot() (plan §5.5):
+    invalidating every user's rank-history cache on every weekly snapshot
+    run would be a pointless full-table invalidation sweep for data whose
+    entire point is a long TTL; the 3600s TTL already guarantees the new
+    snapshot is visible within an hour of the job running.
+    """
     from models import LeaderboardSnapshot
 
     weeks = min(weeks, 26)
@@ -1066,6 +1335,29 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 
     db.session.commit()
 
+    # ── Cache warming (plan §13, §17.3) ─────────────────────────────────
+    # Only the single default leaderboard view (weekly, no department,
+    # page 1) is warmed — not every period/department combination, per
+    # plan §13's explicit scoping: this is plausibly the single hottest
+    # cache key in the app (every leaderboard-tab visit hits it), and
+    # warming it right after the snapshot job touches every approved
+    # user's row anyway means the very first post-snapshot read (whenever
+    # the first user checks it Sunday morning) doesn't pay the uncached
+    # cost. Only fires for the weekly snapshot, matching the plan's
+    # "Sunday 00:05 UTC job" framing — a monthly snapshot doesn't share
+    # this cache key's period and isn't warmed here.
+    #
+    # Deletes any existing (possibly still-fresh-but-now-stale-relative-
+    # to-this-snapshot) entry first, then calls _get_global_leaderboard_page
+    # directly so the @cached decorator repopulates it — this reuses the
+    # exact same shared, viewer-independent computation get_global_leaderboard()
+    # calls on every normal request, so there is no separate "warming"
+    # code path to keep in sync with the real one.
+    if snapshot_type == "weekly":
+        default_key = f"sh:1:lb:global:weekly:_:1:{DEFAULT_LIMIT}"
+        cache_service.delete(default_key)
+        _get_global_leaderboard_page("weekly", "_", 1, DEFAULT_LIMIT)
+
     return SnapshotResult(created=created, skipped=skipped, total_ranked=len(ranked)).to_dict()
 
 
@@ -1073,8 +1365,17 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 # 10. SCORE BREAKDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:lb:breakdown:{user_id}:{period}", ttl_seconds=120)
 def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
-    """Transparent breakdown of how a user's score is composed."""
+    """Transparent breakdown of how a user's score is composed.
+
+    Cache-aside per plan §4.2's `/leaderboard/breakdown` row: 120s TTL
+    fallback + hard invalidation on the viewing user's own reputation
+    change. Key matches plan §3.2's `sh:1:lb:breakdown:{user_id}:{period}`
+    exactly, which is what reputation_service.py::award_reputation
+    pattern-deletes via `sh:1:lb:breakdown:{user_id}:*` (plan §5.1).
+    Entirely scoped to user_id — no viewer/subject split needed.
+    """
     user = User.query.get(user_id)
     if not user:
         raise LookupError("User not found")

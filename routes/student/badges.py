@@ -30,6 +30,7 @@ from services import badge_service
 # exactly one implementation of "batch load users" and "batch load
 # connection status relative to viewer" in the codebase, not two.
 from services.leaderboard_service import _user_map, _connection_map, _profile_map
+from services import cache_service
 # Phase 5b (Document 4 §1): BURST_OK for the feature-toggle/check-all write
 # actions (low-risk, small state changes); PUBLIC_READ for the top-earners
 # leaderboard-style read.
@@ -155,45 +156,59 @@ def get_my_badges(current_user):
         return error_response("Failed to load your badges")
 
 
+@cache_service.cached("sh:1:badge:progress:{user_id}", ttl_seconds=180)
+def _compute_badge_progress(user_id):
+    """
+    The actual computation behind GET /badges/progress, cache-aside per
+    plan §4.3's row for this route (180s TTL fallback + hard invalidation
+    on any badge award for this user — that invalidation lives in
+    services/badge_service.py::check_and_award_badge/check_all_badges_for_user,
+    keyed identically: sh:1:badge:progress:{user_id}, per plan §5.2).
+    Entirely scoped to user_id — for every unearned badge, this runs a
+    distinct calculate_badge_progress() query shaped by that badge's
+    criteria (up to ~18 queries per request in the worst case per plan
+    §4.3), which is exactly the cost this cache exists to amortize.
+    """
+    earned_badge_ids = [ub.badge_id for ub in UserBadge.query.filter_by(user_id=user_id).all()]
+
+    unearned_badges = Badge.query.filter(
+        Badge.is_active == True,
+        Badge.id.notin_(earned_badge_ids)
+    ).all()
+
+    progress_data = []
+    for badge in unearned_badges:
+        progress = badge_service.calculate_badge_progress(user_id, badge.id)
+
+        if progress:
+            progress_data.append({
+                "badge": {
+                    "id": badge.id,
+                    "name": badge.name,
+                    "description": badge.description,
+                    "icon": badge.icon,
+                    "category": badge.category,
+                    "rarity": badge.rarity
+                },
+                "progress": progress
+            })
+
+    progress_data.sort(key=lambda x: x["progress"]["percentage"], reverse=True)
+
+    return {
+        "progress": progress_data,
+        "total_unearned": len(progress_data)
+    }
+
+
 @badges_bp.route("/badges/progress", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_badge_progress(current_user):
     """Get progress toward all unearned badges."""
     try:
-        earned_badge_ids = [ub.badge_id for ub in UserBadge.query.filter_by(user_id=current_user.id).all()]
-
-        unearned_badges = Badge.query.filter(
-            Badge.is_active == True,
-            Badge.id.notin_(earned_badge_ids)
-        ).all()
-
-        progress_data = []
-        for badge in unearned_badges:
-            progress = badge_service.calculate_badge_progress(current_user.id, badge.id)
-
-            if progress:
-                progress_data.append({
-                    "badge": {
-                        "id": badge.id,
-                        "name": badge.name,
-                        "description": badge.description,
-                        "icon": badge.icon,
-                        "category": badge.category,
-                        "rarity": badge.rarity
-                    },
-                    "progress": progress
-                })
-
-        progress_data.sort(key=lambda x: x["progress"]["percentage"], reverse=True)
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "progress": progress_data,
-                "total_unearned": len(progress_data)
-            }
-        })
+        data = _compute_badge_progress(current_user.id)
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Get badge progress error: {str(e)}")
@@ -318,6 +333,81 @@ def feature_badge(current_user, badge_id):
 # ─────────────────────────────────────────────────────────────────────────
 
 
+@cache_service.cached("sh:1:badge:top_earners", ttl_seconds=120)
+def _compute_top_earners():
+    """
+    Viewer-INDEPENDENT top-20-by-badge-count computation, cache-aside per
+    plan §4.3's row for this route (120s TTL fallback only — per-viewer
+    connection-status component makes hard invalidation on every badge
+    award impractical, same fan-out reasoning as plan §4.9). Key is
+    `sh:1:badge:top_earners` per plan §3.2 — no user_id, since the ranked
+    list of top badge earners genuinely doesn't vary by who's asking.
+
+    `status` (connection status relative to viewer) and `is_you` are NOT
+    computed here — same split as leaderboard_service.py's
+    _get_global_leaderboard_page/_get_rising_stars_page, and for the
+    identical reason: this cache entry is shared across every viewer, so
+    it must never bake in one particular viewer's connection graph or
+    identity. top_earners() below overlays real per-viewer values after
+    the cache lookup.
+    """
+    rank_rows = (
+        db.session.query(
+            UserBadge.user_id,
+            func.count(UserBadge.id).label("badge_count"),
+        )
+        .group_by(UserBadge.user_id)
+        .order_by(func.count(UserBadge.id).desc())
+        .limit(20)
+        .all()
+    )
+
+    if not rank_rows:
+        return []
+
+    top_user_ids = [row.user_id for row in rank_rows]
+
+    umap = _user_map(top_user_ids)
+    pmap = _profile_map(top_user_ids)
+
+    leaderboard_data = []
+    for idx, row in enumerate(rank_rows, start=1):
+        user = umap.get(row.user_id)
+        if not user:
+            continue
+
+        profile = pmap.get(row.user_id)
+        level = get_reputation_level(user.reputation)
+
+        leaderboard_data.append({
+            "rank": idx,
+            "status": None,  # placeholder — overwritten per-viewer below
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "name": user.name,
+                "avatar": user.avatar,
+                "department": profile.department if profile else None,
+                "class_level": profile.class_name if profile else None,
+            },
+            "reputation": {
+                "points": user.reputation,
+                "level": {
+                    "name": level["name"],
+                    "icon": level["icon"],
+                    "color": level["color"],
+                },
+            },
+            "stats": {
+                "total_badges": row.badge_count,
+                "total_helpful": user.total_helpful,
+            },
+            "is_you": False,  # placeholder — overwritten per-viewer below
+        })
+
+    return leaderboard_data
+
+
 @badges_bp.route("/badges/top-earners", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
@@ -333,62 +423,24 @@ def top_earners(current_user):
     lookups below now reuse services/leaderboard_service.py's
     _user_map/_profile_map/_connection_map instead of hand-rolling a
     second copy of each, per Document 1 §6.2's third bullet.
+
+    The shared ranking computation is delegated to _compute_top_earners
+    above (cache-aside); this function's own job is only the live
+    per-viewer overlay (status, is_you), computed fresh on every call
+    regardless of whether the shared list was a cache hit.
     """
     try:
-        rank_rows = (
-            db.session.query(
-                UserBadge.user_id,
-                func.count(UserBadge.id).label("badge_count"),
-            )
-            .group_by(UserBadge.user_id)
-            .order_by(func.count(UserBadge.id).desc())
-            .limit(20)
-            .all()
-        )
+        leaderboard_data = _compute_top_earners()
 
-        if not rank_rows:
+        if not leaderboard_data:
             return jsonify({"status": "success", "data": []})
 
-        top_user_ids = [row.user_id for row in rank_rows]
-
-        umap = _user_map(top_user_ids)
-        pmap = _profile_map(top_user_ids)
+        top_user_ids = [entry["user"]["id"] for entry in leaderboard_data]
         connection_map = _connection_map(current_user.id, top_user_ids)
 
-        leaderboard_data = []
-        for idx, row in enumerate(rank_rows, start=1):
-            user = umap.get(row.user_id)
-            if not user:
-                continue
-
-            profile = pmap.get(row.user_id)
-            level = get_reputation_level(user.reputation)
-
-            leaderboard_data.append({
-                "rank": idx,
-                "status": connection_map.get(row.user_id),
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "name": user.name,
-                    "avatar": user.avatar,
-                    "department": profile.department if profile else None,
-                    "class_level": profile.class_name if profile else None,
-                },
-                "reputation": {
-                    "points": user.reputation,
-                    "level": {
-                        "name": level["name"],
-                        "icon": level["icon"],
-                        "color": level["color"],
-                    },
-                },
-                "stats": {
-                    "total_badges": row.badge_count,
-                    "total_helpful": user.total_helpful,
-                },
-                "is_you": user.id == current_user.id,
-            })
+        for entry in leaderboard_data:
+            entry["status"] = connection_map.get(entry["user"]["id"])
+            entry["is_you"] = entry["user"]["id"] == current_user.id
 
         return jsonify({"status": "success", "data": leaderboard_data})
 

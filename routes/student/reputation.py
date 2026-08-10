@@ -47,6 +47,7 @@ from sqlalchemy import func
 from models import User, StudentProfile, ReputationHistory
 from extensions import db
 from routes.student.helpers import token_required, success_response, error_response
+from services import cache_service
 
 # H-8 fix: REPUTATION_LEVELS/get_reputation_level used to be duplicated here
 # (and independently in badges.py, leaderboard.py, and
@@ -121,95 +122,120 @@ def get_rising_stars(current_user):
 # 2. PERSONAL REPUTATION SUMMARY
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:rep:me:{user_id}", ttl_seconds=120)
+def _compute_my_reputation(user_id, reputation):
+    """
+    The actual computation behind GET /reputation/me, cache-aside per plan
+    §4.2's row for this route (120s TTL). Entirely scoped to `user_id`
+    throughout (own level, own rank-relative-to-others, own recent
+    history) — no viewer/subject split needed the way the shared
+    leaderboard pages require, since this route is inherently "my own
+    summary" and every existing caller is `current_user` looking at
+    themselves.
+
+    `reputation` is passed explicitly (not re-read from a fresh User query
+    inside this function) so the interpolated cache key can't silently
+    diverge from the value actually used in the rank/percentile
+    computation below — both come from the exact same current_user.reputation
+    the route read a moment earlier. It does NOT participate in the cache
+    key itself (only user_id does, matching plan §3.2's key pattern
+    `sh:1:rep:me:{user_id}`) — reputation_service.py::award_reputation's
+    existing `cache_service.delete(f"sh:1:rep:me:{user_id}")` call (plan
+    §5.1) is what keeps this fresh immediately after every point change
+    for this user; the 120s TTL is the fallback for the rank-relative-to-
+    others component, which can shift from *other* users' reputation
+    changes too (see plan §4.2's asymmetry note).
+    """
+    level = get_reputation_level(reputation)
+    current_min = level["min"]
+    current_max = level["max"]
+
+    if current_max > current_min:
+        current_percent = min(
+            ((reputation - current_min) / (current_max - current_min)) * 100,
+            100,
+        )
+    else:
+        current_percent = 100.0
+
+    next_level_data = None
+    for idx, lvl in enumerate(REPUTATION_LEVELS):
+        if lvl["name"] == level["name"]:
+            if idx < len(REPUTATION_LEVELS) - 1:
+                next_level_info = REPUTATION_LEVELS[idx + 1]
+                points_needed = next_level_info["min"] - reputation
+                level_range = next_level_info["min"] - level["min"]
+                progress_percentage = (
+                    ((reputation - level["min"]) / level_range) * 100
+                    if level_range > 0
+                    else 0
+                )
+                next_level_data = {
+                    "name": next_level_info["name"],
+                    "icon": next_level_info["icon"],
+                    "min_points": next_level_info["min"],
+                    "points_needed": max(points_needed, 0),
+                    "level_range": level_range,
+                    "progress_percentage": round(max(0, min(progress_percentage, 100)), 1),
+                }
+            break
+
+    rank = (
+        db.session.query(func.count(User.id))
+        .filter(User.reputation > reputation, User.status == "approved")
+        .scalar()
+        + 1
+    )
+    total_users = User.query.filter_by(status="approved").count()
+
+    recent_changes = (
+        ReputationHistory.query.filter_by(user_id=user_id)
+        .order_by(ReputationHistory.created_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    changes_data = [
+        {
+            "action": c.action,
+            "points_change": c.points_change,
+            "reputation_after": c.reputation_after,
+            "related_type": c.related_type,
+            "related_id": c.related_id,
+            "created_at": c.created_at.isoformat(),
+        }
+        for c in recent_changes
+    ]
+
+    return {
+        "reputation": {
+            "points": reputation,
+            "level": {
+                "name": level["name"],
+                "icon": level["icon"],
+                "color": level["color"],
+                "min": level["min"],
+                "max": level["max"],
+                "current_percent": round(current_percent, 1),
+            },
+            "next_level": next_level_data,
+            "rank": {
+                "global": rank,
+                "total_users": total_users,
+                "percentile": round((1 - (rank / total_users)) * 100, 1) if total_users > 0 else 0,
+            },
+        },
+        "recent_changes": changes_data,
+    }
+
+
 @reputation_bp.route("/reputation/me", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_my_reputation(current_user):
     try:
-        level = get_reputation_level(current_user.reputation)
-        current_min = level["min"]
-        current_max = level["max"]
-
-        if current_max > current_min:
-            current_percent = min(
-                ((current_user.reputation - current_min) / (current_max - current_min)) * 100,
-                100,
-            )
-        else:
-            current_percent = 100.0
-
-        next_level_data = None
-        for idx, lvl in enumerate(REPUTATION_LEVELS):
-            if lvl["name"] == level["name"]:
-                if idx < len(REPUTATION_LEVELS) - 1:
-                    next_level_info = REPUTATION_LEVELS[idx + 1]
-                    points_needed = next_level_info["min"] - current_user.reputation
-                    level_range = next_level_info["min"] - level["min"]
-                    progress_percentage = (
-                        ((current_user.reputation - level["min"]) / level_range) * 100
-                        if level_range > 0
-                        else 0
-                    )
-                    next_level_data = {
-                        "name": next_level_info["name"],
-                        "icon": next_level_info["icon"],
-                        "min_points": next_level_info["min"],
-                        "points_needed": max(points_needed, 0),
-                        "level_range": level_range,
-                        "progress_percentage": round(max(0, min(progress_percentage, 100)), 1),
-                    }
-                break
-
-        rank = (
-            db.session.query(func.count(User.id))
-            .filter(User.reputation > current_user.reputation, User.status == "approved")
-            .scalar()
-            + 1
-        )
-        total_users = User.query.filter_by(status="approved").count()
-
-        recent_changes = (
-            ReputationHistory.query.filter_by(user_id=current_user.id)
-            .order_by(ReputationHistory.created_at.desc())
-            .limit(5)
-            .all()
-        )
-
-        changes_data = [
-            {
-                "action": c.action,
-                "points_change": c.points_change,
-                "reputation_after": c.reputation_after,
-                "related_type": c.related_type,
-                "related_id": c.related_id,
-                "created_at": c.created_at.isoformat(),
-            }
-            for c in recent_changes
-        ]
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "reputation": {
-                    "points": current_user.reputation,
-                    "level": {
-                        "name": level["name"],
-                        "icon": level["icon"],
-                        "color": level["color"],
-                        "min": level["min"],
-                        "max": level["max"],
-                        "current_percent": round(current_percent, 1),
-                    },
-                    "next_level": next_level_data,
-                    "rank": {
-                        "global": rank,
-                        "total_users": total_users,
-                        "percentile": round((1 - (rank / total_users)) * 100, 1) if total_users > 0 else 0,
-                    },
-                },
-                "recent_changes": changes_data,
-            },
-        })
+        data = _compute_my_reputation(current_user.id, current_user.reputation)
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Get reputation error: {str(e)}")
@@ -292,35 +318,54 @@ def get_reputation_history(current_user):
 # 4. PLATFORM STATS
 # ─────────────────────────────────────────────────────────────────────────────
 
+@cache_service.cached("sh:1:rep:stats", ttl_seconds=300)
+def _compute_reputation_stats():
+    """
+    The actual computation behind GET /reputation/stats, cache-aside per
+    plan §4.2's row for this route (300s TTL fallback only — platform-wide,
+    not user-scoped, no natural per-mutation hook makes sense at this
+    granularity). Distinct key from sh:1:lb:stats (leaderboard_service.py's
+    get_leaderboard_stats) — the two are separate platform-wide aggregates
+    computed by different functions over different queries and must not
+    share a cache key, per plan §17.3.
+
+    average_reputation is cast to float explicitly: func.avg() over an
+    Integer column can return a Decimal via some DB-API drivers, which
+    cache_service's json.dumps() can't serialize — this would otherwise
+    surface as a silent "Redis SET failed" warning on every call (fails
+    open per plan §8, so it wouldn't break the route, but it would quietly
+    mean this endpoint never actually gets cached).
+    """
+    last_days = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    total_active = User.query.filter(User.last_active > last_days).count()
+    average_reputation = db.session.query(func.avg(User.reputation)).scalar()
+
+    top_department = (
+        db.session.query(StudentProfile.department, func.sum(User.reputation).label("department_points"))
+        .join(StudentProfile, User.id == StudentProfile.user_id)
+        .group_by(StudentProfile.department)
+        .order_by(func.sum(User.reputation).desc())
+        .first()
+    )
+
+    department = top_department[0] if top_department else None
+    points = top_department[1] if top_department else 0
+
+    return {
+        "active_students": total_active,
+        "average_reputation": float(average_reputation) if average_reputation is not None else None,
+        "top_department": department,
+        "points": int(points) if points else 0,
+    }
+
+
 @reputation_bp.route("/reputation/stats", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def reputation_stats(current_user):
     try:
-        last_days = datetime.datetime.utcnow() - datetime.timedelta(days=30)
-        total_active = User.query.filter(User.last_active > last_days).count()
-        average_reputation = db.session.query(func.avg(User.reputation)).scalar()
-
-        top_department = (
-            db.session.query(StudentProfile.department, func.sum(User.reputation).label("department_points"))
-            .join(StudentProfile, User.id == StudentProfile.user_id)
-            .group_by(StudentProfile.department)
-            .order_by(func.sum(User.reputation).desc())
-            .first()
-        )
-
-        department = top_department[0] if top_department else None
-        points = top_department[1] if top_department else 0
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "active_students": total_active,
-                "average_reputation": average_reputation,
-                "top_department": department,
-                "points": points,
-            },
-        })
+        data = _compute_reputation_stats()
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Reputation stats error: {str(e)}")

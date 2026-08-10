@@ -35,6 +35,7 @@ from models import (
 )
 from extensions import db
 from services import notification_service
+from services import cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,9 @@ def _user_qualifies(user: User, criteria: dict) -> bool:
 # AWARDING
 # ============================================================================
 
-def check_and_award_badge(user_id: int, badge_name: str, *, commit: bool = True) -> UserBadge | None:
+def check_and_award_badge(
+    user_id: int, badge_name: str, *, commit: bool = True, skip_cache_invalidation: bool = False
+) -> UserBadge | None:
     """
     Check if a user qualifies for a named badge and award it if so.
 
@@ -358,6 +361,15 @@ def check_and_award_badge(user_id: int, badge_name: str, *, commit: bool = True)
     deliberate, documented exception to the "services never commit"
     convention (Document 2 §3.2 / §5), kept unchanged from the original
     badges.py implementation.
+
+    `skip_cache_invalidation` defaults to False (single-award call sites
+    invalidate the user's badge:progress cache immediately, matching plan
+    §5.2). check_all_badges_for_user passes skip_cache_invalidation=True on
+    every per-badge call in its loop and invalidates exactly once itself,
+    after the loop, next to its own commit — mirroring the `commit`
+    parameter's existing batching rationale: avoiding up to ~18 redundant
+    cache_service.delete() calls (one per badge evaluated) for what is
+    ultimately one user-facing cache entry, per plan §5.2/§17.4.
 
     Returns the new UserBadge if awarded, None if already earned or the
     user doesn't qualify.
@@ -383,6 +395,9 @@ def check_and_award_badge(user_id: int, badge_name: str, *, commit: bool = True)
 
     notification_service.notify_badge_earned(user_id, badge)
 
+    if not skip_cache_invalidation:
+        cache_service.delete(f"sh:1:badge:progress:{user_id}")
+
     if commit:
         db.session.commit()
 
@@ -400,12 +415,20 @@ def check_all_badges_for_user(user_id: int) -> list[Badge]:
     awarded = []
 
     for badge in all_badges:
-        result = check_and_award_badge(user_id, badge.name, commit=False)
+        result = check_and_award_badge(
+            user_id, badge.name, commit=False, skip_cache_invalidation=True
+        )
         if result:
             awarded.append(badge)
 
     if awarded:
         db.session.commit()
+        # Invalidate once, after the loop and alongside the commit above —
+        # not once per badge inside the loop (skip_cache_invalidation=True
+        # above suppresses the per-badge invalidation for exactly this
+        # reason). Matches this function's own existing commit-batching
+        # discipline (avoiding N round-trips) per plan §5.2/§17.4.
+        cache_service.delete(f"sh:1:badge:progress:{user_id}")
 
     return awarded
 
