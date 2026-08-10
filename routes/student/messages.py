@@ -972,8 +972,21 @@ def get_conversation_messages(current_user, partner_id):
         # than the legacy websocket_events manager — that manager is being
         # kept for non-messaging functionality only (e.g. Homework activity
         # tracking), per the messaging-ownership split.
+        #
+        # HORIZONTAL SCALING FIX (01-DESIGN-horizontal-scaling.md §6.2):
+        # this REST request can be served by any instance, but partner_id's
+        # socket may be connected to a DIFFERENT instance entirely. The
+        # emit below already correctly targets room=f"user_{partner_id}"
+        # (which reaches any instance once message_queue is configured —
+        # see websocket_messages.py::init_app) — the bug was in the GUARD
+        # deciding whether to bother emitting at all: checking
+        # message_ws_manager.online_users only sees sockets THIS process
+        # happens to hold, so a partner connected elsewhere would silently
+        # never receive their read receipt. presence_service.is_user_online
+        # answers this correctly regardless of instance.
         from services.websocket_messages import message_ws_manager
-        if partner_id in message_ws_manager.online_users:
+        from services import presence_service
+        if presence_service.is_user_online(partner_id):
             unread_msg_ids = [m['id'] for m in messages_data if not m['is_read'] and not m['from_me']]
             if unread_msg_ids:
                 message_ws_manager.socketio.emit(
