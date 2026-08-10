@@ -32,6 +32,29 @@ Architecture:
   Auth state (socket_to_user) is read from message_ws_manager.
   Both managers register handlers on the same socketio object.
 
+HORIZONTAL SCALING (see 01-DESIGN-horizontal-scaling.md §6):
+  - user_active_thread (below) moved to Redis via services.presence_service
+    — it was being read in send_thread_message to decide a NEW message's
+    initial delivery status ('read' vs 'delivered' vs 'sent'), which needs
+    to be correct regardless of which instance the relevant member's
+    socket is connected to.
+  - _thread_msg_rate_limiter now uses RedisFixedWindowLimiter instead of
+    the in-memory RateLimiter, since a per-user thread-message cap is a
+    security control that must hold even if a user's reconnects land on a
+    different instance each time (see websocket_rate_limiter.py).
+  - message_ws_manager.online_users reads (deciding a message's initial
+    status) switched to presence_service.is_user_online for the same
+    reason.
+  - _ai_action_buckets / _auto_reply_buckets are FLAGGED but intentionally
+    NOT changed this batch — see the design doc §2 for why (same class of
+    fix as the rate limiter above, deferred as a small, self-contained
+    follow-up rather than folded in unrequested).
+  - Broadcasting (broadcast_to_thread, notify_user) needed ZERO changes —
+    both already just call self.socketio.emit(..., room=X), which becomes
+    cross-instance-correct once message_queue is set in
+    websocket_messages.py::init_app (this file shares that socketio
+    instance via init_socketio).
+
 Usage in app factory:
   from websocket_messages import message_ws_manager, init_message_websocket
   from websocket_threads import thread_ws_manager
@@ -55,7 +78,15 @@ from sqlalchemy import func
 # this file (_send_buckets/_is_rate_limited and a bespoke ThreadTypingManager).
 # Both are genuinely mutated from multiple threads under async_mode='threading',
 # so an actual lock (which this shared implementation has) matters here.
-from services.websocket_rate_limiter import RateLimiter, TypingStatusManager
+#
+# RedisFixedWindowLimiter (horizontal scaling): distributed replacement for
+# the per-user thread-message rate limit specifically — see module
+# docstring. TypingStatusManager is untouched; typing dedup stays local by
+# design (design doc §2/§6.1).
+from services.websocket_rate_limiter import RateLimiter, TypingStatusManager, RedisFixedWindowLimiter
+
+# Horizontal scaling: distributed presence (design doc §6.3).
+from services import presence_service
 
 from extensions import db
 from models import (
@@ -104,7 +135,15 @@ _RATE_LIMIT_WINDOW = int(os.environ.get("THREAD_MSG_RATE_WINDOW", "60"))  # seco
 # mutated from multiple SocketIO worker threads — a real data race under
 # async_mode='threading'). One shared, namespaced key per user below keeps
 # this isolated from any other feature that also uses the same RateLimiter.
-_thread_msg_rate_limiter = RateLimiter()
+#
+# Horizontal scaling: swapped from the in-memory RateLimiter to
+# RedisFixedWindowLimiter (see module docstring / websocket_rate_limiter.py).
+# A per-user thread-message cap is a security control — an in-memory bucket
+# meant a user who reconnects to a different instance got a fresh, unlinked
+# limit each time, which defeats the point of the limit at any instance
+# count above 1. The RateLimiter import above is kept (still used by the
+# untouched websocket_events.py) but no longer used in THIS file.
+_thread_msg_rate_limiter = RedisFixedWindowLimiter(key_prefix="sh:1:ws:msgrate")
 
 
 # ============================================================================
@@ -153,13 +192,18 @@ def _user_room(user_id: int) -> str:
 
 def _is_rate_limited(user_id: int) -> bool:
     """
-    Sliding-window rate limiter.
+    Fixed-window rate limiter.
     Returns True (blocked) if the user has sent >= _RATE_LIMIT_MAX messages
-    in the last _RATE_LIMIT_WINDOW seconds.
+    in the current _RATE_LIMIT_WINDOW-second window.
 
-    Backed by the shared, lock-protected RateLimiter (see H-10) instead of
-    a bare module-level dict — safe to call concurrently from multiple
-    SocketIO worker threads.
+    HORIZONTAL SCALING: backed by RedisFixedWindowLimiter (see module
+    docstring) — correct regardless of which application instance handles
+    a given user's messages, not just safe across threads within one
+    process. check_rate_limit's signature/return shape (allowed, remaining)
+    is identical to the old in-memory RateLimiter's, so this call itself
+    needed no change beyond the class swap above. Fails OPEN on Redis
+    error (see RedisFixedWindowLimiter's docstring), matching this app's
+    established rate-limiting precedent (rate_limit_service.py).
     """
     allowed, _remaining = _thread_msg_rate_limiter.check_rate_limit(
         key=f"thread_msg_{user_id}",
@@ -214,8 +258,21 @@ class ThreadWebSocketManager:
         self.socketio   = None
         self.app        = None
         self.typing_mgr = ThreadTypingManager(timeout=3)
-        # ARCH-02: tracks which thread each connected user is actively viewing
-        # { user_id: thread_id }
+        # ARCH-02: tracks which thread each connected user is actively
+        # viewing. { user_id: thread_id }
+        #
+        # HORIZONTAL SCALING: this dict is DEPRECATED as of the horizontal
+        # scaling refactor and is no longer read or written by any handler
+        # below — services.presence_service.set_active_thread /
+        # get_active_thread / clear_active_thread (Redis-backed) is now
+        # the single source of truth, since this needs to be correct
+        # regardless of which instance a given thread member's socket is
+        # connected to (send_thread_message reads this to decide a new
+        # message's initial delivery status for EVERY other member, not
+        # just ones connected to the same instance as the sender). Left
+        # declared (rather than removed) only in case any external
+        # debugging/monitoring code reaches into it directly; nothing in
+        # this file does anymore.
         self.user_active_thread: dict[int, int] = {}
 
     # ------------------------------------------------------------------ #
@@ -512,8 +569,13 @@ class ThreadWebSocketManager:
             # Join shared thread room
             join_room(f"thread_{thread_id}")
 
-            # Track active thread for presence-based status
-            self.user_active_thread[user_id] = thread_id
+            # Track active thread for presence-based status.
+            # HORIZONTAL SCALING: writes to Redis via presence_service
+            # instead of the local self.user_active_thread dict (now
+            # deprecated — see __init__) so this is visible to
+            # send_thread_message's status decision regardless of which
+            # instance handles the sender's message.
+            presence_service.set_active_thread(user_id, thread_id)
 
             # FIX: join personal room for targeted status push-events
             join_room(_user_room(user_id))
@@ -553,9 +615,14 @@ class ThreadWebSocketManager:
             was_typing = self.typing_mgr.is_typing(thread_id, user_id)
             self.typing_mgr.stop_typing(thread_id, user_id)
 
-            # Clean up active thread tracking
-            if self.user_active_thread.get(user_id) == thread_id:
-                del self.user_active_thread[user_id]
+            # Clean up active thread tracking.
+            # HORIZONTAL SCALING: clears via presence_service (Redis),
+            # preserving the original's exact semantics — only clear if
+            # the CURRENTLY-tracked active thread for this user is the one
+            # being left (expected_thread_id=thread_id), so leaving a
+            # background/stale thread room never clobbers a different,
+            # newer active-thread value the user has since set elsewhere.
+            presence_service.clear_active_thread(user_id, expected_thread_id=thread_id)
 
             leave_room(f"thread_{thread_id}")
 
@@ -760,22 +827,41 @@ class ThreadWebSocketManager:
                 )
 
                 # ── Determine initial delivery status based on member presence ──
-                from services.websocket_messages import message_ws_manager
-
+                # HORIZONTAL SCALING (design doc §6.2, §6.3): both reads
+                # below now go through presence_service (Redis-backed)
+                # instead of self.user_active_thread (deprecated local
+                # dict) and message_ws_manager.online_users (process-local
+                # dict). A thread member's socket may be connected to any
+                # instance — this decision must be correct regardless of
+                # which one, since it determines every OTHER member's
+                # message-status tick, not just ones sharing an instance
+                # with the sender.
+                #
+                # get_online_user_ids / get_active_threads_batch are the
+                # batch forms (one Redis round trip each for the whole
+                # other_ids list) rather than N individual is_user_online()
+                # / get_active_thread() calls — this runs on every single
+                # message send, so it's worth avoiding N+1 Redis calls the
+                # same way this codebase already avoids N+1 SQL calls
+                # elsewhere (see the batch-load comments throughout
+                # crud.py/discovery.py/membership.py).
                 members_except_sender = ThreadMember.query.filter(
                     ThreadMember.thread_id == thread_id,
                     ThreadMember.student_id != user_id
                 ).all()
                 other_ids = [m.student_id for m in members_except_sender]
 
+                active_thread_by_id = presence_service.get_active_threads_batch(other_ids)
+                online_ids = presence_service.get_online_user_ids(other_ids)
+
                 active_viewers = [
                     mid for mid in other_ids
-                    if self.user_active_thread.get(mid) == thread_id
+                    if active_thread_by_id.get(mid) == thread_id
                 ]
                 online_non_viewers = [
                     mid for mid in other_ids
-                    if mid in message_ws_manager.online_users
-                    and self.user_active_thread.get(mid) != thread_id
+                    if mid in online_ids
+                    and active_thread_by_id.get(mid) != thread_id
                 ]
 
                 if active_viewers:
