@@ -41,6 +41,13 @@ from services.analytics_service import calculate_engagement_rate, get_activity_l
 # aggregation (overview, engagement, comparison) that's worth protecting
 # from being hammered.
 from services.rate_limit_service import limiter, RateLimitTier, ip_key
+# Plan §4.4/§17.5: manual cache-aside (not the @cached decorator) around
+# each route's computed data dict — the decorator's JSON-serialization
+# contract requires a plain JSON-serializable return value, but every
+# route here returns jsonify(...) (a Flask Response object, not
+# serializable), so the cache boundary sits around the dict construction,
+# with jsonify(...) applied outside it on both the hit and miss paths.
+from services import cache_service
 
 analytics_bp = Blueprint("student_analytics", __name__)
 
@@ -198,11 +205,23 @@ def generate_insights(user_id):
     return insights[:5]
 
 
+@cache_service.cached("sh:1:an:platform_avg", ttl_seconds=600)
 def get_average_user_stats():
     """Calculate platform-wide average statistics.
 
     Always returns a dict with all four keys (values are 0 when there are no
     approved users) so callers never receive a KeyError.
+
+    Plan §4.4.1/§17.5: cached once, shared across every viewer (this
+    function takes no arguments that vary the result, so the @cached
+    decorator's key_template needs no {placeholders} — see cache_service.py's
+    own docstring for that pattern). This function already returns a plain
+    dict, satisfying @cached's JSON-serialization contract directly, unlike
+    the route functions elsewhere in this file which wrap their data in
+    jsonify(...) and therefore use manual cache-aside instead (see
+    get_comparison_stats below, which computes each viewer's personal
+    multipliers live against this cached shared input rather than caching
+    per-viewer).
     """
     total_users = User.query.filter_by(status="approved").count()
 
@@ -240,6 +259,16 @@ def get_analytics_overview(current_user):
     Shows monthly impact, rank, reputation change, activity level
     """
     try:
+        # Plan §4.2/§17.5: cache-aside, TTL 120s. Hard-invalidated at the
+        # exact moment the viewing user's own reputation changes (see
+        # services/reputation_service.py::award_reputation, plan §5.1) —
+        # this TTL is the backstop for the case an invalidation is missed,
+        # not the primary correctness mechanism.
+        cache_key = f"sh:1:an:overview:{current_user.id}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
 
         # Calculate week-over-week changes
@@ -289,31 +318,32 @@ def get_analytics_overview(current_user):
 
         activity_level = get_activity_level(week_activity)
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "hero_stats": {
-                    "monthly_views": this_week_views,
-                    "helpful_count": this_week_helpful,
-                    "department_rank": dept_rank,
-                    "reputation_change": int(this_week_rep),
-                    "activity_level": activity_level
-                },
-                "current_stats": {
-                    "total_posts": current_user.total_posts,
-                    "total_reputation": current_user.reputation,
-                    "reputation_level": current_user.reputation_level,
-                    "login_streak": current_user.login_streak,
-                    "total_helpful": current_user.total_helpful
-                },
-                "quick_facts": {
-                    "joined_at": current_user.joined_at.isoformat(),
-                    "days_active": (datetime.datetime.utcnow() - current_user.joined_at).days,
-                    "department": profile.department if profile else None,
-                    "class_level": profile.class_name if profile else None
-                }
+        data = {
+            "hero_stats": {
+                "monthly_views": this_week_views,
+                "helpful_count": this_week_helpful,
+                "department_rank": dept_rank,
+                "reputation_change": int(this_week_rep),
+                "activity_level": activity_level
+            },
+            "current_stats": {
+                "total_posts": current_user.total_posts,
+                "total_reputation": current_user.reputation,
+                "reputation_level": current_user.reputation_level,
+                "login_streak": current_user.login_streak,
+                "total_helpful": current_user.total_helpful
+            },
+            "quick_facts": {
+                "joined_at": current_user.joined_at.isoformat(),
+                "days_active": (datetime.datetime.utcnow() - current_user.joined_at).days,
+                "department": profile.department if profile else None,
+                "class_level": profile.class_name if profile else None
             }
-        })
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=120)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Analytics overview error: {str(e)}")
@@ -331,6 +361,18 @@ def get_activity_heatmap(current_user):
     try:
         days = request.args.get("days", 90, type=int)
         days = min(days, 365)  # Max 1 year
+
+        # Plan §4.4/§17.5: cache-aside, TTL 300s, TTL fallback only (no
+        # natural per-mutation hook — heatmap changes are daily-granular,
+        # so a 5-minute window is invisible relative to the data's own
+        # resolution). `days` is part of the key since it's a varying
+        # request parameter that changes the result set (plan §10's
+        # discipline: every parameter affecting the result belongs in the
+        # key, not just page numbers).
+        cache_key = f"sh:1:an:heatmap:{current_user.id}:{days}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
 
         start_date = datetime.date.today() - datetime.timedelta(days=days)
 
@@ -395,20 +437,21 @@ def get_activity_heatmap(current_user):
         # Find best day
         best_day = max(heatmap_data, key=lambda x: x["score"]) if heatmap_data else None
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "heatmap": heatmap_data,
-                "summary": {
-                    "total_days": days,
-                    "active_days": total_active_days,
-                    "total_score": total_score,
-                    "avg_daily_score": avg_daily_score,
-                    "best_day": best_day,
-                    "current_streak": current_user.login_streak
-                }
+        data = {
+            "heatmap": heatmap_data,
+            "summary": {
+                "total_days": days,
+                "active_days": total_active_days,
+                "total_score": total_score,
+                "avg_daily_score": avg_daily_score,
+                "best_day": best_day,
+                "current_streak": current_user.login_streak
             }
-        })
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=300)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Activity heatmap error: {str(e)}")
@@ -423,6 +466,12 @@ def get_engagement_stats(current_user):
     Detailed engagement breakdown for posts, comments, threads
     """
     try:
+        # Plan §4.4/§17.5: cache-aside, TTL 180s, TTL fallback only.
+        cache_key = f"sh:1:an:engage:{current_user.id}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         # Post engagement
         post_stats = db.session.query(
             func.count(Post.id).label('total'),
@@ -460,38 +509,39 @@ def get_engagement_stats(current_user):
             post_stats.total_comments or 0
         )
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "posts": {
-                    "total_created": post_stats.total or 0,
-                    "total_views": post_stats.total_views or 0,
-                    "total_likes": post_stats.total_likes or 0,
-                    "total_comments": post_stats.total_comments or 0,
-                    "avg_likes_per_post": round(post_stats.avg_likes or 0, 1),
-                    "avg_views_per_post": round(post_stats.avg_views or 0, 1),
-                    "engagement_rate": engagement_rate,
-                    "best_post": {
-                        "id": best_post.id,
-                        "title": best_post.title,
-                        "likes": best_post.positive_reactions_count,
-                        "comments": best_post.comments_count,
-                        "views": best_post.views_count
-                    } if best_post else None
-                },
-                "comments": {
-                    "total_created": comment_stats.total or 0,
-                    "total_likes": comment_stats.total_likes or 0,
-                    "marked_helpful": current_user.total_helpful,
-                    "marked_solution": comment_stats.solutions or 0
-                },
-                "threads": {
-                    "created": threads_created,
-                    "joined": thread_stats.joined or 0,
-                    "messages_sent": thread_stats.messages_sent or 0
-                }
+        data = {
+            "posts": {
+                "total_created": post_stats.total or 0,
+                "total_views": post_stats.total_views or 0,
+                "total_likes": post_stats.total_likes or 0,
+                "total_comments": post_stats.total_comments or 0,
+                "avg_likes_per_post": round(post_stats.avg_likes or 0, 1),
+                "avg_views_per_post": round(post_stats.avg_views or 0, 1),
+                "engagement_rate": engagement_rate,
+                "best_post": {
+                    "id": best_post.id,
+                    "title": best_post.title,
+                    "likes": best_post.positive_reactions_count,
+                    "comments": best_post.comments_count,
+                    "views": best_post.views_count
+                } if best_post else None
+            },
+            "comments": {
+                "total_created": comment_stats.total or 0,
+                "total_likes": comment_stats.total_likes or 0,
+                "marked_helpful": current_user.total_helpful,
+                "marked_solution": comment_stats.solutions or 0
+            },
+            "threads": {
+                "created": threads_created,
+                "joined": thread_stats.joined or 0,
+                "messages_sent": thread_stats.messages_sent or 0
             }
-        })
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=180)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Engagement stats error: {str(e)}")
@@ -507,6 +557,12 @@ def get_impact_metrics(current_user):
     People reached, questions answered, resources shared
     """
     try:
+        # Plan §4.4/§17.5: cache-aside, TTL 180s, TTL fallback only.
+        cache_key = f"sh:1:an:impact:{current_user.id}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         # Unique users who viewed your posts
         people_reached = db.session.query(
             func.count(func.distinct(PostView.user_id))
@@ -551,27 +607,28 @@ def get_impact_metrics(current_user):
         # Study buddies helped (future feature - placeholder)
         study_buddies = 0
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "impact": {
-                    "people_reached": people_reached,
-                    "questions_answered": questions_answered,
-                    "questions_solved": questions_solved,
-                    "resources_shared": resources_shared,
-                    "times_bookmarked": times_bookmarked,
-                    "active_connections": connections_count,
-                    "study_buddies_helped": study_buddies,
-                    "total_helpful": current_user.total_helpful
-                },
-                "impact_score": (
-                    people_reached * 1 +
-                    questions_solved * 10 +
-                    current_user.total_helpful * 5 +
-                    resources_shared * 3
-                )
-            }
-        })
+        data = {
+            "impact": {
+                "people_reached": people_reached,
+                "questions_answered": questions_answered,
+                "questions_solved": questions_solved,
+                "resources_shared": resources_shared,
+                "times_bookmarked": times_bookmarked,
+                "active_connections": connections_count,
+                "study_buddies_helped": study_buddies,
+                "total_helpful": current_user.total_helpful
+            },
+            "impact_score": (
+                people_reached * 1 +
+                questions_solved * 10 +
+                current_user.total_helpful * 5 +
+                resources_shared * 3
+            )
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=180)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Impact metrics error: {str(e)}")
@@ -586,15 +643,28 @@ def get_insights(current_user):
     AI-like insights and personalized suggestions
     """
     try:
+        # Plan §4.4/§17.5: cache-aside, TTL 300s, TTL fallback only — also
+        # avoids re-running the same badge-progress-calculation loop that
+        # generate_insights() does internally (Insight 4), which
+        # /badges/progress independently caches too. generated_at is part
+        # of the cached payload (frozen at write time), not recomputed on
+        # a hit, since a live timestamp on stale-relative-to-DB data would
+        # misrepresent when these insights were actually computed.
+        cache_key = f"sh:1:an:insights:{current_user.id}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         insights = generate_insights(current_user.id)
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "insights": insights,
-                "generated_at": datetime.datetime.utcnow().isoformat()
-            }
-        })
+        data = {
+            "insights": insights,
+            "generated_at": datetime.datetime.utcnow().isoformat()
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=300)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Insights error: {str(e)}")
@@ -609,6 +679,13 @@ def get_comparison_stats(current_user):
     Compare user's stats with platform averages
     """
     try:
+        # Plan §4.4.1: the split lives entirely inside get_average_user_stats()
+        # (now @cache_service.cached, key sh:1:an:platform_avg, TTL 600s) —
+        # this call is unchanged, and everything below (connections_count,
+        # every multiplier) is deliberately NOT cached per-viewer: it's
+        # cheap in-process arithmetic against the cached shared averages,
+        # not a query, so a per-viewer cache entry would only add memory
+        # footprint for no benefit.
         avg_stats = get_average_user_stats()
 
         # Calculate multipliers
@@ -753,6 +830,14 @@ def get_weekly_summary(current_user):
     Weekly digest data (for email/notification)
     """
     try:
+        # Plan §4.4/§17.5: cache-aside, TTL 3600s — the route's own name
+        # and purpose (a weekly digest) justifies an hour of staleness
+        # outright, per plan §4.2's table for this row.
+        cache_key = f"sh:1:an:weekly_summary:{current_user.id}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
 
         # New reputation earned
@@ -798,20 +883,21 @@ def get_weekly_summary(current_user):
         # Cast to int so the message renders as "25" not "25.0000".
         rep_change_int = int(rep_change)
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "period": "last_7_days",
-                "summary": {
-                    "reputation_earned": rep_change_int,
-                    "badges_earned": new_badges,
-                    "posts_created": posts_created,
-                    "people_helped": helpful_this_week,
-                    "new_connections": new_connections
-                },
-                "message": f"Great week! You earned {rep_change_int} reputation and helped {helpful_this_week} people! 🎉"
-            }
-        })
+        data = {
+            "period": "last_7_days",
+            "summary": {
+                "reputation_earned": rep_change_int,
+                "badges_earned": new_badges,
+                "posts_created": posts_created,
+                "people_helped": helpful_this_week,
+                "new_connections": new_connections
+            },
+            "message": f"Great week! You earned {rep_change_int} reputation and helped {helpful_this_week} people! 🎉"
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=3600)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Weekly summary error: {str(e)}")
