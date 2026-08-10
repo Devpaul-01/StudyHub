@@ -40,6 +40,7 @@ import logging
 
 from extensions import db
 from models import Notification, Badge
+from services import counter_cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,22 @@ def notify(
     notify_*() functions below for the notification "templates" that are
     repeated across many call sites, so the field list for each type only
     exists in one place.
+
+    Unread-count cache (plan §4.7/§5.6): every notification created here
+    increments the Redis counter at sh:1:notif:unread:{user_id} via a
+    native atomic INCR (counter_cache_service.increment_unread_notification_count),
+    never a read-modify-write — see plan §7.1 for why that distinction
+    matters under concurrent notify() calls for the same user. This call
+    is deliberately placed alongside db.session.flush()/_broadcast(),
+    which are also both best-effort/non-transactional — like _broadcast(),
+    a Redis hiccup here must never surface as an error to notify()'s
+    caller (counter_cache_service already fails open internally, per its
+    own module docstring, so no try/except is needed at this call site).
+
+    This function being the single funnel point for the increment is only
+    correct once every direct `Notification(...)` construction elsewhere
+    in the codebase has been migrated to call notify() instead — see plan
+    §5.3/§17.6 for the enumerated migration this depends on.
     """
     notification = Notification(
         user_id=user_id,
@@ -118,6 +135,8 @@ def notify(
     )
     db.session.add(notification)
     db.session.flush()  # populate notification.id/created_at for the broadcast payload
+
+    counter_cache_service.increment_unread_notification_count(user_id)
 
     _broadcast(user_id, notification)
 
