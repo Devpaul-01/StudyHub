@@ -30,6 +30,12 @@ import bleach
 # unsynchronized copy here.
 from services.websocket_rate_limiter import TypingStatusManager
 
+# Plan §4.7/§5.4/§17.6: unread-message-count Redis counter, incremented at
+# the message-creation funnel point (handle_send_message below) via a
+# native atomic INCR — never a read-modify-write, per plan §7.1's
+# concurrent-notify()-calls reasoning, which applies identically here.
+from services import counter_cache_service
+
 # ============================================================================
 # MESSAGE WEBSOCKET MANAGER
 # ============================================================================
@@ -381,6 +387,13 @@ class MessageWebSocketManager:
                 db.session.flush()
                 
                 db.session.commit()
+
+                # Plan §5.4/§17.6: increment the receiver's unread-message
+                # counter at this exact funnel point — every Message row
+                # with a receiver_id is created here or in the REST
+                # fallback (messages.py), per that file's own module
+                # docstring ("primary path is WebSocket").
+                counter_cache_service.increment_unread_message_count(receiver_id)
                 
                 # Get sender info
                 sender = User.query.get(current_user_id)

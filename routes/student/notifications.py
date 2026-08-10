@@ -13,6 +13,12 @@ from routes.student.helpers import token_required, success_response, error_respo
 # high-frequency as users clear notifications), WRITE_HEAVY for the settings
 # update (less frequent, more consequential).
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
+# Plan §4.7/§5.6/§17.6: unread-notification-count Redis counter, decremented
+# at every mark-read/delete site below using the exact row count each
+# route's own bulk operation already returns (or a pre-delete is_read
+# check for the single-notification delete route, which has no bulk
+# UPDATE row count to reuse).
+from services import counter_cache_service
 
 notifications_bp = Blueprint("student_notifications", __name__)
 
@@ -211,6 +217,13 @@ def mark_all_notifications_read(current_user):
         )
         
         db.session.commit()
+
+        # Plan §5.6/§17.6: decrement by the exact row count the bulk UPDATE
+        # above already returned — query was built starting from
+        # is_read == False, so marked_count IS the number of previously
+        # unread rows just flipped to read. No extra COUNT(*) query needed.
+        if marked_count:
+            counter_cache_service.decrement_unread_notification_count(user.id, by=marked_count)
         
         return jsonify({
             "status": "success",
@@ -252,6 +265,11 @@ def mark_notification_read(current_user, notification_id):
         notification.is_read = True
         notification.read_at = datetime.utcnow()
         db.session.commit()
+
+        # Plan §5.6/§17.6: the is_read guard above guarantees this was a
+        # genuine unread->read transition, so a flat -1 is correct — no
+        # extra query needed to determine the delta.
+        counter_cache_service.decrement_unread_notification_count(current_user.id)
         
         return success_response("Notification marked as read")
     
@@ -278,9 +296,18 @@ def delete_notification(current_user, notification_id):
         
         if not notification:
             return error_response("Notification not found")
-        
+
+        # Plan §17.6: only decrement if the notification being deleted was
+        # still unread — deleting an already-read notification must not
+        # touch the counter. Captured before delete since the attribute is
+        # gone from the session afterward.
+        was_unread = not notification.is_read
+
         db.session.delete(notification)
         db.session.commit()
+
+        if was_unread:
+            counter_cache_service.decrement_unread_notification_count(current_user.id)
         
         return success_response("Notification deleted successfully")
     
@@ -321,10 +348,25 @@ def delete_all_notifications(current_user):
         
         # Count before deletion
         delete_count = query.count()
+
+        # Plan §17.6: this route's base query is not restricted to unread
+        # rows (unlike mark_all_notifications_read's), so delete_count
+        # above cannot be reused as the counter decrement directly — a
+        # second, cheap count against the same filtered query (same
+        # type/read_only filters already applied) gives the exact number
+        # of unread rows about to be deleted. When read_only=true this is
+        # always 0, since query is already restricted to is_read == True
+        # in that branch.
+        unread_delete_count = query.filter(Notification.is_read == False).count()
         
         # Delete
         query.delete(synchronize_session=False)
         db.session.commit()
+
+        if unread_delete_count:
+            counter_cache_service.decrement_unread_notification_count(
+                current_user.id, by=unread_delete_count
+            )
         
         return jsonify({
             "status": "success",

@@ -54,6 +54,10 @@ from routes.student.helpers import (
 # arrive via the routes.student.helpers shim). Imported here at the same
 # name so every existing call site in this file keeps working unchanged.
 from services.connection_service import can_message
+# Plan §4.7/§5.4/§17.6: unread-message-count Redis counter, decremented at
+# every mark-read site below using the exact row count each route's own
+# bulk update already returns (or a flat -1 for the single-message route).
+from services import counter_cache_service
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on message send/delete/
 # block actions, BURST_OK for lightweight read-receipt-style actions.
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -946,7 +950,7 @@ def get_conversation_messages(current_user, partner_id):
             })
         
         # Mark messages as read (messages TO current user)
-        Message.query.filter(
+        marked_count = Message.query.filter(
             Message.sender_id == partner_id,
             Message.receiver_id == current_user.id,
             Message.is_read == False
@@ -955,6 +959,12 @@ def get_conversation_messages(current_user, partner_id):
             "read_at": datetime.datetime.utcnow()
         })
         db.session.commit()
+
+        # Plan §5.4/§17.6: query was already filtered to is_read == False,
+        # so marked_count IS the exact number of previously-unread rows
+        # just flipped to read as a side effect of loading this page.
+        if marked_count:
+            counter_cache_service.decrement_unread_message_count(current_user.id, by=marked_count)
         
         # Notify sender via WebSocket that messages were read.
         # H-item-5: this is messaging functionality, so it now goes through
@@ -1025,6 +1035,10 @@ def mark_message_read(current_user, message_id):
             message.is_read = True
             message.read_at = datetime.datetime.utcnow()
             db.session.commit()
+
+            # Plan §5.4/§17.6: the is_read guard above guarantees this was
+            # a genuine unread->read transition, so a flat -1 is correct.
+            counter_cache_service.decrement_unread_message_count(current_user.id)
         
         return success_response("Message marked as read")
         
@@ -1042,7 +1056,7 @@ def mark_all_read(current_user, partner_id):
     Mark all messages from a user as read
     """
     try:
-        Message.query.filter(
+        marked_count = Message.query.filter(
             Message.sender_id == partner_id,
             Message.receiver_id == current_user.id,
             Message.is_read == False
@@ -1052,6 +1066,12 @@ def mark_all_read(current_user, partner_id):
         })
         
         db.session.commit()
+
+        # Plan §5.4/§17.6: query was already filtered to is_read == False,
+        # so marked_count IS the exact number of previously-unread rows
+        # just flipped to read — reuse it directly, no extra COUNT(*).
+        if marked_count:
+            counter_cache_service.decrement_unread_message_count(current_user.id, by=marked_count)
         
         return success_response("All messages marked as read")
         
