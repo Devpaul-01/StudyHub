@@ -33,6 +33,9 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+# Plan §4.9/§17.8: split cache-aside for get_department_stats, mirroring
+# §4.2.1's leaderboard-filters shared/viewer-specific split.
+from services import cache_service
 # Phase 5b (Document 4 §1): PUBLIC_READ for discovery/recommendation reads.
 from services.rate_limit_service import limiter, RateLimitTier, ip_key
 
@@ -48,31 +51,54 @@ threads_discovery_bp = Blueprint("threads_discovery", __name__)
 def get_department_stats(current_user):
     """Get thread statistics by department. FIX: case() now imported."""
     try:
-        department_stats = db.session.query(
-            Thread.department,
-            func.count(Thread.id).label('total_threads'),
-            func.sum(
-                case(
-                    (Thread.member_count < Thread.max_members, 1),
-                    else_=0
-                )
-            ).label('available_threads'),
-            func.sum(Thread.member_count).label('total_members'),
-            func.avg(Thread.member_count).label('avg_members')
-        ).filter(
-            Thread.is_open == True,
-            Thread.department.isnot(None)
-        ).group_by(Thread.department).order_by(desc('total_threads')).all()
+        # Plan §17.8: cache-aside, TTL 1800s — same staleness tolerance as
+        # §4.2.1's leaderboard department-filter list, since both are
+        # driven by the same underlying StudentProfile.department data,
+        # which only changes on a profile edit (rare).
+        #
+        # Split shape mirrors §4.2.1 exactly: departments_data/
+        # total_departments are shared across every viewer and are the
+        # only piece cached, under the flat key below. your_department is
+        # viewer-specific but costs nothing extra to compute (it's read
+        # straight off the current_user's own StudentProfile, which this
+        # route already loads) — so it stays outside the cached blob and
+        # is composed live on every request, on both the hit and miss
+        # paths, exactly like §4.2.1's your_department field.
+        cache_key = "sh:1:thread:dept_stats"
+        shared = cache_service.get(cache_key)
 
-        departments_data = []
-        for dept, total, available, total_members, avg_members in department_stats:
-            departments_data.append({
-                'department':             dept,
-                'total_threads':          total,
-                'available_threads':      available or 0,
-                'total_members':          total_members or 0,
-                'avg_members_per_thread': round(avg_members, 1) if avg_members else 0
-            })
+        if shared is None:
+            department_stats = db.session.query(
+                Thread.department,
+                func.count(Thread.id).label('total_threads'),
+                func.sum(
+                    case(
+                        (Thread.member_count < Thread.max_members, 1),
+                        else_=0
+                    )
+                ).label('available_threads'),
+                func.sum(Thread.member_count).label('total_members'),
+                func.avg(Thread.member_count).label('avg_members')
+            ).filter(
+                Thread.is_open == True,
+                Thread.department.isnot(None)
+            ).group_by(Thread.department).order_by(desc('total_threads')).all()
+
+            departments_data = []
+            for dept, total, available, total_members, avg_members in department_stats:
+                departments_data.append({
+                    'department':             dept,
+                    'total_threads':          total,
+                    'available_threads':      available or 0,
+                    'total_members':          total_members or 0,
+                    'avg_members_per_thread': round(avg_members, 1) if avg_members else 0
+                })
+
+            shared = {
+                'departments':       departments_data,
+                'total_departments': len(departments_data),
+            }
+            cache_service.set(cache_key, shared, ttl_seconds=1800)
 
         profile   = StudentProfile.query.filter_by(user_id=current_user.id).first()
         user_dept = profile.department if profile else None
@@ -80,9 +106,9 @@ def get_department_stats(current_user):
         return jsonify({
             'status': 'success',
             'data': {
-                'departments':       departments_data,
+                'departments':       shared['departments'],
                 'your_department':   user_dept,
-                'total_departments': len(departments_data)
+                'total_departments': shared['total_departments']
             }
         })
 

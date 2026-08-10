@@ -31,6 +31,12 @@ from routes.student.helpers import (
 # same name so every existing call site in this file keeps working
 # unchanged.
 from services.study_buddy_service import calculate_match_score
+# Plan §4.6/§17.7: manual cache-aside (see routes/student/analytics.py's
+# same reasoning) around get_suggestions/get_success_stories/
+# get_platform_stats — get_match_details (single-pair detail view) and
+# get_match_details_partnership are deliberately NOT cached, per plan
+# §4.6's table and its absence from §4/§17.7 respectively.
+from services import cache_service
 # Phase 5b (Document 4 §1): WRITE_HEAVY for preference/request/session
 # mutations, BURST_OK for the cancel/remove actions (low-risk cleanup).
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -189,6 +195,27 @@ def get_suggestions(current_user):
                 "data": {"suggestions": [], "message": "Set your preferences first to get matches"},
             })
 
+        # Plan §4.6/§17.7: cache-aside, TTL 300s, TTL fallback only —
+        # deliberately not hard-invalidated, since any other user's
+        # study_buddy_prefs or last_active could affect this viewer's
+        # suggestion list, which is unbounded fan-out (plan §4.9). Cache
+        # key has no `limit` component: limit only slices the already-
+        # scored list at the very end, so the full computation is cached
+        # once and reused regardless of the requested page size. The
+        # no-prefs-set early return above is deliberately NOT cached —
+        # caching it would mean a user who just set their preferences
+        # could see a stale "set your preferences" response for up to the
+        # TTL, which the plan's own reasoning for this cache (staleness in
+        # *candidate* state, not viewer state) doesn't intend to cover.
+        cache_key = f"sh:1:sb:suggest:{current_user.id}"
+        cached_result = cache_service.get(cache_key)
+        if cached_result is not None:
+            suggestions = cached_result["suggestions"]
+            return jsonify({
+                "status": "success",
+                "data": {"suggestions": suggestions[:limit], "total_found": cached_result["total_found"]},
+            })
+
         # ✅ Load current user's profile once
         current_profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
 
@@ -221,6 +248,7 @@ def get_suggestions(current_user):
         ).limit(50).all()
 
         if not candidates:
+            cache_service.set(cache_key, {"suggestions": [], "total_found": 0}, ttl_seconds=300)
             return jsonify({"status": "success", "data": {"suggestions": [], "total_found": 0}})
 
         candidate_ids = [c.id for c in candidates]
@@ -339,6 +367,12 @@ def get_suggestions(current_user):
             })
 
         suggestions.sort(key=lambda x: x["match_score"], reverse=True)
+
+        cache_service.set(
+            cache_key,
+            {"suggestions": suggestions, "total_found": len(suggestions)},
+            ttl_seconds=300,
+        )
 
         return jsonify({
             "status": "success",
@@ -853,6 +887,24 @@ def get_success_stories(current_user):
     try:
         profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
 
+        # Plan §4.6/§17.7 lists this cache's key as the flat, unscoped
+        # sh:1:sb:success_stories (grouping it with get_platform_stats as
+        # "aggregate/platform-level"). That's not quite this route's actual
+        # behavior: it filters to the viewer's own department when they
+        # have a profile (see the branch below), so a single shared cache
+        # entry would serve one department's stories to every other
+        # department's viewers. Scoping the key by department (falling
+        # back to the same "_" no-department sentinel used elsewhere in
+        # the plan, e.g. §3.2's leaderboard keys) preserves the intended
+        # per-department correctness while keeping the same TTL/mechanism
+        # the plan specifies. Still deliberately NOT scoped by user_id —
+        # every viewer in the same department sees the identical result.
+        dept_key_part = profile.department if profile and profile.department else "_"
+        cache_key = f"sh:1:sb:success_stories:{dept_key_part}"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         if profile:
             dept_user_ids = db.session.query(User.id).join(StudentProfile).filter(
                 StudentProfile.department == profile.department
@@ -894,7 +946,10 @@ def get_success_stories(current_user):
                     "is_active": match.is_active,
                 })
 
-        return jsonify({"status": "success", "data": {"success_stories": stories, "total": len(stories)}})
+        data = {"success_stories": stories, "total": len(stories)}
+        cache_service.set(cache_key, data, ttl_seconds=300)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Get success stories error: {str(e)}")
@@ -906,6 +961,14 @@ def get_success_stories(current_user):
 @token_required
 def get_platform_stats(current_user):
     try:
+        # Plan §4.6/§17.7: cache-aside, TTL 300s, flat unscoped key — this
+        # route (unlike get_success_stories above) genuinely has no
+        # current_user-dependent logic, matching §3.2's key pattern as-is.
+        cache_key = "sh:1:sb:platform_stats"
+        data = cache_service.get(cache_key)
+        if data is not None:
+            return jsonify({"status": "success", "data": data})
+
         total_matches    = StudyBuddyMatch.query.count()
         active_matches   = StudyBuddyMatch.query.filter_by(is_active=True).count()
         total_sessions   = db.session.query(func.sum(StudyBuddyMatch.sessions_count)).scalar() or 0
@@ -926,22 +989,23 @@ def get_platform_stats(current_user):
             reverse=True,
         )[:10]
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "platform_stats": {
-                    "total_matches":       total_matches,
-                    "active_partnerships": active_matches,
-                    "total_sessions":      int(total_sessions),
-                    "success_rate":        success_rate,
-                    "popular_subjects":    popular_subjects,
-                },
-                "motivational_message": (
-                    f"Join {active_matches} active study partnerships! "
-                    f"{int(total_sessions)} sessions completed so far! 🎓"
-                ),
+        data = {
+            "platform_stats": {
+                "total_matches":       total_matches,
+                "active_partnerships": active_matches,
+                "total_sessions":      int(total_sessions),
+                "success_rate":        success_rate,
+                "popular_subjects":    popular_subjects,
             },
-        })
+            "motivational_message": (
+                f"Join {active_matches} active study partnerships! "
+                f"{int(total_sessions)} sessions completed so far! 🎓"
+            ),
+        }
+
+        cache_service.set(cache_key, data, ttl_seconds=300)
+
+        return jsonify({"status": "success", "data": data})
 
     except Exception as e:
         current_app.logger.error(f"Get platform stats error: {str(e)}")

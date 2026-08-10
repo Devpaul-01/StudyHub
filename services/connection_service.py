@@ -31,6 +31,19 @@ from sqlalchemy import or_, and_
 
 from models import Connection, Post, StudentProfile, User
 from extensions import db
+# Plan §4.8/§17.7: get_mutual_connection_count and the single-pair
+# get_connection_health wrapper (not the batch form — see its own docstring
+# below) are cached. Both use manual cache-aside rather than the @cached
+# decorator: the mutual-count key needs canonical (min, max) pair ordering
+# per plan §3.2 ("Pairs use canonical ordering"), which the decorator's
+# literal-parameter-name interpolation can't express — {user1_id}:{user2_id}
+# would produce two different keys for the same logical pair depending on
+# call-argument order, exactly the bug §3.2 warns against. Computing the
+# canonical key here, before the cache lookup, is the only way to satisfy
+# that requirement without modifying cache_service.py itself (which Phase 2
+# must not touch — every cache in this plan is a consumer of the Phase 0
+# API, not a modifier of it).
+from services import cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +414,20 @@ def get_user_onboarding_preview(user_id):
 
 def get_mutual_connection_count(user1_id, user2_id):
     """Get count of mutual connections between two users"""
+    # Plan §3.2/§4.8/§17.7: cache-aside, TTL 300s, keyed by the canonical
+    # (min, max) ordering of the pair — matches the existing
+    # create_conversation_key() pattern already used in
+    # messages.py/websocket_messages.py for conversation keys, per §3.2's
+    # explicit instruction to reuse that convention. Without this, calling
+    # get_mutual_connection_count(482, 117) and get_mutual_connection_count(
+    # 117, 482) would populate two separate cache entries for the same
+    # logical pair.
+    low_id, high_id = min(user1_id, user2_id), max(user1_id, user2_id)
+    cache_key = f"sh:1:conn:mutual:{low_id}:{high_id}"
+    cached_count = cache_service.get(cache_key)
+    if cached_count is not None:
+        return cached_count
+
     try:
         user1_connections = Connection.query.filter(
             or_(
@@ -428,7 +455,9 @@ def get_mutual_connection_count(user1_id, user2_id):
             other_id = conn.receiver_id if conn.requester_id == user2_id else conn.requester_id
             user2_ids.add(other_id)
 
-        return len(user1_ids & user2_ids)
+        count = len(user1_ids & user2_ids)
+        cache_service.set(cache_key, count, ttl_seconds=300)
+        return count
 
     except Exception:
         logger.error("Get mutual count error", exc_info=True)
@@ -529,6 +558,9 @@ def get_connection_health_batch(user_id, other_user_ids):
         return result
 
 
+_NO_CONNECTION_SENTINEL = {"__no_connection__": True}
+
+
 def get_connection_health(user_id, other_user_id):
     """
     Single-pair convenience wrapper over get_connection_health_batch, for
@@ -540,5 +572,27 @@ def get_connection_health(user_id, other_user_id):
 
     Returns the same dict shape as before, or None if no accepted
     connection exists between the pair (matches original behavior).
+
+    Plan §4.8/§17.7: cache-aside, TTL 180s — deliberately only this
+    single-pair form is cached, not get_connection_health_batch (the batch
+    form already avoids the N+1 that would otherwise motivate caching it,
+    and its cache key would need to represent an arbitrary id-list, which
+    doesn't fit this plan's per-key scoping). A "no accepted connection"
+    result (None) is itself a legitimate, cacheable outcome — it means
+    genuinely fewer DB round-trips for a pair that's repeatedly checked
+    despite being unconnected — but cache_service.get() returning None is
+    otherwise indistinguishable from a cache miss, so a sentinel value is
+    stored in Redis for the None case and translated back to None here.
     """
-    return get_connection_health_batch(user_id, [other_user_id]).get(other_user_id)
+    cache_key = f"sh:1:conn:health:{user_id}:{other_user_id}"
+    cached = cache_service.get(cache_key)
+    if cached is not None:
+        return None if cached == _NO_CONNECTION_SENTINEL else cached
+
+    health = get_connection_health_batch(user_id, [other_user_id]).get(other_user_id)
+    cache_service.set(
+        cache_key,
+        health if health is not None else _NO_CONNECTION_SENTINEL,
+        ttl_seconds=180,
+    )
+    return health
