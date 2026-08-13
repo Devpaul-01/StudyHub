@@ -63,7 +63,6 @@ Usage in app factory:
   thread_ws_manager.init_socketio(app, socketio)
 """
 
-import bleach
 import threading
 import datetime
 import time
@@ -71,7 +70,11 @@ import os
 
 from flask_socketio import emit, join_room, leave_room
 from flask import request, current_app
-from sqlalchemy import func
+
+# HORIZONTAL SCALING BATCH 3: `from sqlalchemy import func` (used only by
+# the now-removed _parse_mentions class method's func.lower(...) call) was
+# removed as a dead import alongside it — see the comment above
+# _build_reactions for what replaced _parse_mentions.
 
 # H-10 fix: reuse the shared, lock-protected rate limiter/typing tracker
 # instead of the ad hoc, unlocked module-level dicts that used to live in
@@ -82,19 +85,41 @@ from sqlalchemy import func
 # RedisFixedWindowLimiter (horizontal scaling): distributed replacement for
 # the per-user thread-message rate limit specifically — see module
 # docstring. TypingStatusManager is untouched; typing dedup stays local by
-# design (design doc §2/§6.1).
-from services.websocket_rate_limiter import RateLimiter, TypingStatusManager, RedisFixedWindowLimiter
+# design (design doc §2/§6.1). RateLimiter (the plain in-memory class) is
+# NOT imported here — a Batch 2 comment previously claimed it was kept
+# "for websocket_events.py compat," but that was inaccurate:
+# websocket_events.py imports RateLimiter directly from
+# services.websocket_rate_limiter itself, not from this file, so this file
+# never needed to re-export it. Corrected in this batch.
+from services.websocket_rate_limiter import TypingStatusManager, RedisFixedWindowLimiter
 
 # Horizontal scaling: distributed presence (design doc §6.3).
 from services import presence_service
+
+# HORIZONTAL SCALING BATCH 3: shared thread-message create/edit/delete
+# logic, previously duplicated between this file and the REST fallback
+# (routes/student/threads/messaging.py) — see Batch 2 (design doc §13)
+# for why the module exists, and this batch's own module-docstring note
+# above for why THIS file now also calls into it rather than keeping its
+# own separate copy of the same validation/persist/broadcast logic.
+# Aliased _tms (not `thread_message_service`) purely to keep the many
+# `_tms.SomeError` references below short and visually distinct from this
+# file's own `_`-prefixed local helpers (_is_member, _sanitize, etc.).
+from services import thread_message_service as _tms
 
 from extensions import db
 from models import (
     User, Thread, ThreadMember, ThreadMessage,
     ThreadMessageReaction, ThreadMessageReadReceipt,
-    ThreadMessageAttachment,                          # Issue 1: new
-    Mention, Notification
 )
+# HORIZONTAL SCALING BATCH 3: ThreadMessageAttachment, Mention, and
+# Notification were removed from the import above — each was used only
+# by the now-removed _build_message_payload / _parse_mentions class
+# methods (see the comment above _build_reactions) or by the inline
+# mention/notification-creation logic inside the old
+# handle_send_thread_message body, all of which now live in
+# services/thread_message_service.py instead. Confirmed zero remaining
+# references to any of the three in this file before removing them.
 
 import logging
 logger = logging.getLogger(__name__)
@@ -314,12 +339,6 @@ class ThreadWebSocketManager:
         )
         emit("thread_error", {"message": message})
 
-    def _sanitize(self, text: str) -> str:
-        """Strip all HTML — plain text only in thread messages."""
-        if not text:
-            return text
-        return bleach.clean(text, tags=[], strip=True).strip()
-
     def _is_member(self, thread_id: int, user_id: int) -> "ThreadMember | None":
         return ThreadMember.query.filter_by(
             thread_id=thread_id,
@@ -329,113 +348,21 @@ class ThreadWebSocketManager:
     def _is_moderator_or_creator(self, membership: "ThreadMember") -> bool:
         return membership.role in ("creator", "moderator")
 
-    def _parse_mentions(self, text: str) -> list[int]:
-        import re
-
-        current_app.logger.debug(f"[MENTION_DEBUG] Input text: {text!r}")
-
-        if not text:
-            current_app.logger.debug(f"[MENTION_DEBUG] Empty text, returning []")
-            return []
-
-        pattern = r"@([\w\u00C0-\u00FF]+)"
-        raw_matches = re.findall(pattern, text)
-        current_app.logger.debug(f"[MENTION_DEBUG] Raw regex matches: {raw_matches}")
-
-        mentioned_names = set(raw_matches)
-        current_app.logger.debug(f"[MENTION_DEBUG] Unique matches after dedup: {mentioned_names}")
-
-        found_ids = []
-        for username in mentioned_names:
-            current_app.logger.debug(f"[MENTION_DEBUG] Processing username: {username!r}")
-
-            if username == "learnora":
-                current_app.logger.debug(f"[MENTION_DEBUG] Skipping learnora trigger")
-                continue
-
-            username_lower = username
-            current_app.logger.debug(f"[MENTION_DEBUG] Looking up user with username (case-insensitive): {username_lower!r}")
-
-            user = User.query.filter(func.lower(User.username) == username_lower.lower()).first()
-
-            if user:
-                current_app.logger.debug(f"[MENTION_DEBUG] Found user: id={user.id}, username={user.username!r}, name={user.name!r}")
-                found_ids.append(user.id)
-            else:
-                current_app.logger.debug(f"[MENTION_DEBUG] No user found for username: {username!r}")
-
-            if len(found_ids) >= 20:
-                current_app.logger.warning(f"[MENTION_DEBUG] Mentions capped at 20 for message, found={len(found_ids)}")
-                break
-
-        current_app.logger.info(f"[MENTION_RESULT] text={text[:100]!r}, found_mentions={found_ids}, unique_usernames={mentioned_names}")
-        return found_ids
-
-    def _build_message_payload(self, msg: "ThreadMessage", sender: "User") -> dict:
-        """
-        Serialize a ThreadMessage for WebSocket delivery.
-        Issue 1: includes attachments[] array with legacy fallback.
-        """
-        reply_preview = None
-        if msg.reply_to_id:
-            parent = ThreadMessage.query.get(msg.reply_to_id)
-            if parent:
-                parent_sender = User.query.get(parent.sender_id)
-                reply_preview = {
-                    "id":        parent.id,
-                    "text":      parent.text_content[:120],
-                    "sender":    parent_sender.name if parent_sender else "Unknown",
-                    "sender_id": parent.sender_id
-                }
-
-        reactions = self._build_reactions(msg.id)
-
-        # Issue 1: Build attachments list from ThreadMessageAttachment table,
-        # falling back to legacy single-attachment columns for old messages.
-        attachments_list = []
-        try:
-            atts = msg.attachments.order_by(ThreadMessageAttachment.sort_order).all()
-            attachments_list = [a.to_dict() for a in atts]
-        except Exception:
-            pass
-
-        if not attachments_list and msg.attachment_url:
-            attachments_list = [{
-                "attachment_url":  msg.attachment_url,
-                "attachment_name": msg.attachment_name,
-                "attachment_type": msg.attachment_type,
-                "attachment_size": msg.attachment_size,
-                "sort_order":      0,
-            }]
-
-        return {
-            "id":              msg.id,
-            "thread_id":       msg.thread_id,
-            "text_content":    msg.text_content,
-            "sender_id":       msg.sender_id,
-            "sender": {
-                "id":       sender.id,
-                "name":     sender.name,
-                "username": sender.username,
-                "avatar":   sender.avatar
-            },
-            "is_ai_response":  msg.is_ai_response,
-            "is_edited":       msg.is_edited,
-            "is_pinned":       msg.is_pinned,
-            "reply_to":        reply_preview,
-            "reply_to_id":     msg.reply_to_id,
-            # Issue 1: new attachments array
-            "attachments":     attachments_list,
-            # Legacy single-attachment fields (kept for backward compat)
-            "attachment_url":  attachments_list[0]["attachment_url"]  if attachments_list else None,
-            "attachment_name": attachments_list[0]["attachment_name"] if attachments_list else None,
-            "attachment_type": attachments_list[0]["attachment_type"] if attachments_list else None,
-            "attachment_size": attachments_list[0]["attachment_size"] if attachments_list else None,
-            "reactions":       reactions,
-            "status":          getattr(msg, "status", "sent"),
-            "sent_at":         msg.sent_at.isoformat() + "Z",
-            "edited_at":       msg.edited_at.isoformat() + "Z" if msg.edited_at else None,
-        }
+    # HORIZONTAL SCALING BATCH 3: _sanitize, _parse_mentions, and
+    # _build_message_payload — previously defined here — were removed as
+    # dead code once handle_send_thread_message (this class's only caller
+    # of all three, confirmed by inspection before removal) was refactored
+    # to call services.thread_message_service.create_thread_message
+    # instead, which performs the identical sanitize/parse-mentions/
+    # build-payload logic internally. See that module for the current
+    # implementations — _sanitize -> thread_message_service._sanitize,
+    # _parse_mentions -> thread_message_service._parse_mentions,
+    # _build_message_payload -> thread_message_service._build_message_payload
+    # (that module's docstring explains why it keeps its own copy rather
+    # than this file importing it). _build_reactions below is UNCHANGED
+    # and still lives here — it has two other callers in this file
+    # (add_thread_reaction / remove_thread_reaction) that were never part
+    # of this batch's scope.
 
     def _build_reactions(self, message_id: int) -> dict:
         """Return grouped reaction counts for a message."""
@@ -641,23 +568,37 @@ class ThreadWebSocketManager:
             """
             Send a new message to a thread.
 
-            FIX: per-user sliding-window rate limiter applied before persist.
-            FIX: `status` included in both confirmation and broadcast payloads.
+            HORIZONTAL SCALING BATCH 3: now delegates validation,
+            persistence, presence-based initial status, attachment
+            handling, and payload construction to
+            services.thread_message_service.create_thread_message — the
+            exact same shared module the REST fallback
+            (routes/student/threads/messaging.py::send_thread_message)
+            already calls (see Batch 2 / design doc §13). This closes the
+            remaining WS-handler/service duplication Batch 2 explicitly
+            flagged as left unaddressed.
 
-            Payload:
-              thread_id        int  (required)
-              text_content     str  (required unless attachment present)
-              reply_to_id      int  (optional)
-              attachment_url   str  (optional)
-              attachment_name  str  (optional)
-              attachment_type  str  (optional)
-              attachment_size  int  (optional)
-              client_temp_id   str  (optional — frontend dedup key)
+            Kept HERE, deliberately NOT moved into the shared service
+            (per Batch 2's own documented scope boundary — see
+            thread_message_service.create_thread_message's docstring):
+              - The per-socket rate limiter (RedisFixedWindowLimiter) and
+                its thread_error-emit rejection path — a REST caller has
+                no persistent connection to rate-limit against the same
+                way; it already gets its own WRITE_HEAVY Flask-Limiter
+                tier instead.
+              - client_temp_id extraction/echo — a WS-only optimistic-UI
+                reconciliation concept with no REST equivalent.
+              - The `thread_list_update` personal-room fan-out, and the
+                Learnora AI-trigger dispatch (both manual @mention and
+                reply-to-AI auto-continue) — the fire-and-forget
+                background thread's reply arrives back over THIS live
+                socket connection; a REST caller has no connection to
+                receive it on (see Batch 2's design-doc note on why this
+                was deliberately not wired into REST).
 
-            Emits:
-              -> "new_thread_message"   to thread room (all members)
-              -> "thread_message_sent"  to sender only (confirmation with real ID)
-              -> "learnora_thinking"    to thread room if @learnora detected
+            Payload / Emits: UNCHANGED — see the payload/emits list this
+            docstring used to carry; nothing about the wire contract
+            changed, only how the body is implemented internally.
             """
             sid     = request.sid
             user_id = self._get_current_user()
@@ -673,26 +614,28 @@ class ThreadWebSocketManager:
             # Extract fields early so they're available in the except block
             thread_id      = data.get("thread_id")
             client_temp_id = data.get("client_temp_id")
-            text_content   = data.get("text_content", "").strip()
+            text_content_raw = data.get("text_content", "").strip()
             has_attachment = bool(data.get("attachments") or data.get("attachment_url"))
 
             current_app.logger.info(
                 f"[MESSAGE_RECEIVED] "
                 f"user_id={user_id} thread_id={thread_id} "
                 f"client_temp_id={client_temp_id!r} "
-                f"text_length={len(text_content)} "
+                f"text_length={len(text_content_raw)} "
                 f"has_attachment={has_attachment} "
                 f"sid={sid}"
             )
 
             try:
-                reply_to_id     = data.get("reply_to_id")
-                attachment_url  = data.get("attachment_url")
-                attachment_name = data.get("attachment_name")
-                attachment_type = data.get("attachment_type")
-                attachment_size = data.get("attachment_size")
+                reply_to_id = data.get("reply_to_id")
 
-                # Issue 1: Extract attachments array with legacy single-field fallback
+                # Issue 1: Extract attachments array with legacy single-field fallback.
+                # Same extraction thread_message_service.create_thread_message
+                # itself performs internally is NOT duplicated here beyond this
+                # point — this handler only needs it pre-service-call for the
+                # [MESSAGE_ATTACHMENT] log line below and the has_attachment
+                # flag already computed above; the service does its own
+                # MAX_ATTACHMENTS capping and per-item validation.
                 attachments_data = data.get("attachments", [])
                 if not attachments_data and data.get("attachment_url"):
                     attachments_data = [{
@@ -702,46 +645,11 @@ class ThreadWebSocketManager:
                         "attachment_size": data.get("attachment_size"),
                     }]
 
-                # Validate attachment count
-                MAX_ATTACHMENTS = 5
-                if len(attachments_data) > MAX_ATTACHMENTS:
-                    attachments_data = attachments_data[:MAX_ATTACHMENTS]
-                    current_app.logger.warning(
-                        f"[MESSAGE_ATTACHMENTS_CAPPED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"capped_at={MAX_ATTACHMENTS}"
-                    )
-
-                # ── Validation ──────────────────────────────────────────
-                if not thread_id:
-                    current_app.logger.warning(
-                        f"[MESSAGE_VALIDATION_FAILED] "
-                        f"user_id={user_id} reason=missing_thread_id "
-                        f"client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error("thread_id required")
-                    return
-
-                if not text_content and not attachment_url:
-                    current_app.logger.warning(
-                        f"[MESSAGE_VALIDATION_FAILED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"reason=empty_message client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error("Message must have text or an attachment")
-                    return
-
-                if len(text_content) > MAX_MESSAGE_LENGTH:
-                    current_app.logger.warning(
-                        f"[MESSAGE_VALIDATION_FAILED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"reason=text_too_long length={len(text_content)} "
-                        f"max={MAX_MESSAGE_LENGTH} client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error(f"Message too long (max {MAX_MESSAGE_LENGTH} characters)")
-                    return
-
-                # ── Rate limit ──────────────────────────────────────────
+                # ── Rate limit — WS-only, checked BEFORE calling the shared
+                # service so a rate-limited request never touches the DB at
+                # all (matching the original behavior exactly: this check
+                # ran before persistence before this refactor too). See
+                # docstring above for why this stays a WS-handler concern. ──
                 if _is_rate_limited(user_id):
                     current_app.logger.warning(
                         f"[MESSAGE_RATE_LIMITED] "
@@ -756,68 +664,15 @@ class ThreadWebSocketManager:
                     })
                     return
 
-                # ── Membership ──────────────────────────────────────────
-                membership = self._is_member(thread_id, user_id)
-                if not membership:
-                    current_app.logger.warning(
-                        f"[MESSAGE_DENIED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"reason=not_a_member client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error("You are not a member of this thread")
-                    return
-
-                thread = Thread.query.get(thread_id)
-                if not thread:
-                    current_app.logger.warning(
-                        f"[MESSAGE_DENIED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"reason=thread_not_found client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error("Thread not found")
-                    return
-
-                if not thread.is_open:
-                    current_app.logger.warning(
-                        f"[MESSAGE_DENIED] "
-                        f"user_id={user_id} thread_id={thread_id} "
-                        f"reason=thread_closed client_temp_id={client_temp_id!r}"
-                    )
-                    self._emit_error("This thread is closed")
-                    return
-
-                # ── Validate reply_to_id ────────────────────────────────
-                if reply_to_id:
-                    parent = ThreadMessage.query.filter_by(
-                        id=reply_to_id,
-                        thread_id=thread_id,
-                        is_deleted=False
-                    ).first()
-                    if not parent:
-                        current_app.logger.debug(
-                            f"[MESSAGE_REPLY_REF_INVALID] "
-                            f"user_id={user_id} thread_id={thread_id} "
-                            f"reply_to_id={reply_to_id} — silently cleared"
-                        )
-                        reply_to_id = None  # silently drop invalid ref
-
-                # ── Attachment metadata log ─────────────────────────────
                 if has_attachment:
                     current_app.logger.info(
                         f"[MESSAGE_ATTACHMENT] "
                         f"user_id={user_id} thread_id={thread_id} "
-                        f"attachment_name={attachment_name!r} "
-                        f"attachment_type={attachment_type!r} "
-                        f"attachment_size={attachment_size} "
+                        f"attachment_count={len(attachments_data)} "
                         f"client_temp_id={client_temp_id!r}"
                     )
 
-                # ── Sanitize ────────────────────────────────────────────
-                text_content = self._sanitize(text_content) if text_content else ""
-
-                # ── Persist ─────────────────────────────────────────────
                 t_persist_start = time.monotonic()
-
                 current_app.logger.debug(
                     f"[MESSAGE_PERSIST_START] "
                     f"user_id={user_id} thread_id={thread_id} "
@@ -826,127 +681,68 @@ class ThreadWebSocketManager:
                     f"has_attachment={has_attachment}"
                 )
 
-                # ── Determine initial delivery status based on member presence ──
-                # HORIZONTAL SCALING (design doc §6.2, §6.3): both reads
-                # below now go through presence_service (Redis-backed)
-                # instead of self.user_active_thread (deprecated local
-                # dict) and message_ws_manager.online_users (process-local
-                # dict). A thread member's socket may be connected to any
-                # instance — this decision must be correct regardless of
-                # which one, since it determines every OTHER member's
-                # message-status tick, not just ones sharing an instance
-                # with the sender.
-                #
-                # get_online_user_ids / get_active_threads_batch are the
-                # batch forms (one Redis round trip each for the whole
-                # other_ids list) rather than N individual is_user_online()
-                # / get_active_thread() calls — this runs on every single
-                # message send, so it's worth avoiding N+1 Redis calls the
-                # same way this codebase already avoids N+1 SQL calls
-                # elsewhere (see the batch-load comments throughout
-                # crud.py/discovery.py/membership.py).
-                members_except_sender = ThreadMember.query.filter(
-                    ThreadMember.thread_id == thread_id,
-                    ThreadMember.student_id != user_id
-                ).all()
-                other_ids = [m.student_id for m in members_except_sender]
+                # ── Delegate validation, presence-based initial status,
+                # persistence, attachment rows, mention detection, and
+                # payload construction to the shared service. Each typed
+                # exception below corresponds to exactly one validation
+                # branch this handler used to inline itself (thread not
+                # found, thread closed, not a member, message too
+                # long/empty) — the exception's own .message is emitted
+                # via self._emit_error, which is the same string the
+                # inline branch used to pass to self._emit_error directly,
+                # so client-facing error text is unchanged. ──
+                try:
+                    result = _tms.create_thread_message(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        text_content=text_content_raw,
+                        reply_to_id=reply_to_id,
+                        attachments_data=attachments_data,
+                    )
+                except _tms.NotAMemberError as e:
+                    current_app.logger.warning(
+                        f"[MESSAGE_DENIED] user_id={user_id} thread_id={thread_id} "
+                        f"reason=not_a_member client_temp_id={client_temp_id!r}"
+                    )
+                    self._emit_error(str(e))
+                    return
+                except _tms.ThreadNotFoundError as e:
+                    current_app.logger.warning(
+                        f"[MESSAGE_DENIED] user_id={user_id} thread_id={thread_id} "
+                        f"reason=thread_not_found client_temp_id={client_temp_id!r}"
+                    )
+                    self._emit_error(str(e))
+                    return
+                except _tms.ThreadClosedError as e:
+                    current_app.logger.warning(
+                        f"[MESSAGE_DENIED] user_id={user_id} thread_id={thread_id} "
+                        f"reason=thread_closed client_temp_id={client_temp_id!r}"
+                    )
+                    self._emit_error(str(e))
+                    return
+                except _tms.ValidationFailedError as e:
+                    current_app.logger.warning(
+                        f"[MESSAGE_VALIDATION_FAILED] user_id={user_id} thread_id={thread_id} "
+                        f"reason={e.message!r} client_temp_id={client_temp_id!r}"
+                    )
+                    self._emit_error(str(e))
+                    return
 
-                active_thread_by_id = presence_service.get_active_threads_batch(other_ids)
-                online_ids = presence_service.get_online_user_ids(other_ids)
+                msg               = result.message
+                text_content      = result.text_content     # sanitized, post-service
+                other_ids         = result.other_member_ids
+                mentioned_ids     = result.mentioned_user_ids
+                attachments_data  = result.attachments_data  # post-cap, post-service
 
-                active_viewers = [
-                    mid for mid in other_ids
-                    if active_thread_by_id.get(mid) == thread_id
-                ]
-                online_non_viewers = [
-                    mid for mid in other_ids
-                    if mid in online_ids
-                    and active_thread_by_id.get(mid) != thread_id
-                ]
-
-                if active_viewers:
-                    initial_status = 'read'
-                elif online_non_viewers:
-                    initial_status = 'delivered'
-                else:
-                    initial_status = 'sent'
-
-                msg = ThreadMessage(
-                    thread_id       = thread_id,
-                    sender_id       = user_id,
-                    text_content    = text_content,
-                    reply_to_id     = reply_to_id,
-                    attachment_url  = attachment_url,
-                    attachment_name = attachment_name,
-                    attachment_type = attachment_type,
-                    attachment_size = attachment_size,
-                    is_ai_response  = False,
-                    status          = initial_status,
-                    sent_at         = datetime.datetime.utcnow()
-                )
-                db.session.add(msg)
-                db.session.flush()
-
-                # Issue 1: Create ThreadMessageAttachment rows for multi-file support.
-                # The legacy single-attachment columns on ThreadMessage are left NULL
-                # for new messages; legacy rows keep their columns for backward compat.
-                for att_idx, att in enumerate(attachments_data):
-                    att_url = att.get("attachment_url", "")
-                    if not att_url:
-                        continue
-                    db.session.add(ThreadMessageAttachment(
-                        message_id      = msg.id,
-                        attachment_url  = att_url,
-                        attachment_name = att.get("attachment_name"),
-                        attachment_type = att.get("attachment_type"),
-                        attachment_size = att.get("attachment_size"),
-                        sort_order      = att_idx,
-                    ))
-
-                # After flush, msg.id is assigned — log it alongside client_temp_id
-                # so duplicate detection can correlate both IDs going forward.
-                current_app.logger.debug(
-                    f"[MESSAGE_FLUSHED] "
+                t_persist_ms = (time.monotonic() - t_persist_start) * 1000
+                current_app.logger.info(
+                    f"[MESSAGE_PERSISTED] "
                     f"user_id={user_id} thread_id={thread_id} "
                     f"msg_id={msg.id} client_temp_id={client_temp_id!r} "
-                    f"— real ID now known; client should map temp→real on ack"
+                    f"has_attachment={has_attachment} reply_to_id={msg.reply_to_id} "
+                    f"mention_count={len(mentioned_ids)} "
+                    f"persist_ms={t_persist_ms:.1f}"
                 )
-
-                # ── Atomic counter updates ──────────────────────────────
-                ThreadMember.query.filter_by(
-                    thread_id=thread_id, student_id=user_id
-                ).update(
-                    {ThreadMember.messages_sent: ThreadMember.messages_sent + 1},
-                    synchronize_session=False
-                )
-                Thread.query.filter_by(id=thread_id).update(
-                    {
-                        Thread.message_count: Thread.message_count + 1,
-                        Thread.last_activity: datetime.datetime.utcnow()
-                    },
-                    synchronize_session=False
-                )
-
-                # ── Mentions ────────────────────────────────────────────
-                mentioned_ids = self._parse_mentions(text_content)
-                for mid in mentioned_ids:
-                    if mid == user_id:
-                        continue
-                    db.session.add(Mention(
-                        mentioned_in_type    = "thread_message",
-                        mentioned_in_id      = msg.id,
-                        mentioned_user_id    = mid,
-                        mentioned_by_user_id = user_id
-                    ))
-                    db.session.add(Notification(
-                        user_id           = mid,
-                        title             = "You were mentioned in a thread",
-                        body              = f"{text_content[:80]}...",
-                        notification_type = "thread_mention",
-                        related_type      = "thread",
-                        related_id        = thread_id
-                    ))
-
                 if mentioned_ids:
                     current_app.logger.info(
                         f"[MESSAGE_MENTIONS] "
@@ -955,27 +751,12 @@ class ThreadWebSocketManager:
                         f"notification_count={len(mentioned_ids)}"
                     )
 
-                db.session.commit()
-
-                t_persist_ms = (time.monotonic() - t_persist_start) * 1000
-                current_app.logger.info(
-                    f"[MESSAGE_PERSISTED] "
-                    f"user_id={user_id} thread_id={thread_id} "
-                    f"msg_id={msg.id} client_temp_id={client_temp_id!r} "
-                    f"has_attachment={has_attachment} reply_to_id={reply_to_id} "
-                    f"mention_count={len(mentioned_ids)} "
-                    f"persist_ms={t_persist_ms:.1f}"
-                )
-
-                # ── Build and broadcast ──────────────────────────────────
-                sender  = User.query.get(user_id)
-                payload = self._build_message_payload(msg, sender)
+                # ── Build and broadcast — payload comes straight from the
+                # service's result; only client_temp_id (WS-only, see
+                # docstring) is layered on afterward. ──
+                payload = dict(result.payload)
                 payload["client_temp_id"] = client_temp_id
 
-                # Broadcast to ALL room members (including sender's other tabs).
-                # NOTE: if a duplicate new_thread_message arrives for the same
-                # msg_id or client_temp_id, the client dedup layer should
-                # discard it — check client-side dedup on reconnect.
                 current_app.logger.info(
                     f"[MESSAGE_BROADCAST] "
                     f"event=new_thread_message "
@@ -1003,17 +784,19 @@ class ThreadWebSocketManager:
                 # ── ISSUE-6: Push lightweight metadata to all member personal rooms ──
                 # This keeps every member's thread list fresh without auto-joining
                 # all thread rooms (which would break the 3-state status system).
+                # Uses result.text_content / result.attachments_data (the
+                # service's sanitized/capped versions), not the raw
+                # pre-service locals — see design note above the service call.
                 if text_content:
                     preview_text = text_content[:80]
                 elif attachments_data:
                     type_map = {"image": "📷 Image", "video": "🎬 Video", "document": "📎 File"}
                     first_type = (attachments_data[0].get("attachment_type") or "document")
                     preview_text = type_map.get(first_type, "📎 Attachment")
-                elif attachment_url:
-                    preview_text = "📎 Attachment"
                 else:
                     preview_text = ""
 
+                sender = User.query.get(user_id)
                 metadata_payload = {
                     "thread_id":    thread_id,
                     "last_message": {
@@ -1034,9 +817,8 @@ class ThreadWebSocketManager:
                     f"recipient_count={len(other_ids)}"
                 )
 
-                # ── Learnora trigger ────────────────────────────────────
-                lower = text_content.lower()
-                matched_personality = next((p for t, p in _TRIGGER_MAP.items() if t in lower), None)
+                # ── Learnora trigger — WS-only, see docstring above for why ──
+                matched_personality = result.matched_ai_trigger
 
                 if matched_personality:
                     self.broadcast_to_thread(thread_id, "learnora_thinking", {
@@ -1052,9 +834,9 @@ class ThreadWebSocketManager:
 
                 # Auto-reply: if the user replied to an AI message without a manual trigger,
                 # let the AI continue the conversation (rate-limited 3 per 5 min per user/thread)
-                if reply_to_id and not matched_personality:
+                if msg.reply_to_id and not matched_personality:
                     parent_msg = ThreadMessage.query.filter_by(
-                        id=reply_to_id, is_ai_response=True, is_deleted=False
+                        id=msg.reply_to_id, is_ai_response=True, is_deleted=False
                     ).first()
 
                     if parent_msg:
@@ -1358,6 +1140,20 @@ class ThreadWebSocketManager:
             Edit own message within the edit window (15 min).
             Payload: { "message_id": <int>, "text_content": "new text" }
             Emits:   "thread_message_edited" to room
+
+            HORIZONTAL SCALING BATCH 3: delegates ownership/AI-message/
+            edit-window enforcement and the actual persist to
+            services.thread_message_service.edit_thread_message — the
+            same shared function the REST fallback
+            (messaging.py::edit_thread_message) already calls (Batch 2).
+            The `message_id required` presence check below is kept
+            inline (not delegated) because the shared service has no
+            equivalent — it looks up by message_id + sender_id and simply
+            finds no row for message_id=None, which would surface as a
+            less specific "not found" error instead of this handler's
+            original, more precise "message_id and text_content
+            required" — preserved here so the client-facing error text
+            for this specific case is unchanged.
             """
             sid     = request.sid
             user_id = self._get_current_user()
@@ -1384,22 +1180,23 @@ class ThreadWebSocketManager:
                     self._emit_error("message_id and text_content required")
                     return
 
-                if len(new_text) > MAX_MESSAGE_LENGTH:
+                try:
+                    result = _tms.edit_thread_message(
+                        user_id=user_id, message_id=message_id, new_text=new_text,
+                    )
+                except _tms.ValidationFailedError as e:
+                    # Only reachable here if new_text somehow passed the
+                    # `not new_text` check above but still fails the
+                    # service's own length check — i.e. MAX_MESSAGE_LENGTH
+                    # too long, the original behavior for this branch.
                     current_app.logger.warning(
                         f"[MESSAGE_EDIT_VALIDATION_FAILED] "
                         f"user_id={user_id} message_id={message_id} "
-                        f"reason=text_too_long length={len(new_text)}"
+                        f"reason={e.message!r}"
                     )
-                    self._emit_error(f"Message too long (max {MAX_MESSAGE_LENGTH} chars)")
+                    self._emit_error(str(e))
                     return
-
-                msg = ThreadMessage.query.filter_by(
-                    id=message_id,
-                    sender_id=user_id,
-                    is_deleted=False
-                ).first()
-
-                if not msg:
+                except _tms.MessageNotFoundError as e:
                     current_app.logger.warning(
                         f"[MESSAGE_EDIT_DENIED] "
                         f"user_id={user_id} message_id={message_id} "
@@ -1407,42 +1204,29 @@ class ThreadWebSocketManager:
                     )
                     self._emit_error("Message not found or you don't own it")
                     return
-
-                if msg.is_ai_response:
+                except _tms.PermissionDeniedError as e:
                     current_app.logger.warning(
                         f"[MESSAGE_EDIT_DENIED] "
                         f"user_id={user_id} message_id={message_id} "
                         f"reason=ai_message_not_editable"
                     )
-                    self._emit_error("AI messages cannot be edited")
+                    self._emit_error(str(e))
+                    return
+                except _tms.EditWindowExpiredError as e:
+                    current_app.logger.warning(
+                        f"[MESSAGE_EDIT_DENIED] "
+                        f"user_id={user_id} message_id={message_id} "
+                        f"reason=edit_window_expired"
+                    )
+                    self._emit_error(str(e))
                     return
 
-                membership = self._is_member(msg.thread_id, user_id)
-                if membership and not self._is_moderator_or_creator(membership):
-                    seconds_old = (datetime.datetime.utcnow() - msg.sent_at).total_seconds()
-                    if seconds_old > EDIT_WINDOW_SECONDS:
-                        current_app.logger.warning(
-                            f"[MESSAGE_EDIT_DENIED] "
-                            f"user_id={user_id} message_id={message_id} "
-                            f"thread_id={msg.thread_id} "
-                            f"reason=edit_window_expired "
-                            f"age_seconds={seconds_old:.0f} "
-                            f"limit={EDIT_WINDOW_SECONDS}s role={membership.role}"
-                        )
-                        self._emit_error("Edit window expired (15 minutes)")
-                        return
-
-                old_preview      = msg.text_content[:60]
-                msg.text_content = self._sanitize(new_text)
-                msg.is_edited    = True
-                msg.edited_at    = datetime.datetime.utcnow()
-                db.session.commit()
+                msg = result.message
 
                 current_app.logger.info(
                     f"[MESSAGE_EDITED] "
                     f"user_id={user_id} message_id={message_id} "
                     f"thread_id={msg.thread_id} "
-                    f"old_preview={old_preview!r} "
                     f"new_length={len(msg.text_content)}"
                 )
 
@@ -1472,6 +1256,17 @@ class ThreadWebSocketManager:
             Sender can delete own; creator/moderator can delete anyone's.
             Payload: { "message_id": <int> }
             Emits:   "thread_message_deleted" to room
+
+            HORIZONTAL SCALING BATCH 3: delegates the not-found/
+            membership/permission checks and the actual soft-delete to
+            services.thread_message_service.delete_thread_message — the
+            same shared function messaging.py::delete_thread_message
+            already calls (Batch 2), which is also where the REST/WS
+            permission-model bug (moderator delete allowed via WS, wrongly
+            rejected via REST) was fixed. The `message_id required`
+            presence check is kept inline for the same reason as the edit
+            handler above — the service has no equivalent for a caller
+            that didn't supply a message_id at all.
             """
             sid     = request.sid
             user_id = self._get_current_user()
@@ -1495,66 +1290,48 @@ class ThreadWebSocketManager:
                     self._emit_error("message_id required")
                     return
 
-                msg = ThreadMessage.query.filter_by(
-                    id=message_id, is_deleted=False
-                ).first()
-                if not msg:
+                try:
+                    result = _tms.delete_thread_message(user_id=user_id, message_id=message_id)
+                except _tms.MessageNotFoundError as e:
                     current_app.logger.warning(
                         f"[MESSAGE_DELETE_DENIED] "
                         f"user_id={user_id} message_id={message_id} "
                         f"reason=not_found_or_already_deleted"
                     )
-                    self._emit_error("Message not found")
+                    self._emit_error(str(e))
                     return
-
-                membership = self._is_member(msg.thread_id, user_id)
-                if not membership:
-                    current_app.logger.warning(
-                        f"[MESSAGE_DELETE_DENIED] "
-                        f"user_id={user_id} message_id={message_id} "
-                        f"thread_id={msg.thread_id} reason=not_a_member"
-                    )
-                    self._emit_error("Not a thread member")
+                except _tms.PermissionDeniedError as e:
+                    # The service raises this SAME exception class for both
+                    # "not a member at all" and "member but insufficient
+                    # role" — distinguished here only by message text, so
+                    # this handler's original two distinct log tags are
+                    # preserved exactly (see thread_message_service
+                    # .delete_thread_message's docstring for the exact two
+                    # raise sites and their message strings).
+                    if e.message == "Not a thread member":
+                        current_app.logger.warning(
+                            f"[MESSAGE_DELETE_DENIED] "
+                            f"user_id={user_id} message_id={message_id} "
+                            f"reason=not_a_member"
+                        )
+                    else:
+                        current_app.logger.warning(
+                            f"[MESSAGE_DELETE_DENIED] "
+                            f"user_id={user_id} message_id={message_id} "
+                            f"reason=insufficient_permissions"
+                        )
+                    self._emit_error(str(e))
                     return
-
-                is_own_message = msg.sender_id == user_id
-                is_privileged  = self._is_moderator_or_creator(membership)
-
-                if not is_own_message and not is_privileged:
-                    current_app.logger.warning(
-                        f"[MESSAGE_DELETE_DENIED] "
-                        f"user_id={user_id} message_id={message_id} "
-                        f"thread_id={msg.thread_id} "
-                        f"original_sender_id={msg.sender_id} "
-                        f"role={membership.role} reason=insufficient_permissions"
-                    )
-                    self._emit_error("You cannot delete this message")
-                    return
-
-                delete_type      = "own" if is_own_message else "moderation"
-                msg.is_deleted   = True
-                msg.text_content = "[deleted]"
-
-                from sqlalchemy import case
-                Thread.query.filter_by(id=msg.thread_id).update(
-                    {Thread.message_count: case(
-                        (Thread.message_count > 0, Thread.message_count - 1),
-                        else_=0
-                    )},
-                    synchronize_session=False
-                )
-
-                db.session.commit()
 
                 current_app.logger.info(
                     f"[MESSAGE_DELETED] "
                     f"user_id={user_id} message_id={message_id} "
-                    f"thread_id={msg.thread_id} "
-                    f"original_sender_id={msg.sender_id} "
-                    f"delete_type={delete_type}"
+                    f"thread_id={result.thread_id} "
+                    f"original_sender_id={result.original_sender_id} "
+                    f"delete_type={'own' if result.original_sender_id == user_id else 'moderation'}"
                 )
 
-                self.broadcast_to_thread(msg.thread_id, "thread_message_deleted", {
+                self.broadcast_to_thread(result.thread_id, "thread_message_deleted", {
                     "message_id": message_id,
                     "deleted_by": user_id
                 })
