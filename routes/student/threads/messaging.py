@@ -471,48 +471,134 @@ def get_pinned_messages(current_user, thread_id):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def send_thread_message(current_user, thread_id):
-    """Send message in thread (REST fallback — primary path is WebSocket)."""
+    """
+    Send message in thread (REST fallback — primary path is WebSocket).
+
+    HORIZONTAL SCALING BATCH 2 (01-DESIGN-horizontal-scaling.md §13):
+    now delegates to services.thread_message_service.create_thread_message
+    — the exact same validation, persistence, attachment handling,
+    presence-based initial status, and mention detection the WebSocket
+    handler uses, instead of the much thinner logic this route previously
+    had of its own. This closes two real gaps found when comparing the
+    two implementations line by line:
+
+      1. This route never broadcast anything — a member connected via
+         WebSocket right now would never see a REST-sent message arrive
+         live, only on their next poll/reload. Now broadcasts
+         "new_thread_message" to the thread room exactly like the WS
+         handler does, via the shared thread_ws_manager instance
+         (deferred import + try/except, matching the exact pattern
+         already used elsewhere in this codebase for REST-route ->
+         WebSocket pushes — see crud.py::update_thread /
+         upload_thread_avatar, membership.py::remove_member, etc.).
+      2. This route had none of: attachment support, reply_to_id,
+         presence-based initial status (previously hardcoded 'sent'
+         regardless of whether anyone was actually online/viewing).
+         Support for these is now accepted from the request body,
+         optional, so existing callers sending only {"text_content": ...}
+         keep working identically.
+
+    Deliberately NOT changed: the HTTP response shape. Per the refactor's
+    explicit "don't change payload schemas unless necessary" instruction,
+    this still returns exactly {"message_id": ..., "sent_at": ...} on
+    success — not the full WebSocket message payload — since expanding it
+    could break any existing frontend code parsing this specific REST
+    response. The full payload IS what gets broadcast to other members
+    (so a WS-connected member sees the identical shape whether the
+    message came from REST or WebSocket), just not what's returned to the
+    sender's own HTTP request.
+
+    Deliberately NOT ported: the WebSocket handler's per-socket rate
+    limiter (RedisFixedWindowLimiter) and client_temp_id handling — see
+    thread_message_service.create_thread_message's own docstring for why
+    (this route already has its own WRITE_HEAVY Flask-Limiter tier via
+    the decorator above; client_temp_id has no REST equivalent to
+    reconcile against). The Learnora AI-trigger dispatch is also
+    deliberately NOT wired up here — see the note further below.
+    """
+    from services import thread_message_service as tms
+
     try:
-        membership = ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).first()
-        if not membership:
-            return error_response("You must be a member to send messages", 403)
+        data = request.get_json() or {}
+        text_content = (data.get("text_content") or "").strip()
+        reply_to_id = data.get("reply_to_id")
 
-        data         = request.get_json()
-        text_content = data.get("text_content", "").strip()
-        if not text_content:
-            return error_response("Message text is required")
-        if len(text_content) > 5000:
-            return error_response("Message too long (max 5000 characters)")
+        # Accept the same attachments[] shape the WS handler accepts,
+        # with the identical legacy single-field fallback, so a frontend
+        # that already builds this payload for the WS path can send the
+        # exact same body to this REST fallback with zero translation.
+        attachments_data = data.get("attachments") or []
+        if not attachments_data and data.get("attachment_url"):
+            attachments_data = [{
+                "attachment_url":  data.get("attachment_url"),
+                "attachment_name": data.get("attachment_name"),
+                "attachment_type": data.get("attachment_type"),
+                "attachment_size": data.get("attachment_size"),
+            }]
 
-        new_message = ThreadMessage(
-            thread_id=thread_id,
-            sender_id=current_user.id,
-            text_content=text_content,
-            status='sent'
-        )
-        db.session.add(new_message)
-        db.session.flush()
+        try:
+            result = tms.create_thread_message(
+                user_id=current_user.id,
+                thread_id=thread_id,
+                text_content=text_content,
+                reply_to_id=reply_to_id,
+                attachments_data=attachments_data,
+            )
+        except tms.NotAMemberError as e:
+            return error_response(str(e), 403)
+        except tms.ThreadNotFoundError as e:
+            return error_response(str(e), 404)
+        except tms.ThreadClosedError as e:
+            return error_response(str(e), 403)
+        except tms.ValidationFailedError as e:
+            return error_response(str(e))
 
-        detect_mentions_in_thread(text_content, current_user.id, thread_id, new_message.id)
+        # ── Broadcast to the thread room, matching the WS handler's own
+        # broadcast exactly (same event name, same payload shape) — see
+        # docstring above for why the HTTP response itself stays smaller. ──
+        try:
+            from services.websocket_threads import thread_ws_manager
+            thread_ws_manager.broadcast_to_thread(
+                thread_id, "new_thread_message", result.payload
+            )
+            for mid in result.other_member_ids:
+                preview_text = result.text_content[:80] if result.text_content else (
+                    "📎 Attachment" if result.attachments_data else ""
+                )
+                thread_ws_manager.notify_user(mid, "thread_list_update", {
+                    "thread_id": thread_id,
+                    "last_message": {
+                        "text":      preview_text,
+                        "sender":    current_user.name,
+                        "sender_id": current_user.id,
+                        "sent_at":   result.message.sent_at.isoformat() + "Z",
+                        "status":    result.message.status,
+                    },
+                    "last_activity": result.message.sent_at.isoformat() + "Z",
+                })
+        except Exception as ws_err:
+            current_app.logger.warning(
+                f"[SEND_THREAD_MESSAGE_WS_FAILED] thread_id={thread_id} "
+                f"message_id={result.message.id} error={ws_err!r}"
+            )
 
-        Thread.query.filter_by(id=thread_id).update(
-            {Thread.message_count: Thread.message_count + 1,
-             Thread.last_activity: datetime.datetime.utcnow()},
-            synchronize_session=False
-        )
-        ThreadMember.query.filter_by(
-            thread_id=thread_id, student_id=current_user.id
-        ).update(
-            {ThreadMember.messages_sent: ThreadMember.messages_sent + 1},
-            synchronize_session=False
-        )
-        db.session.commit()
+        # Learnora AI-trigger dispatch is deliberately NOT wired up on
+        # this REST fallback path. The WebSocket handler's trigger is a
+        # fire-and-forget background thread kicked off from within a live
+        # socket-connected request — appropriate there since the AI's
+        # reply arrives back over the same live connection moments later.
+        # A REST caller has no open connection to receive that reply on;
+        # they'd need to separately poll or reconnect via WebSocket to
+        # ever see it, which makes triggering it from here silently
+        # start background work whose result the REST caller can't
+        # observe through the API they just called. Flagged as a
+        # deliberate scope boundary, not an oversight — surface if you
+        # want REST-triggered AI replies delivered via a different
+        # mechanism (e.g. included synchronously in this response).
 
         return success_response(
             "Message sent",
-            data={"message_id": new_message.id, "sent_at": new_message.sent_at.isoformat()}
+            data={"message_id": result.message.id, "sent_at": result.message.sent_at.isoformat()}
         ), 201
 
     except Exception as e:
@@ -525,32 +611,96 @@ def send_thread_message(current_user, thread_id):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def edit_thread_message(current_user, thread_id, message_id):
-    """Edit your own message."""
+    """
+    Edit your own message.
+
+    HORIZONTAL SCALING BATCH 2 (01-DESIGN-horizontal-scaling.md §13): now
+    delegates to services.thread_message_service.edit_thread_message,
+    closing two real gaps found comparing this route to the WebSocket
+    handler line by line:
+
+      1. This route never broadcast "thread_message_edited" — a
+         WS-connected member watching this thread would never see a
+         REST-made edit reflected live.
+      2. This route enforced NO 15-minute edit window and had no
+         moderator/creator bypass concept at all (WS allows a moderator
+         or creator to edit past the window; REST previously let ANY
+         sender edit at any time with no window whatsoever — actually a
+         permissiveness gap in the opposite direction from most of the
+         other REST/WS divergences found in this file). Now enforces the
+         identical window/bypass logic as WebSocket.
+
+    KEPT AS A DELIBERATE REST-SPECIFIC ADDITION, not ported into the
+    shared service: mention re-detection on edit (delete old Mention
+    rows for this message, re-parse the new text for @mentions). The
+    WebSocket edit handler does NOT do this — confirmed by reading it —
+    so porting this into thread_message_service.edit_thread_message
+    would silently change WebSocket's existing behavior too, which
+    wasn't asked for and isn't obviously correct either way (re-parsing
+    mentions on every edit could re-notify someone already mentioned in
+    the original text). Kept here, layered on top of the shared call, so
+    this route's pre-existing behavior for its own callers is preserved
+    exactly while still gaining the window-enforcement/broadcast fix
+    above. Flagged explicitly rather than silently resolved either
+    direction — worth a product decision if you want these to match.
+    """
+    from services import thread_message_service as tms
+
     try:
+        # Preserve this route's existing behavior: message must belong to
+        # the thread_id in the URL. thread_message_service.edit_thread_message
+        # looks up by message_id + sender_id only (matching the WS
+        # handler, which has no thread_id in its payload to cross-check
+        # against) — so this check stays here, before delegating, exactly
+        # where the REST route already had it.
         message = ThreadMessage.query.get(message_id)
         if not message:
             return error_response("Message not found", 404)
-        if message.sender_id != current_user.id:
-            return error_response("You can only edit your own messages", 403)
         if message.thread_id != thread_id:
             return error_response("Message does not belong to this thread", 400)
 
-        data     = request.get_json()
-        new_text = data.get("text_content", "").strip()
-        if not new_text:
-            return error_response("Message text is required")
+        data = request.get_json() or {}
+        new_text = (data.get("text_content") or "").strip()
 
-        message.text_content = new_text
-        message.is_edited    = True
-        message.edited_at    = datetime.datetime.utcnow()
+        try:
+            result = tms.edit_thread_message(
+                user_id=current_user.id, message_id=message_id, new_text=new_text,
+            )
+        except tms.ValidationFailedError as e:
+            return error_response(str(e))
+        except tms.MessageNotFoundError as e:
+            # thread_message_service's MessageNotFoundError here means
+            # "found by id but sender_id didn't match" (see its filter),
+            # which is this route's pre-existing 403 case, not a 404 —
+            # the existence check above already ruled out a true 404.
+            return error_response("You can only edit your own messages", 403)
+        except tms.PermissionDeniedError as e:
+            return error_response(str(e), 403)
+        except tms.EditWindowExpiredError as e:
+            return error_response(str(e), 403)
 
+        # ── REST-specific: mention re-detection (see docstring above) ──
         Mention.query.filter_by(
             mentioned_in_type="thread_message", mentioned_in_id=message_id
         ).delete()
-        detect_mentions_in_thread(new_text, current_user.id, thread_id, message_id)
-
+        detect_mentions_in_thread(result.message.text_content, current_user.id, thread_id, message_id)
         db.session.commit()
-        return success_response("Message updated", data={"edited_at": message.edited_at.isoformat()})
+
+        # ── Broadcast, matching the WS handler's own event/payload exactly ──
+        try:
+            from services.websocket_threads import thread_ws_manager
+            thread_ws_manager.broadcast_to_thread(thread_id, "thread_message_edited", {
+                "message_id":   message_id,
+                "text_content": result.message.text_content,
+                "edited_at":    result.message.edited_at.isoformat() + "Z",
+            })
+        except Exception as ws_err:
+            current_app.logger.warning(
+                f"[EDIT_THREAD_MESSAGE_WS_FAILED] thread_id={thread_id} "
+                f"message_id={message_id} error={ws_err!r}"
+            )
+
+        return success_response("Message updated", data={"edited_at": result.message.edited_at.isoformat()})
 
     except Exception as e:
         db.session.rollback()
@@ -562,26 +712,67 @@ def edit_thread_message(current_user, thread_id, message_id):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_thread_message(current_user, thread_id, message_id):
-    """Delete your own message (soft delete)."""
+    """
+    Delete your own message (soft delete).
+
+    HORIZONTAL SCALING BATCH 2 (01-DESIGN-horizontal-scaling.md §13): now
+    delegates to services.thread_message_service.delete_thread_message,
+    fixing a genuine permission BUG this route had — not just a missing
+    broadcast. The old check here was:
+
+        message.sender_id != current_user.id and thread.creator_id != current_user.id
+
+    i.e. only the sender or the thread CREATOR could delete via REST. The
+    WebSocket handler has always allowed sender OR moderator-OR-creator
+    (is_moderator_or_creator). A thread moderator (promoted, not the
+    original creator) could therefore delete a message via WebSocket but
+    got a 403 calling this exact same logical action through the REST
+    fallback — a real behavioral divergence for the identical operation,
+    not a cosmetic gap. Both callers now share the identical permission
+    model.
+
+    Also now broadcasts "thread_message_deleted" (previously silent —
+    WS-connected members never saw a REST-made deletion reflected live).
+    """
+    from services import thread_message_service as tms
+
     try:
-        message = ThreadMessage.query.get(message_id)
-        if not message:
-            return error_response("Message not found", 404)
+        try:
+            result = tms.delete_thread_message(user_id=current_user.id, message_id=message_id)
+        except tms.MessageNotFoundError as e:
+            return error_response(str(e), 404)
+        except tms.PermissionDeniedError as e:
+            return error_response("You cannot delete this message", 403)
 
-        thread = Thread.query.get(thread_id)
-        if message.sender_id != current_user.id and thread.creator_id != current_user.id:
-            return error_response("You can only delete your own messages", 403)
+        if result.thread_id != thread_id:
+            # The message existed and the caller was allowed to delete
+            # it, but it belongs to a DIFFERENT thread than the URL says.
+            # thread_message_service already committed the delete by this
+            # point (matching the WS handler, which has no thread_id in
+            # its payload to cross-check against and so has no equivalent
+            # guard at all) — this mismatch almost certainly indicates a
+            # client-side bug (wrong thread_id in the URL) rather than
+            # anything to roll back. Logged, not treated as a hard error,
+            # since the delete itself was legitimate for the message's
+            # actual thread.
+            current_app.logger.warning(
+                f"[DELETE_THREAD_MESSAGE_THREAD_MISMATCH] url_thread_id={thread_id} "
+                f"actual_thread_id={result.thread_id} message_id={message_id} "
+                f"user_id={current_user.id}"
+            )
 
-        message.is_deleted   = True
-        message.text_content = "[deleted]"
-        Thread.query.filter_by(id=thread_id).update(
-            {Thread.message_count: case(
-                (Thread.message_count > 0, Thread.message_count - 1),
-                else_=0
-             )},
-            synchronize_session=False
-        )
-        db.session.commit()
+        try:
+            from services.websocket_threads import thread_ws_manager
+            thread_ws_manager.broadcast_to_thread(result.thread_id, "thread_message_deleted", {
+                "message_id": message_id,
+                "deleted_by": current_user.id,
+            })
+        except Exception as ws_err:
+            current_app.logger.warning(
+                f"[DELETE_THREAD_MESSAGE_WS_FAILED] thread_id={result.thread_id} "
+                f"message_id={message_id} error={ws_err!r}"
+            )
+
         return success_response("Message deleted")
 
     except Exception as e:
