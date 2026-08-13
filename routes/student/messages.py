@@ -488,19 +488,41 @@ def get_shared_media_count(current_user, partner_id):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_message_for_everyone(current_user, message_id):
+    """
+    HORIZONTAL SCALING BATCH 4 (see 01-DESIGN-horizontal-scaling.md §13,
+    and services/direct_message_service.py's module docstring for the
+    exact bugs closed here): now delegates to
+    direct_message_service.delete_message_for_everyone, fixing a REAL
+    permission gap (this route previously had no 5-minute window at all —
+    WS enforces one) and a genuine DATA-MODEL inconsistency (this route
+    only ever set is_deleted=True; several other queries in this file
+    filter on deleted_by_sender/deleted_by_receiver without checking
+    is_deleted, so a REST-deleted message could still surface in shared
+    media or unread counts). Now sets the identical fields WS does. Also
+    now broadcasts to the other party, previously silent.
+    """
+    from services import direct_message_service as dms
+
     try:
-        message = Message.query.get(message_id)
-        if not message:
-            return error_response("Message not found")
-        if message.sender_id != current_user.id and message.receiver_id != current_user.id:
-            return error_response("Unauthorized")
-        if message.sender_id != current_user.id:
-            return error_response("Unauthorized")
-        
-        message.is_deleted = True
-        message.body = '[Message deleted]'
-        
-        db.session.commit()
+        try:
+            result = dms.delete_message_for_everyone(user_id=current_user.id, message_id=message_id)
+        except dms.MessageNotFoundError as e:
+            return error_response(str(e))
+        except dms.PermissionDeniedError as e:
+            return error_response(str(e))
+        except dms.DeleteWindowExpiredError as e:
+            return error_response(str(e), 403)
+
+        try:
+            from services.websocket_messages import message_ws_manager
+            message_ws_manager.emit_to_user(result.receiver_id, 'message_deleted_for_everyone', {
+                'message_id': message_id
+            })
+        except Exception as ws_err:
+            current_app.logger.warning(
+                f"[DELETE_FOR_EVERYONE_WS_FAILED] message_id={message_id} error={ws_err!r}"
+            )
+
         return success_response("Message deleted succesfully")
     except Exception as e:
         db.session.rollback()
@@ -511,18 +533,33 @@ def delete_message_for_everyone(current_user, message_id):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def delete_message(current_user, message_id):
+    """
+    HORIZONTAL SCALING BATCH 4: now delegates to
+    direct_message_service.delete_message_for_me, matching WS exactly
+    (data model already matched — the only real gap was the missing
+    broadcast to the deleting user's own other sessions/tabs, mirroring
+    WS's 'message_deleted_for_you' emit).
+    """
+    from services import direct_message_service as dms
+
     try:
-        message = Message.query.get(message_id)
-        if not message:
-            return error_response("Message not found")
-        if message.sender_id != current_user.id and message.receiver_id != current_user.id:
-            return error_response("Unauthorized")
-        is_sender = message.sender_id == current_user.id
-        if is_sender:
-            message.deleted_by_sender = True
-        else:
-            message.deleted_by_receiver = True
-        db.session.commit()
+        try:
+            result = dms.delete_message_for_me(user_id=current_user.id, message_id=message_id)
+        except dms.MessageNotFoundError as e:
+            return error_response(str(e))
+        except dms.PermissionDeniedError as e:
+            return error_response(str(e))
+
+        try:
+            from services.websocket_messages import message_ws_manager
+            message_ws_manager.emit_to_user(current_user.id, 'message_deleted_for_you', {
+                'message_id': message_id
+            })
+        except Exception as ws_err:
+            current_app.logger.warning(
+                f"[DELETE_FOR_ME_WS_FAILED] message_id={message_id} error={ws_err!r}"
+            )
+
         return success_response("Message deleted succesfully")
     except Exception as e:
         db.session.rollback()
@@ -1033,28 +1070,46 @@ def get_conversation_messages(current_user, partner_id):
 @token_required
 def mark_message_read(current_user, message_id):
     """
-    Mark specific message as read
+    Mark specific message as read.
+
+    HORIZONTAL SCALING BATCH 4: broadcasts 'messages_read' to the sender
+    via distributed presence, matching WS's handle_mark_read exactly —
+    previously this route never notified the sender at all.
+
+    Ownership/existence checks are kept INLINE here (not delegated to
+    direct_message_service.mark_messages_read) because that function is
+    built for the bulk case, where "some ids didn't match" is expected
+    and silently skipped — collapsing that into this single-message route
+    would have silently dropped this route's original, more precise
+    404 (not found) vs 403 (not yours) distinction. mark_messages_read
+    IS still used below for the actual mark+notify grouping, once
+    ownership is already confirmed.
     """
+    from services import direct_message_service as dms
+    from services.websocket_messages import message_ws_manager
+    from services import presence_service
+
     try:
         message = Message.query.get(message_id)
-        
         if not message:
             return error_response("Message not found", 404)
-        
         if message.receiver_id != current_user.id:
             return error_response("Can only mark received messages as read", 403)
-        
-        if not message.is_read:
-            message.is_read = True
-            message.read_at = datetime.datetime.utcnow()
-            db.session.commit()
 
-            # Plan §5.4/§17.6: the is_read guard above guarantees this was
-            # a genuine unread->read transition, so a flat -1 is correct.
+        result = dms.mark_messages_read(user_id=current_user.id, message_ids=[message_id])
+
+        if result.marked_count:
             counter_cache_service.decrement_unread_message_count(current_user.id)
-        
+
+            for sender_id, msg_ids in result.sender_ids_to_notify.items():
+                if presence_service.is_user_online(sender_id):
+                    message_ws_manager.emit_to_user(sender_id, 'messages_read', {
+                        'message_ids': msg_ids,
+                        'reader_id': current_user.id,
+                    })
+
         return success_response("Message marked as read")
-        
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Mark read error: {str(e)}")
@@ -1066,28 +1121,53 @@ def mark_message_read(current_user, message_id):
 @token_required
 def mark_all_read(current_user, partner_id):
     """
-    Mark all messages from a user as read
+    Mark all messages from a user as read.
+
+    HORIZONTAL SCALING BATCH 4: now broadcasts 'messages_read' to
+    partner_id via distributed presence, matching WS's handle_mark_read
+    (which notifies per-message-sender — here there's only ever one
+    sender, partner_id, since this route is scoped to messages FROM that
+    partner). Previously this route never notified anyone.
     """
+    from services.websocket_messages import message_ws_manager
+    from services import presence_service
+
     try:
-        marked_count = Message.query.filter(
+        # mark_all_read is a "mark everything from this partner" bulk
+        # operation, not an id-list operation — pulling every historical
+        # message_id first just to hand them to an id-list function
+        # (direct_message_service.mark_messages_read, used by
+        # mark_message_read above for the single-id case) would be an
+        # unbounded, wasteful query on a long conversation. Marks rows
+        # directly here instead, with the sender-id grouping (needed for
+        # the broadcast below) computed from the same query's results
+        # BEFORE marking them read.
+        to_mark = Message.query.filter(
             Message.sender_id == partner_id,
             Message.receiver_id == current_user.id,
-            Message.is_read == False
-        ).update({
-            "is_read": True,
-            "read_at": datetime.datetime.utcnow()
-        })
-        
+            Message.is_read == False,
+        ).all()
+
+        marked_ids = [m.id for m in to_mark]
+        now = datetime.datetime.utcnow()
+        for m in to_mark:
+            m.is_read = True
+            m.read_at = now
         db.session.commit()
 
-        # Plan §5.4/§17.6: query was already filtered to is_read == False,
-        # so marked_count IS the exact number of previously-unread rows
-        # just flipped to read — reuse it directly, no extra COUNT(*).
+        marked_count = len(marked_ids)
+
         if marked_count:
             counter_cache_service.decrement_unread_message_count(current_user.id, by=marked_count)
-        
+
+            if presence_service.is_user_online(partner_id):
+                message_ws_manager.emit_to_user(partner_id, 'messages_read', {
+                    'message_ids': marked_ids,
+                    'reader_id': current_user.id,
+                })
+
         return success_response("All messages marked as read")
-        
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Mark all read error: {str(e)}")
