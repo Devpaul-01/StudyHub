@@ -619,6 +619,19 @@ def upload_post_resource(current_user):
         # SVG/polyglot payload mislabeled with an image extension — the
         # file_type categorisation above is extension-based and can't
         # catch that on its own.
+        #
+        # AUDIT ENG-6 fix: this endpoint previously validated images but
+        # NOT documents — the document branch went straight from
+        # secure_filename() (extension-based, spoofable) to Cloudinary
+        # upload with no magic-number check, unlike its five sibling
+        # upload endpoints (messages.py::upload_message_resource,
+        # threads/messaging.py::upload_thread_attachment, etc.), all of
+        # which already call validate_document_mime. Added the matching
+        # elif branch below, same call shape as the working sibling in
+        # threads/messaging.py::upload_thread_attachment: derive the
+        # expected MIME via mimetypes.guess_type() (same technique that
+        # sibling uses) and check it against the file's real magic-number
+        # signature.
         upload_target = file
         if file_type == "image":
             from services.upload_validation_service import validate_and_normalize_image
@@ -626,6 +639,14 @@ def upload_post_resource(current_user):
                 upload_target = validate_and_normalize_image(file)
             except ValidationError as e:
                 current_app.logger.warning(f"[{request_id}] Image validation failed | error={e}")
+                return error_response(str(e))
+        elif file_type == "document":
+            from services.upload_validation_service import validate_document_mime
+            expected_mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            try:
+                validate_document_mime(file, {expected_mime})
+            except ValidationError as e:
+                current_app.logger.warning(f"[{request_id}] Document validation failed | error={e}")
                 return error_response(str(e))
 
         # ── Cloudinary upload ────────────────────────────────────────────
