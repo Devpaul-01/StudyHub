@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import random
 
 from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 from flask_migrate import Migrate
 from sqlalchemy import text
 from services.websocket_messages import init_message_websocket
@@ -53,13 +54,55 @@ def create_app(config_class=None):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # ========================================================================
+    # CORS (AUDIT ENG-11)
+    # ========================================================================
+    # config.py already defined CORS_ALLOWED_ORIGINS but nothing actually
+    # read it — flask-cors wasn't even a dependency. Confirmed with you
+    # directly that no reverse proxy/CDN in front of this app handles CORS,
+    # so it needs to be enforced here at the Flask layer.
+    #
+    # supports_credentials=True is REQUIRED, not optional: this app
+    # authenticates via cookies (access_token/refresh_token/csrf_token, see
+    # helpers.py::set_auth_cookies) rather than an Authorization header, so
+    # a cross-origin frontend can't complete a request at all without the
+    # browser being told it's allowed to send/receive those cookies.
+    #
+    # IMPORTANT — this makes CORS_ALLOWED_ORIGINS' default of ["*"]
+    # actively broken for any deployment that isn't DevelopmentConfig's
+    # explicit dev-only override: browsers reject the combination of
+    # Access-Control-Allow-Credentials: true with a wildcard
+    # Access-Control-Allow-Origin. supports_credentials=True + origins=["*"]
+    # does not silently degrade to "CORS just doesn't work" — cross-origin
+    # requests fail at the browser's own enforcement layer, before this
+    # app's logic is even reached. CORS_ALLOWED_ORIGINS MUST be set to your
+    # real frontend origin(s) (e.g. "https://app.studyhub.com") in any
+    # environment where a cross-origin frontend needs to authenticate.
+    #
+    # NEW DEPENDENCY: flask-cors must be added to requirements.txt (or
+    # whatever your dependency file is) — it was not previously a
+    # dependency of this project, per the audit's own finding.
+    CORS(
+        app,
+        origins=app.config.get("CORS_ALLOWED_ORIGINS", ["*"]),
+        supports_credentials=True,
+    )
+
     # Startup diagnostic (moved here from the old inline Config class body,
     # where it ran once per config subclass at import time rather than once
     # per actual app instance — same message, better-scoped side effect).
+    #
+    # AUDIT security-hygiene fix: no longer prints the actual MAIL_USERNAME
+    # value. Low sensitivity as the audit itself notes (an email address,
+    # not a secret), but this diagnostic runs on every create_app() call —
+    # including under Gunicorn in production, not just direct `python
+    # app.py` runs like the removed DATABASE_URL print above — so there's
+    # no reason to print the value itself when confirming it's *set* is
+    # all this diagnostic is actually for.
     if not app.config.get('MAIL_USERNAME') or not app.config.get('MAIL_PASSWORD'):
         print("⚠️  WARNING: Email credentials not configured!")
     else:
-        print(f"✅ Email configured: {app.config.get('MAIL_USERNAME')}")
+        print("✅ Email configured")
     
     # Initialize extensions
     db.init_app(app)
@@ -351,15 +394,31 @@ if __name__ == "__main__":
         ]
         next_runs = "\n" + "\n".join(lines)
     print("Loaded:", loaded)
-    print("DATABASE_URL:", os.getenv("DATABASE_URL"))
+    # AUDIT security-hygiene fix: removed `print("DATABASE_URL:",
+    # os.getenv("DATABASE_URL"))` — this printed the raw connection
+    # string, including any embedded DB password, to stdout on every
+    # `python app.py` direct run. Gunicorn (the actual production entry
+    # point) never executes this __main__ block, so production risk was
+    # already low, but this is exactly the kind of line that ends up in a
+    # terminal recording, shell history, or CI log if a `python app.py`
+    # smoke-test step is ever added — removed rather than redacted, since
+    # `loaded` above already confirms .env loaded without needing to
+    # expose any part of the connection string.
 
 
 
     print("\n" + "="*60)
     print("🚀 StudyHub Starting...")
     print("="*60)
-    print(f"📧 Email:            {os.environ.get('MAIL_USERNAME', 'Not configured')}")
-    print(f"🗄️  Database:         {os.environ.get('DATABASE_NEW_URL', 'Not configured')}")
+    print(f"📧 Email:            {'✅ Configured' if os.environ.get('MAIL_USERNAME') else '❌ Not configured'}")
+    # AUDIT security-hygiene fix (extending the same reasoning as the
+    # removed DATABASE_URL print above to this line, which the audit's
+    # single quoted example didn't name explicitly but is the identical
+    # exposure — DATABASE_NEW_URL is the same underlying connection
+    # string config.py's Config class reads via
+    # DATABASE_URL = os.environ.get('DATABASE_NEW_URL'), potentially
+    # including an embedded DB password): no longer prints the raw value.
+    print(f"🗄️  Database:         {'✅ Configured' if os.environ.get('DATABASE_NEW_URL') else '❌ Not configured'}")
     print(f"🔑 Secret Key:       {'✅ Set' if os.environ.get('SECRET_KEY') else '❌ Missing'}")
     print(f"🌐 WebSocket:        threading + simple-websocket (Python 3.13 compatible)")
     print(f"💬 Thread WebSocket: {'✅ Initialized' if thread_ws_manager.socketio else '❌ Not initialized'}")

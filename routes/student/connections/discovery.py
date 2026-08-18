@@ -891,6 +891,38 @@ def discover_mutual_connections(current_user):
             }
         
         # ========================================
+        # AUDIT ENG-7a FIX: batch-load StudentProfile and every friend
+        # AUDIT ENG-7a FIX (completed): get_user_onboarding_preview is now
+        # also batched — services/connection_service.py has been supplied
+        # and confirmed to be a thin, single-row OnboardingDetails lookup
+        # with no cross-model joins or side effects, so its exact dict
+        # shape is reproduced inline below from a batch-loaded
+        # OnboardingDetails map, matching the profiles_map/onboarding_map
+        # pattern already established elsewhere in this file (e.g. the
+        # connection_suggestions_flat block). Output is byte-identical to
+        # calling get_user_onboarding_preview(user_id) per user — same
+        # 7-field shape, same [:3] truncation, same has_schedule bool
+        # cast — just without the N+1.
+        # ========================================
+        profiles_map = {
+            p.user_id: p
+            for p in StudentProfile.query.filter(StudentProfile.user_id.in_(limited_ids)).all()
+        } if limited_ids else {}
+
+        onboarding_raw_map = {
+            o.user_id: o
+            for o in OnboardingDetails.query.filter(OnboardingDetails.user_id.in_(limited_ids)).all()
+        } if limited_ids else {}
+
+        all_friend_ids = list({
+            fid for user_id in limited_ids for fid in mutual_friends.get(user_id, [])[:3]
+        })
+        friends_map = {
+            u.id: u
+            for u in User.query.filter(User.id.in_(all_friend_ids)).all()
+        } if all_friend_ids else {}
+
+        # ========================================
         # STEP 4: Build response with sample mutual friends
         # ========================================
         discoveries = []
@@ -900,8 +932,17 @@ def discover_mutual_connections(current_user):
             if not potential_user:
                 continue
             
-            profile = StudentProfile.query.filter_by(user_id=user_id).first()
-            onboarding = get_user_onboarding_preview(user_id)
+            profile = profiles_map.get(user_id)
+            ob = onboarding_raw_map.get(user_id)
+            onboarding = {
+                "subjects": ob.subjects[:3] if ob.subjects else [],
+                "strong_subjects": ob.strong_subjects[:3] if ob.strong_subjects else [],
+                "help_subjects": ob.help_subjects[:3] if ob.help_subjects else [],
+                "learning_style": ob.learning_style,
+                "study_preferences": ob.study_preferences[:3] if ob.study_preferences else [],
+                "session_length": ob.session_length,
+                "has_schedule": bool(ob.study_schedule),
+            } if ob else None
             online_status = get_user_online_status(user_id)
             
             # Get sample of mutual friends (up to 3)
@@ -909,7 +950,7 @@ def discover_mutual_connections(current_user):
             sample_mutuals = []
             
             for friend_id in friend_ids:
-                mutual_user = User.query.get(friend_id)
+                mutual_user = friends_map.get(friend_id)
                 if mutual_user:
                     sample_mutuals.append({
                         "id": mutual_user.id,

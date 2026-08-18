@@ -441,6 +441,26 @@ def get_help_suggestions(current_user):
             ~User.id.in_(existing_connections) if existing_connections else True
         ).all()
 
+        # AUDIT ENG-7b FIX: batch-load every pending Connection between
+        # current_user and any candidate up front — previously a
+        # Connection.query inside the loop below ran once per candidate
+        # that passed the subject-overlap filters, matching the same
+        # batch-then-loop pattern add_members_to_thread (in this same
+        # threads package) already uses for its accepted_connection_ids.
+        candidate_ids = [cu.id for cu, _, _ in potential_users]
+        pending_pairs = set()
+        if candidate_ids:
+            pending_conns = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == current_user.id, Connection.receiver_id.in_(candidate_ids)),
+                    and_(Connection.requester_id.in_(candidate_ids), Connection.receiver_id == current_user.id)
+                ),
+                Connection.status == 'pending'
+            ).all()
+            for c in pending_conns:
+                other = c.receiver_id if c.requester_id == current_user.id else c.requester_id
+                pending_pairs.add(other)
+
         suggestions = []
         for candidate_user, candidate_onboarding, candidate_profile in potential_users:
             if not candidate_onboarding:
@@ -479,13 +499,10 @@ def get_help_suggestions(current_user):
                     score += 10
                     match_reasons.append(f"Same level: {user_profile.class_name}")
 
-            pending_request = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == current_user.id, Connection.receiver_id == candidate_user.id),
-                    and_(Connection.requester_id == candidate_user.id, Connection.receiver_id == current_user.id)
-                ),
-                Connection.status == 'pending'
-            ).first()
+            # AUDIT ENG-7b FIX: was a per-candidate Connection.query inside
+            # this loop — now a set membership check against pending_pairs,
+            # pre-fetched once above.
+            has_pending_request = candidate_user.id in pending_pairs
 
             suggestions.append({
                 'score': score,
@@ -504,7 +521,7 @@ def get_help_suggestions(current_user):
                     'match_score':      round(score, 1),
                     'reasons':          match_reasons,
                     'same_department':  candidate_profile and candidate_profile.department == user_dept,
-                    'has_pending_request': pending_request is not None
+                    'has_pending_request': has_pending_request
                 },
                 'their_needs': {
                     'help_subjects':     candidate_onboarding.help_subjects or [],
