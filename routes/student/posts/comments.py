@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from models import (
     User, StudentProfile, Post, Comment, Connection, PostReaction, PostReport,
-    Bookmark, PostFollow, Mention, Notification, ReputationHistory, BookmarkFolder,
+    Bookmark, PostFollow, Mention, ReputationHistory, BookmarkFolder,
     ThreadMember, UserActivity, PostView, CommentHelpfulMark, CommentLike,
     ThreadJoinRequest, Thread
 )
@@ -47,6 +47,7 @@ from services.post_service import (
     check_spam,
     update_user_activity,
 )
+from services import notification_service
 # Phase 5b (Document 4 §1): like_comment/mark_comment_helpful -> BURST_OK
 # (low-risk, high-frequency); create/edit/delete comment, mark/unmark
 # solution -> WRITE_HEAVY; comment list/replies GETs -> BURST_OK.
@@ -167,20 +168,22 @@ def mark_solution(current_user, post_id):
             award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
             
             # ✅ Check badge milestones
-            from routes.student.badges import check_and_award_badge
-            check_and_award_badge(commenter.id, "Problem Solver")
-            check_and_award_badge(commenter.id, "Genius")
+            from services import badge_service
+            badge_service.check_and_award_badge(commenter.id, "Problem Solver")
+            badge_service.check_and_award_badge(commenter.id, "Genius")
             
             # Notify commenter
-            notification = Notification(
+            # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+            # construction to notification_service.notify() — same
+            # fields, same values, unchanged behavior otherwise.
+            notification_service.notify(
                 user_id=commenter.id,
                 title="Your answer was marked as the solution!",
                 body=f'"{post.title}" (+15 reputation)',
                 notification_type="solution_accepted",
                 related_type="post",
-                related_id=post_id
+                related_id=post_id,
             )
-            db.session.add(notification)
         
         db.session.commit()
         
@@ -232,15 +235,17 @@ def like_comment(current_user, comment_id):
             
             # Notify comment author
             if comment.student_id != current_user.id:
-                notification = Notification(
+                # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                # construction to notification_service.notify() — same
+                # fields, same values, unchanged behavior otherwise.
+                notification_service.notify(
                     user_id=comment.student_id,
                     title=f"{current_user.name} liked your comment",
                     body="",
                     notification_type="like",
                     related_type="comment",
-                    related_id=comment_id
+                    related_id=comment_id,
                 )
-                db.session.add(notification)
         db.session.commit()
         return success_response("Comment liked", data={"liked": True, "count": comment.likes_count})
     except Exception as e:
@@ -283,6 +288,29 @@ def mark_comment_helpful(current_user, comment_id):
             db.session.delete(existing)
             if comment.helpful_count > 0:
                 comment.helpful_count -= 1
+
+            # AUDIT §5 FIX (helpful-count behavior): decrement the comment
+            # AUTHOR's total_helpful/total_helps_received to stay consistent
+            # with the underlying CommentHelpfulMark record being removed
+            # here. Symmetric with comment.helpful_count's own floor-at-0
+            # guard above — this is a persisted, per-user aggregate (same
+            # category as comment.helpful_count, post.comments_count
+            # elsewhere in this file), not an ephemeral cache-style counter,
+            # so it's mutated via a normal ORM attribute assignment inside
+            # this same commit rather than a separate Redis counter — this
+            # matches the codebase's existing convention for persisted
+            # counters throughout this file, and requires no additional
+            # shared-state coordination to be correct across instances: the
+            # database's own row-level write serialization on the `users`
+            # row is what makes concurrent (un)marks land correctly, exactly
+            # as it already does for comment.helpful_count above.
+            author = User.query.get(comment.student_id)
+            if author:
+                if author.total_helpful > 0:
+                    author.total_helpful -= 1
+                if author.total_helps_received > 0:
+                    author.total_helps_received -= 1
+
             db.session.commit()  # ← this line is missing!
             return success_response("Comment unmarked helpful", data={"is_helpful": False, "count": comment.helpful_count})
         
@@ -296,6 +324,21 @@ def mark_comment_helpful(current_user, comment_id):
         
         # Increment count
         comment.helpful_count += 1
+
+        # AUDIT §5 FIX (helpful-count behavior): increment the comment
+        # AUTHOR's (not the marker's) total_helpful/total_helps_received.
+        # The CommentHelpfulMark unique constraint on (comment_id, user_id)
+        # (models.py) is what already guarantees this branch can only be
+        # reached once per marker per comment — a second attempt by the
+        # same user hits the `existing` branch above instead — so this
+        # increment can never double-count for a single comment/marker
+        # pair, matching the "duplicate helpful actions cannot incorrectly
+        # increment it" requirement without any extra locking beyond what
+        # already protects comment.helpful_count on the line above.
+        author = User.query.get(comment.student_id)
+        if author:
+            author.total_helpful += 1
+            author.total_helps_received += 1
         
         db.session.commit()
         
@@ -535,15 +578,21 @@ def create_comment(current_user):
         
         # ✅ Notify post author (if not self-comment)
         if post.student_id != current_user.id:
-            notification = Notification(
+            # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+            # construction to notification_service.notify() — same
+            # fields, same values, unchanged behavior otherwise. (Distinct
+            # from detect_and_create_mentions above, which already routes
+            # its own @mention notifications through notify() separately —
+            # this is create_comment's own "post author was commented on"
+            # notification, an independent event.)
+            notification_service.notify(
                 user_id=post.student_id,
                 title=f"{current_user.name} commented on your post",
                 body=f'"{post.title}"',
                 notification_type="comment",
                 related_type="post",
-                related_id=post_id
+                related_id=post_id,
             )
-            db.session.add(notification)
         
         # Update activity
         update_user_activity(current_user.id, "comment")

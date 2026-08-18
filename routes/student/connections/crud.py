@@ -11,6 +11,10 @@ paths as before.
 
 from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
 from sqlalchemy import or_, and_, case
+# AUDIT ENG-2 FIX: catches the new uq_connections_pair unique index
+# (models.py) firing on a genuine reverse-duplicate race in
+# send_connection_request below.
+from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
 import datetime
 import json
@@ -28,7 +32,7 @@ from routes.student.helpers import (
     block_connection, unblock_connection,
 )
 
-from services.online_status_service import get_user_online_status
+from services.online_status_service import get_user_online_status, get_online_status_batch
 from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
     calculate_compatibility_score,
@@ -252,7 +256,32 @@ def onboard_connect_single(email, target_user_id):
             related_type="user",
             related_id=user.id,
         )
-        db.session.commit()
+
+        # AUDIT ENG-2 FIX: same reverse-duplicate race as
+        # send_connection_request — uq_connections_pair (models.py) now
+        # applies globally to the connections table, so this insert path
+        # is exposed to it too. Rolled back and reported using the same
+        # "already connected" response shape the existing-row check above
+        # already returns for this exact outcome.
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            current_app.logger.info(
+                f"Connection request race detected (uq_connections_pair): "
+                f"{user.id} <-> {target_user_id}"
+            )
+            existing = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == user.id, Connection.receiver_id == target_user_id),
+                    and_(Connection.requester_id == target_user_id, Connection.receiver_id == user.id)
+                )
+            ).first()
+            return jsonify({
+                "status": "success",
+                "message": "Already connected",
+                "data": {"connection_id": existing.id if existing else None}
+            })
 
         return jsonify({
             "status":  "success",
@@ -321,7 +350,33 @@ def onboard_connect_all(email):
                 responded_at    = datetime.datetime.utcnow(),
                 requester_notes = "Connected during onboarding (bulk)"
             )
-            db.session.add(connection)
+            # AUDIT ENG-2 FIX: db.session.begin_nested() opens a SAVEPOINT
+            # scoped to just this row's INSERT — if it violates
+            # uq_connections_pair (models.py), only this savepoint rolls
+            # back (via the `with` block's own exception handling), leaving
+            # every prior iteration's already-flushed Connection AND
+            # Notification rows completely untouched in the outer,
+            # still-open transaction. This is the correct primitive here,
+            # not a full db.session.rollback(): a full rollback reverts the
+            # ENTIRE session, including prior rows' Notification inserts —
+            # and notification_service.notify() also increments a Redis
+            # unread-counter as a side effect OUTSIDE the SQL transaction,
+            # which a SQL rollback cannot undo, so a full-session rollback
+            # would silently strand that counter out of sync with the (now
+            # rolled-back) Notification row. A savepoint avoids ever
+            # putting prior rows at risk in the first place, so there is
+            # nothing to redo and no redo-vs-counter bookkeeping needed.
+            try:
+                with db.session.begin_nested():
+                    db.session.add(connection)
+                    db.session.flush()
+            except IntegrityError:
+                current_app.logger.info(
+                    f"Connection request race detected (uq_connections_pair) "
+                    f"in bulk onboarding: {user.id} <-> {target_id}"
+                )
+                skipped.append(target_id)
+                continue
 
             notification_service.notify(
                 user_id=target_id,
@@ -568,9 +623,21 @@ def volunteer_for_help(current_user, request_id):
         )
 
         # Emit websocket event to requester if they're online
+        #
+        # AUDIT BUG-4 FIX: services.websocket_events.ws_manager is never
+        # initialized anywhere in the app (its init_app/register_handlers
+        # is never called), so ws_manager.online_users stays permanently
+        # empty and ws_manager.emit_to_user() silently iterated zero socket
+        # ids on every call — this notification never actually reached the
+        # requester in real time. Migrated to services.websocket_messages'
+        # message_ws_manager, the manager that's genuinely initialized (see
+        # app factory / init_message_websocket) and already correctly wired
+        # for cross-instance delivery via message_queue — same
+        # emit_to_user(user_id, event_name, data) signature, so this is a
+        # drop-in swap.
         try:
-            from services.websocket_events import ws_manager
-            ws_manager.emit_to_user(requester.id, 'help_volunteer_joined', {
+            from services.websocket_messages import message_ws_manager
+            message_ws_manager.emit_to_user(requester.id, 'help_volunteer_joined', {
                 'help_request_id': request_id,
                 'volunteer': {
                     'user_id': current_user.id,
@@ -644,16 +711,36 @@ def find_help_with_subject(current_user):
             return error_response("Please provide a subject", 400)
         
         subject_lower = subject.lower()
+        # AUDIT ENG-7c FIX: previously no .limit() at all — on a large
+        # user base this loaded every approved user into memory and
+        # issued 2 queries per user inside the loop below (StudentProfile
+        # + OnboardingDetails), with zero ceiling. Capped at 200,
+        # matching the same "scan then score" candidate-cap pattern
+        # get_recommended_threads (threads/discovery.py) already uses for
+        # the analogous case.
         all_users = User.query.filter(
             User.id != current_user.id,
             User.status == "approved"
-        ).all()
-        
+        ).limit(200).all()
+
+        # AUDIT ENG-7c FIX: batch-load StudentProfile/OnboardingDetails for
+        # the whole capped candidate set — 2 queries total instead of 2
+        # queries per user.
+        candidate_ids = [u.id for u in all_users]
+        profiles_map = {
+            p.user_id: p
+            for p in StudentProfile.query.filter(StudentProfile.user_id.in_(candidate_ids)).all()
+        } if candidate_ids else {}
+        onboarding_map = {
+            o.user_id: o
+            for o in OnboardingDetails.query.filter(OnboardingDetails.user_id.in_(candidate_ids)).all()
+        } if candidate_ids else {}
+
         helpers = []
         
         for user in all_users:
-            profile = StudentProfile.query.filter_by(user_id=user.id).first()
-            onboarding = OnboardingDetails.query.filter_by(user_id=user.id).first()
+            profile = profiles_map.get(user.id)
+            onboarding = onboarding_map.get(user.id)
             
             if not onboarding:
                 continue
@@ -692,29 +779,39 @@ def find_help_with_subject(current_user):
                 reasons.append(user.reputation_level)
             
             if expertise_score >= 30:
-                online_status = get_user_online_status(user.id)
-                expertise_level = 4 if expertise_score >= 80 else 3 if expertise_score >= 60 else 2 if expertise_score >= 40 else 1
-                
-                helpers.append({
-                    "user": {
-                        "id": user.id,
-                        "username": user.username,
-                        "name": user.name,
-                        "avatar": user.avatar,
-                        "bio": user.bio,
-                        "department": profile.department if profile else None,
-                        "class_level": profile.class_name if profile else None,
-                        "reputation": user.reputation,
-                        "reputation_level": user.reputation_level,
-                        "is_online": online_status["is_online"]
-                    },
-                    "expertise_score": expertise_score,
-                    "expertise_level": expertise_level,
-                    "reason": " • ".join(reasons[:3])
-                })
-        
-        helpers.sort(key=lambda x: x['expertise_score'], reverse=True)
-        top_helpers = helpers[:10]
+                helpers.append((user, profile, expertise_score, reasons))
+
+        # AUDIT ENG-7c FIX: sort/limit BEFORE the online-status batch
+        # lookup, so that lookup only ever runs for the up-to-10 helpers
+        # actually returned, matching the same sort-then-batch ordering
+        # already used elsewhere in this file (e.g. discover_mutual_connections).
+        helpers.sort(key=lambda x: x[2], reverse=True)
+        top_raw = helpers[:10]
+
+        top_ids = [h[0].id for h in top_raw]
+        online_status_map = get_online_status_batch(top_ids) if top_ids else {}
+
+        top_helpers = []
+        for user, profile, expertise_score, reasons in top_raw:
+            online_status = online_status_map.get(user.id, {"is_online": False, "in_study_session": False, "last_active": "Unknown"})
+            expertise_level = 4 if expertise_score >= 80 else 3 if expertise_score >= 60 else 2 if expertise_score >= 40 else 1
+            top_helpers.append({
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "name": user.name,
+                    "avatar": user.avatar,
+                    "bio": user.bio,
+                    "department": profile.department if profile else None,
+                    "class_level": profile.class_name if profile else None,
+                    "reputation": user.reputation,
+                    "reputation_level": user.reputation_level,
+                    "is_online": online_status.get("is_online", False)
+                },
+                "expertise_score": expertise_score,
+                "expertise_level": expertise_level,
+                "reason": " • ".join(reasons[:3])
+            })
         
         return jsonify({
             "status": "success",
@@ -1625,7 +1722,44 @@ def send_connection_request(current_user, user_id):
                 is_receiver=False,
             )
             
-            db.session.commit()
+            # AUDIT ENG-2 FIX: uq_connections_pair (models.py) can reject
+            # this INSERT if a concurrent request from the other direction
+            # (the target user requesting current_user at close to the same
+            # instant) already landed first. Rolled back and reported using
+            # the identical "already_connected"-shaped response the
+            # pre-existing `if existing:` check above already returns for
+            # this exact outcome — from the caller's perspective a race
+            # they lost looks the same as a request that already existed
+            # when they checked.
+            try:
+                db.session.commit()
+            except IntegrityError:
+                db.session.rollback()
+                current_app.logger.info(
+                    f"Connection request race detected (uq_connections_pair): "
+                    f"{current_user.id} <-> {user_id}"
+                )
+                existing = Connection.query.filter(
+                    or_(
+                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
+                        and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
+                    )
+                ).first()
+                return jsonify({
+                    "status": "success",
+                    "message": "Already connected",
+                    "data": {
+                        "connection_id": existing.id if existing else None,
+                        "is_instant": False,
+                        "connection_status": "already_connected" if existing and existing.status == "accepted" else "pending",
+                        "receiver": {
+                            "id": target_user.id,
+                            "name": target_user.name,
+                            "username": target_user.username,
+                            "avatar": target_user.avatar
+                        }
+                    }
+                }), 200
             
             return jsonify({
                 "status": "success",
@@ -1670,7 +1804,40 @@ def send_connection_request(current_user, user_id):
                 user_id, current_user.name, current_user.id
             )
             
-            db.session.commit()
+            # AUDIT ENG-2 FIX: same race protection as the instant-connect
+            # branch above — see that block's comment for the full
+            # reasoning. Here the losing side's own request is what's being
+            # rejected by uq_connections_pair, so the graceful response
+            # reflects whatever connection state actually won the race.
+            try:
+                db.session.commit()
+            except IntegrityError:
+                db.session.rollback()
+                current_app.logger.info(
+                    f"Connection request race detected (uq_connections_pair): "
+                    f"{current_user.id} <-> {user_id}"
+                )
+                existing = Connection.query.filter(
+                    or_(
+                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
+                        and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
+                    )
+                ).first()
+                return jsonify({
+                    "status": "success",
+                    "message": "Connection request already pending" if existing and existing.status == "pending" else "Already connected",
+                    "data": {
+                        "connection_id": existing.id if existing else None,
+                        "is_instant": False,
+                        "connection_status": (existing.status if existing else "pending"),
+                        "receiver": {
+                            "id": target_user.id,
+                            "name": target_user.name,
+                            "username": target_user.username,
+                            "avatar": target_user.avatar
+                        }
+                    }
+                }), 200
             
             return jsonify({
                 "status": "success",

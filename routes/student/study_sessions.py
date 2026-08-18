@@ -63,10 +63,25 @@ def _emit(event: str, data: dict, room: str) -> None:
     doesn't exist, transient network issue) must never fail or roll back
     the HTTP request that already committed its DB write — this is a
     best-effort real-time notification, not the source of truth.
+
+    AUDIT BUG-4 FIX: services.websocket_events.ws_manager.socketio was
+    always None (that manager's init_app is never called anywhere in the
+    app), so every call through this helper raised AttributeError on
+    every single invocation, silently caught by the except below and
+    logged only as a warning — every real-time study-session event this
+    file sends (goal set, progress updated, pomodoro started, session
+    scheduled/cancelled/confirmed/declined, live session started/ended,
+    resources added/removed, etc.) never actually reached anyone.
+    message_ws_manager.socketio IS the live, correctly-initialized
+    SocketIO instance (websocket_threads.py already reuses this same
+    instance for its own room-based broadcasts, per the audit's
+    confirmation this pattern is horizontal-scaling-correct once
+    message_queue is configured) — every existing call site already
+    passes a fully-formed room=... string, so this is a drop-in swap.
     """
     try:
-        from services.websocket_events import ws_manager
-        ws_manager.socketio.emit(event, data, room=room)
+        from services.websocket_messages import message_ws_manager
+        message_ws_manager.socketio.emit(event, data, room=room)
     except Exception as exc:
         current_app.logger.warning(f"WS emit '{event}' failed: {exc}")
 

@@ -21,7 +21,7 @@ import bleach
 from models import (
     User, StudentProfile, Thread, ThreadMember, ThreadJoinRequest,
     ThreadMessage, ThreadMessageReaction, ThreadMessageAttachment,
-    Post, Notification, Connection,
+    Post, Connection,
     Mention, OnboardingDetails,
     ThreadMeetingNote,
 )
@@ -32,6 +32,17 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+from services import notification_service
+# AUDIT BUG-5 FIX: require_moderator_or_creator raises AuthorizationError
+# (errors.py) on a failed permission check. Every route below wraps its
+# whole body in `except Exception`, which — because Python resolves the
+# innermost matching handler — caught AuthorizationError too, before it
+# could ever reach app.py's centralized @app.errorhandler(AppError). That
+# meant an unauthorized member got a generic 400 "Failed to ..." instead
+# of the intended 403 with the specific "Only the thread creator or a
+# moderator..." message. Imported here so each of the five affected
+# routes can catch it explicitly, ahead of their own generic except.
+from errors import AuthorizationError
 # Phase 5b (Document 4 §1): WRITE_HEAVY for membership mutations (join,
 # leave, remove, invite, role change, add-members); BURST_OK for the
 # cheaper accept/decline/cancel actions on an already-existing row.
@@ -69,14 +80,19 @@ def leave_thread(current_user, thread_id):
             synchronize_session=False
         )
 
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+        # construction to notification_service.notify() — same fields,
+        # same values, unchanged behavior otherwise. See
+        # notification_service.notify's docstring for why this migration
+        # matters (Redis unread-counter accuracy).
+        notification_service.notify(
             user_id=thread.creator_id,
             title=f"{current_user.name} left your thread",
             body=f'Thread: "{thread.title}"',
             notification_type="thread_member_left",
             related_type="thread",
-            related_id=thread_id
-        ))
+            related_id=thread_id,
+        )
         db.session.commit()
         return success_response("You left the thread")
 
@@ -115,14 +131,15 @@ def remove_member(current_user, thread_id, user_id):
             synchronize_session=False
         )
 
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+        notification_service.notify(
             user_id=user_id,
             title="You were removed from a thread",
             body=f'Thread: "{thread.title}"',
             notification_type="thread_removed",
             related_type="thread",
-            related_id=thread_id
-        ))
+            related_id=thread_id,
+        )
         db.session.commit()
 
         # FIX: notify the removed user and all thread members in real-time
@@ -137,6 +154,12 @@ def remove_member(current_user, thread_id, user_id):
 
         return success_response("Member removed from thread")
 
+    except AuthorizationError as e:
+        # AUDIT BUG-5 FIX: caught ahead of the generic except below so the
+        # typed 403/message from require_moderator_or_creator survives
+        # instead of being flattened into a generic 400.
+        db.session.rollback()
+        return error_response(str(e), 403)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Remove member error: {str(e)}")
@@ -323,14 +346,15 @@ def update_member_role(current_user, thread_id, user_id):
 
         user = User.query.get(user_id)
         if user:
-            db.session.add(Notification(
+            # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+            notification_service.notify(
                 user_id=user_id,
                 title=f"You are now a {new_role} in a thread",
                 body=f'Thread: "{thread.title}"',
                 notification_type="thread_role_updated",
                 related_type="thread",
-                related_id=thread_id
-            ))
+                related_id=thread_id,
+            )
             db.session.commit()
 
         return success_response(
@@ -435,14 +459,15 @@ def request_join_thread(current_user, resource_id):
                 existing_request.reviewed_by  = None
                 existing_request.message      = message or existing_request.message
 
-                db.session.add(Notification(
+                # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+                notification_service.notify(
                     user_id=thread.creator_id,
                     title=f"{current_user.name} wants to join your thread again",
                     body=f'Thread: "{thread.title}"',
                     notification_type="thread_join_request",
                     related_type="thread",
-                    related_id=thread_id
-                ))
+                    related_id=thread_id,
+                )
                 db.session.commit()
                 return success_response("Re-request submitted", data={"request_id": existing_request.id}), 201
 
@@ -456,14 +481,15 @@ def request_join_thread(current_user, resource_id):
             status="pending"
         )
         db.session.add(join_request)
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+        notification_service.notify(
             user_id=thread.creator_id,
             title=f"{current_user.name} wants to join your thread",
             body=f'Thread: "{thread.title}"',
             notification_type="thread_join_request",
             related_type="thread",
-            related_id=thread_id
-        ))
+            related_id=thread_id,
+        )
         db.session.commit()
         return success_response("Join request sent", data={"request_id": join_request.id}), 201
 
@@ -522,14 +548,15 @@ def approve_join_request(current_user, thread_id, request_id):
             synchronize_session=False
         )
 
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+        notification_service.notify(
             user_id=user_id,
             title="Join request approved!",
             body=f'You can now participate in "{thread.title}"',
             notification_type="thread_join_approved",
             related_type="thread",
-            related_id=thread_id
-        ))
+            related_id=thread_id,
+        )
         db.session.commit()
 
         try:
@@ -581,6 +608,11 @@ def approve_join_request(current_user, thread_id, request_id):
             } if requester else None}
         )
 
+    except AuthorizationError as e:
+        # AUDIT BUG-5 FIX: see the import comment above for why this must
+        # be caught before the generic except below.
+        db.session.rollback()
+        return error_response(str(e), 403)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Approve join error: {e}")
@@ -614,6 +646,11 @@ def reject_join_request(current_user, thread_id, request_id):
         db.session.commit()
         return success_response("Join request rejected")
 
+    except AuthorizationError as e:
+        # AUDIT BUG-5 FIX: see the import comment above for why this must
+        # be caught before the generic except below.
+        db.session.rollback()
+        return error_response(str(e), 403)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Reject join error: {e}")
@@ -675,14 +712,15 @@ def invite_to_thread(current_user, thread_id, user_id):
                 reviewed_at  = datetime.datetime.utcnow()
             ))
 
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+        notification_service.notify(
             user_id=user_id,
             title=f"{current_user.name} invited you to a thread",
             body=f'Thread: "{thread.title}"',
             notification_type="thread_invite",
             related_type="thread",
-            related_id=thread_id
-        ))
+            related_id=thread_id,
+        )
         db.session.commit()
 
         return success_response(
@@ -696,6 +734,11 @@ def invite_to_thread(current_user, thread_id, user_id):
             }
         ), 201
 
+    except AuthorizationError as e:
+        # AUDIT BUG-5 FIX: see the import comment above for why this must
+        # be caught before the generic except below.
+        db.session.rollback()
+        return error_response(str(e), 403)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Invite to thread error: {e}")
@@ -766,7 +809,14 @@ def accept_thread_invite(current_user, invite_id):
         if invite.status != "invited":
             return error_response("Invite is no longer valid", 400)
 
-        thread = Thread.query.get(invite.thread_id)
+        # AUDIT ENG-1 FIX: with_for_update() row-locks the thread before the
+        # capacity check, matching approve_join_request's / (now)
+        # add_members_to_thread's established pattern in this same file.
+        # Previously plain Thread.query.get() here meant two concurrent
+        # accept_thread_invite calls — or one racing an approve_join_request
+        # / add_members_to_thread — could both read member_count < max_members,
+        # both pass, and together push the thread over capacity.
+        thread = Thread.query.with_for_update().get(invite.thread_id)
         if not thread:
             return error_response("Thread not found", 404)
         if thread.member_count >= thread.max_members:
@@ -788,14 +838,15 @@ def accept_thread_invite(current_user, invite_id):
             synchronize_session=False
         )
 
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+        notification_service.notify(
             user_id=thread.creator_id,
             title=f"{current_user.name} accepted your invitation",
             body=f'Thread: "{thread.title}"',
             notification_type="thread_invite_accepted",
             related_type="thread",
-            related_id=thread.id
-        ))
+            related_id=thread.id,
+        )
         db.session.commit()
 
         # Issue 6: Notify existing members and the accepting user via personal room
@@ -982,6 +1033,16 @@ def add_members_to_thread(current_user, thread_id):
             )
 
         # ── Capacity check ───────────────────────────────────────────────
+        # AUDIT ENG-1 FIX: re-fetch with a row lock immediately before the
+        # capacity check, matching approve_join_request's own established
+        # with_for_update() pattern in this same file. Without this, this
+        # capacity check and a concurrent approve_join_request/
+        # accept_thread_invite on the same thread could both read a
+        # not-yet-full member_count, both pass, and together push the
+        # thread over max_members — the exact TOCTOU race
+        # approve_join_request was already fixed for, just not carried to
+        # this structurally-identical path.
+        thread = Thread.query.with_for_update().get(thread_id)
         slots_available = thread.max_members - thread.member_count
         if len(to_add) > slots_available:
             return error_response(
@@ -1001,14 +1062,15 @@ def add_members_to_thread(current_user, thread_id):
             db.session.add(ThreadMember(
                 thread_id=thread_id, student_id=user.id, role="member"
             ))
-            db.session.add(Notification(
+            # AUDIT ENG-3 FIX: see leave_thread above for full reasoning.
+            notification_service.notify(
                 user_id=user.id,
                 title=f"{current_user.name} added you to a thread",
                 body=f'You are now a member of "{thread.title}"',
                 notification_type="thread_member_added",
                 related_type="thread",
-                related_id=thread_id
-            ))
+                related_id=thread_id,
+            )
             added.append({"id": user.id, "username": user.username, "name": user.name, "avatar": user.avatar})
 
         Thread.query.filter_by(id=thread_id).update(
@@ -1072,6 +1134,11 @@ def add_members_to_thread(current_user, thread_id):
             }
         }), 201
 
+    except AuthorizationError as e:
+        # AUDIT BUG-5 FIX: see the import comment above for why this must
+        # be caught before the generic except below.
+        db.session.rollback()
+        return error_response(str(e), 403)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Add members to thread error: {e!r}", exc_info=True)

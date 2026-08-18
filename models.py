@@ -62,7 +62,19 @@ JSONB_VARIANT = db.JSON().with_variant(postgresql.JSONB, "postgresql")
 # on next migration, same as any other model change.
 # ============================================================================
 
-class MessageStatus(str, Enum):
+class MessageDeliveryStatus(str, Enum):
+    """
+    AUDIT DUP-1 fix: consolidates what used to be two byte-for-byte
+    identical enums (MessageStatus for Message.status, ThreadMessageStatus
+    for ThreadMessage.status) into one shared enum. Confirmed safe to
+    merge: grepped every supplied file and both old names were referenced
+    ONLY here in models.py, each at exactly one column definition — no
+    route/service/websocket file imports either enum class directly (they
+    all set .status via plain string literals, e.g. "sent"/"delivered"/
+    "read"), so this is a values-preserving rename, not a behavior change.
+    The values themselves are unchanged, so no data migration is implied
+    beyond a column's Python-side enum-class reference.
+    """
     SENT      = "sent"
     DELIVERED = "delivered"
     READ      = "read"
@@ -97,11 +109,10 @@ class StudySessionCalendarStatus(str, Enum):
     CANCELLED  = "cancelled"
     COMPLETED  = "completed"
 
-
-class ThreadMessageStatus(str, Enum):
-    SENT      = "sent"
-    DELIVERED = "delivered"
-    READ      = "read"
+# AUDIT DUP-1 fix: ThreadMessageStatus removed — was byte-for-byte
+# identical to the old MessageStatus (now MessageDeliveryStatus above).
+# Both ThreadMessage.status and Message.status now reference the single
+# shared enum below (see their respective db.Column definitions).
 
 # ============================================================================
 # CORE USER MODELS
@@ -405,25 +416,20 @@ class Assignment(db.Model):
 
     user = db.relationship("User", backref="assignments")
 
-    def calculate_priority(self):
-        now            = datetime.datetime.utcnow()
-        hours_until_due = (self.due_date - now).total_seconds() / 3600
-
-        if hours_until_due < 0:
-            urgency_score = 100
-        elif hours_until_due < 24:
-            urgency_score = 90
-        elif hours_until_due < 48:
-            urgency_score = 70
-        elif hours_until_due < 168:
-            urgency_score = 50
-        else:
-            urgency_score = 30
-
-        difficulty_multiplier = {"easy": 1.0, "medium": 1.3, "hard": 1.6}.get(self.difficulty, 1.3)
-        status_multiplier     = {"not_started": 1.2, "in_progress": 1.0, "completed": 0.1}.get(self.status, 1.0)
-        hours_bonus           = min((self.estimated_hours or 0) * 2, 20)
-        self.priority_score   = (urgency_score * difficulty_multiplier * status_multiplier) + hours_bonus
+    # AUDIT DUP-2 fix: calculate_priority() removed — dead code, fully
+    # superseded by services/homework_service.py::calculate_priority_score(),
+    # confirmed the sole call site used across every route (see
+    # homework_system.py's get_my_assignments/create_assignment/
+    # update_assignment/assignment_quick_actions/get_homework_feed, all of
+    # which call the service function and explicitly assign the result
+    # back where persistence is intended). This method wasn't just unused —
+    # per the audit, it was "a live landmine": calling it again (an easy
+    # mistake, since it reads as the obvious method to reach for on the
+    # model itself) would silently reintroduce the exact bug the service
+    # extraction fixed (mutating and persisting priority_score as a side
+    # effect of what looks like a read). Confirmed zero remaining call
+    # sites (`.calculate_priority(`) anywhere in the codebase before
+    # removal.
 
     def __repr__(self):
         return f"<Assignment {self.id}: {self.title} - {self.status}>"
@@ -997,7 +1003,7 @@ class ThreadMessage(db.Model):
     # ── NEW: Delivery / read status ───────────────────────────────────────
     # Values: 'sent' | 'delivered' | 'read'
     # Alembic will generate: ALTER TABLE thread_messages ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sent'
-    status = db.Column(db.Enum(ThreadMessageStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=ThreadMessageStatus.SENT.value)
+    status = db.Column(db.Enum(MessageDeliveryStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=MessageDeliveryStatus.SENT.value)
 
     # Timestamps
     sent_at   = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)
@@ -1251,6 +1257,41 @@ event.listen(
     _connections_pair_status_index.execute_if(dialect="postgresql"),
 )
 
+# ----------------------------------------------------------------------------
+# AUDIT ENG-2 FIX: the UNIQUE functional index the comment block above
+# already names as "not-yet-implemented — flag if you want it added."
+# Unlike idx_connections_pair_status above (a lookup-speed index only,
+# deliberately non-unique, includes status), this is a pure uniqueness
+# guarantee on JUST the normalized/unordered pair — no status column —
+# so a reverse-direction duplicate Connection row (A,B) + (B,A) becomes
+# impossible to insert at the database level, closing the race where two
+# users sending each other a connection request at close to the same
+# instant could both pass send_connection_request's plain SELECT-based
+# "no existing connection" check and both INSERT.
+#
+# Same DDL + execute_if(dialect="postgresql") pattern as
+# idx_connections_pair_status immediately above, for the identical
+# reason: LEAST/GREATEST have no SQLite equivalent, so this must be
+# skipped entirely (not just index-type-changed) on non-Postgres
+# dialects, which only a raw DDL() gated with .execute_if(...) achieves —
+# see that block's own comment for the full explanation of why
+# postgresql_using=... on a plain db.Index() does not accomplish this.
+#
+# send_connection_request (routes/student/connections/crud.py) catches
+# the resulting IntegrityError and responds with the same "already
+# connected/pending" message its existing-row check already produces —
+# see that function for the paired application-level handling.
+# ----------------------------------------------------------------------------
+_connections_pair_unique = DDL(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_connections_pair "
+    "ON connections (LEAST(requester_id, receiver_id), GREATEST(requester_id, receiver_id))"
+)
+event.listen(
+    Connection.__table__,
+    "after_create",
+    _connections_pair_unique.execute_if(dialect="postgresql"),
+)
+
 
 class Mention(db.Model):
     """Track @username mentions."""
@@ -1307,7 +1348,7 @@ class Message(db.Model):
 
     subject        = db.Column(db.String(200), nullable=True)
     body           = db.Column(db.Text, nullable=False)
-    status         = db.Column(db.Enum(MessageStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=MessageStatus.SENT.value)
+    status         = db.Column(db.Enum(MessageDeliveryStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=MessageDeliveryStatus.SENT.value)
     client_temp_id = db.Column(db.String(300))
 
     sent_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
