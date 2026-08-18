@@ -23,7 +23,7 @@ import bleach
 from models import (
     User, StudentProfile, Thread, ThreadMember, ThreadJoinRequest,
     ThreadMessage, ThreadMessageReaction, ThreadMessageAttachment,
-    Post, Notification, Connection,
+    Post, Connection,
     Mention, OnboardingDetails,
     ThreadMeetingNote,
 )
@@ -35,6 +35,7 @@ from errors import ValidationError
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+from services import notification_service
 # Phase 5b (Document 4 §1): WRITE_HEAVY for thread create/update/delete/
 # settings mutations.
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -138,14 +139,17 @@ def create_thread(current_user):
             ))
             member_user = User.query.get(member_id)
             if member_user:
-                db.session.add(Notification(
+                # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                # construction to notification_service.notify() — same
+                # fields, same values, unchanged behavior otherwise.
+                notification_service.notify(
                     user_id=member_id,
                     title=f"{current_user.name} added you to a thread",
                     body=f'Thread: "{new_thread.title}"',
                     notification_type="thread_member_added",
                     related_type="thread",
-                    related_id=new_thread.id
-                ))
+                    related_id=new_thread.id,
+                )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
         db.session.commit()
@@ -244,14 +248,17 @@ def create_standalone_thread(current_user):
             ))
             member_user = User.query.get(member_id)
             if member_user:
-                db.session.add(Notification(
+                # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                # construction to notification_service.notify() — same
+                # fields, same values, unchanged behavior otherwise.
+                notification_service.notify(
                     user_id=member_id,
                     title=f"{current_user.name} added you to a thread",
                     body=f'Thread: "{new_thread.title}"',
                     notification_type="thread_member_added",
                     related_type="thread",
-                    related_id=new_thread.id
-                ))
+                    related_id=new_thread.id,
+                )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
         db.session.commit()
@@ -517,14 +524,24 @@ def delete_thread(current_user, thread_id):
         members = ThreadMember.query.filter_by(thread_id=thread_id).all()
         for member in members:
             if member.student_id != current_user.id:
-                db.session.add(Notification(
+                # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                # construction to notification_service.notify() — same
+                # fields, same values, unchanged behavior otherwise.
+                # notification_service.notify() has no FK relationship to
+                # Thread (Notification.related_id/related_type is a loose
+                # polymorphic pointer, not an actual foreign key), so the
+                # db.session.delete(thread) a few lines below cannot
+                # cascade into or otherwise disturb these — confirmed
+                # before migrating, since this function relies on that
+                # ordering (notify before delete) already.
+                notification_service.notify(
                     user_id=member.student_id,
                     title="Thread deleted",
                     body=f'The thread "{thread.title}" has been deleted',
                     notification_type="thread_deleted",
                     related_type="thread",
-                    related_id=thread_id
-                ))
+                    related_id=thread_id,
+                )
 
         # FIX: broadcast BEFORE delete so WS manager can still find the room
         try:

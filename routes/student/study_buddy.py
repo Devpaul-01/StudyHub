@@ -17,7 +17,7 @@ import datetime
 
 from models import (
     User, StudentProfile, StudyBuddyRequest, StudyBuddyMatch,
-    Thread, ThreadMember, Connection, Notification
+    Thread, ThreadMember, Connection
 )
 from extensions import db
 from routes.student.helpers import (
@@ -37,6 +37,7 @@ from services.study_buddy_service import calculate_match_score
 # get_match_details_partnership are deliberately NOT cached, per plan
 # §4.6's table and its absence from §4/§17.7 respectively.
 from services import cache_service
+from services import notification_service
 # Phase 5b (Document 4 §1): WRITE_HEAVY for preference/request/session
 # mutations, BURST_OK for the cancel/remove actions (low-risk cleanup).
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -503,8 +504,18 @@ def send_request(current_user, user_id):
             status="pending",
         )
         db.session.add(buddy_request)
+        # PRE-EXISTING BUG FOUND DURING ENG-3 MIGRATION (flagged, not in
+        # the audit's original list): buddy_request.id was read below for
+        # related_id before any flush, so it was always None — this flush
+        # populates it so the notification's related_id actually points
+        # at the request it's about.
+        db.session.flush()
 
-        notification = Notification(
+        # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+        # construction to notification_service.notify() — same fields,
+        # same values (now that related_id is populated by the flush
+        # above), unchanged behavior otherwise.
+        notification_service.notify(
             user_id=user_id,
             title=f"{current_user.name} wants to be study buddies!",
             body=f"Request to study: {', '.join(subjects[:3]) if subjects else 'together'}",
@@ -512,7 +523,6 @@ def send_request(current_user, user_id):
             related_type="study_buddy_request",
             related_id=buddy_request.id,
         )
-        db.session.add(notification)
         db.session.commit()
 
         return success_response(
@@ -671,14 +681,17 @@ def end_partnership(current_user, match_id):
         match.ended_at  = datetime.datetime.utcnow()
 
         partner_id = match.user2_id if match.user1_id == current_user.id else match.user1_id
-        db.session.add(Notification(
+        # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+        # construction to notification_service.notify() — same fields,
+        # same values, unchanged behavior otherwise.
+        notification_service.notify(
             user_id=partner_id,
             title="Study partnership ended",
             body=f"{current_user.name} ended your study partnership",
             notification_type="study_buddy_ended",
             related_type="study_buddy_match",
             related_id=match_id,
-        ))
+        )
         db.session.commit()
 
         return success_response("Partnership ended")

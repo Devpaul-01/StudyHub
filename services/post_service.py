@@ -45,9 +45,10 @@ import re
 import datetime
 from collections import Counter
 
-from models import User, Post, Comment, Mention, Notification, UserActivity, PostReaction
+from models import User, Post, Comment, Mention, UserActivity, PostReaction
 from extensions import db
 from services import badge_service
+from services import notification_service
 from services.cache_service import cached
 
 
@@ -119,17 +120,27 @@ def detect_and_create_mentions(text_content, created_by_id, content_type, conten
                 )
                 db.session.add(mention)
 
-                # Create notification
-                content_link = f"{content_type}/{content_id}"
-                notification = Notification(
+                # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                # construction to notification_service.notify(), the
+                # single funnel point that also increments the Redis
+                # unread-notification counter (counter_cache_service) —
+                # this call site was one of the ones the counter's write
+                # side is silently undercounting until migrated (see
+                # notification_service.notify's own docstring). Same
+                # fields, same values, unchanged behavior otherwise —
+                # content_link was already computed-but-unused in the
+                # pre-migration version (never passed to Notification's
+                # constructor), so it stays unused here too rather than
+                # silently start populating `link` as an unrequested
+                # behavior change.
+                notification_service.notify(
                     user_id=mentioned_user.id,
                     title=f"{creator.name} mentioned you",
                     body=f"{creator.name} mentioned you in a {content_type}",
                     notification_type="mention",
                     related_type=content_type,
-                    related_id=content_id
+                    related_id=content_id,
                 )
-                db.session.add(notification)
 
                 mentioned_users.append(mentioned_user.id)
 

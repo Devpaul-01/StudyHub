@@ -21,7 +21,7 @@ import bleach
 from models import (
     User, StudentProfile, Thread, ThreadMember, ThreadJoinRequest,
     ThreadMessage, ThreadMessageReaction, ThreadMessageAttachment,
-    Post, Notification, Connection,
+    Post, Connection,
     Mention, OnboardingDetails,
     ThreadMeetingNote,
 )
@@ -33,6 +33,7 @@ from routes.student.helpers import (
 
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
+from services import notification_service
 # Phase 5b (Document 4 §1): WRITE_HEAVY for send/edit/delete/upload,
 # BURST_OK for the message-list GET (polled frequently by chat UIs).
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -81,15 +82,19 @@ def detect_mentions_in_thread(text_content, sender_id, thread_id, message_id):
                     )
                     db.session.add(mention)
 
-                    notification = Notification(
+                    # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
+                    # construction to notification_service.notify() — see
+                    # post_service.py::detect_and_create_mentions for the
+                    # identical fix and full reasoning. Same fields, same
+                    # values, unchanged behavior otherwise.
+                    notification_service.notify(
                         user_id=mentioned_user.id,
                         title=f"{sender.name} mentioned you in a thread",
                         body="",
                         notification_type="mention",
                         related_type="thread",
-                        related_id=thread_id
+                        related_id=thread_id,
                     )
-                    db.session.add(notification)
                     mentioned_users.append(mentioned_user.id)
 
     return mentioned_users
