@@ -80,6 +80,17 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
     """
     Update help streak when user provides helpful assistance.
     Called when HomeworkSubmission gets positive feedback.
+
+    AUDIT ENG-8 FIX: no longer commits internally. This was the one
+    service-layer helper in this file that broke the codebase's
+    established "services mutate + return, the calling route commits
+    once" convention (see e.g. services/reputation_service.py's
+    award_reputation, which the codebase's own comments already point to
+    as the pattern to follow) — its caller, give_feedback, already had
+    its own commit a few lines after calling this, so the submission's
+    feedback/status fields and this streak update were never actually
+    atomic with each other despite looking like they should be. Caller
+    now owns the single commit that covers both.
     """
     user = User.query.get(helper_user_id)
     if not user:
@@ -110,8 +121,6 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
     user.help_streak_last_updated = datetime.utcnow()
     user.total_helps_given += 1
 
-    db.session.commit()
-
     return {
         'current_streak': user.help_streak_current,
         'longest_streak': user.help_streak_longest,
@@ -129,6 +138,23 @@ def _create_activity(user_id: int, activity_type: str, data: dict):
     WebSocket broadcast failing (bad ActivityFeed data, ws_manager down,
     etc.) should never roll back or fail the caller's primary operation,
     so every failure mode here is swallowed and logged rather than raised.
+
+    AUDIT BUG-4 FIX: services.websocket_events.ws_manager is never
+    initialized anywhere in the app, so ws_manager.broadcast_activity(activity)
+    silently no-op'd on every call — this row was always correctly
+    persisted (get_activity_feed already reads it back on next poll/
+    reload, so that path was never affected), but no connection ever saw
+    it pushed live. There is no broadcast_activity equivalent on the
+    live message_ws_manager (it only exposes a per-user emit_to_user),
+    and no separate "activity broadcast room" exists anywhere else in
+    this codebase — get_activity_feed's own query
+    (ActivityFeed.user_id.in_(connection_ids), a few functions above)
+    is the actual, only definition of who should see this: the actor's
+    accepted connections. So the live-push equivalent of a broadcast
+    here is a per-connection emit_to_user, matching exactly what the
+    DB-backed feed already promises those same connections on their
+    next reload — this fix makes the live and polled paths agree
+    instead of inventing new fan-out semantics.
     """
     from models import ActivityFeed
 
@@ -143,8 +169,27 @@ def _create_activity(user_id: int, activity_type: str, data: dict):
         db.session.add(activity)
         db.session.commit()
 
-        from services.websocket_events import ws_manager
-        ws_manager.broadcast_activity(activity)
+        from services.websocket_messages import message_ws_manager
+
+        connections = Connection.query.filter(
+            or_(
+                Connection.requester_id == user_id,
+                Connection.receiver_id == user_id
+            ),
+            Connection.status == 'accepted'
+        ).all()
+
+        payload = {
+            'id': activity.id,
+            'type': activity.activity_type,
+            'user_id': user_id,
+            'data': activity.activity_data,
+            'created_at': activity.created_at.isoformat(),
+        }
+
+        for conn in connections:
+            other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
+            message_ws_manager.emit_to_user(other_id, 'activity_feed_update', payload)
 
         return activity
     except Exception as e:
@@ -1360,14 +1405,20 @@ def give_feedback(current_user, submission_id):
         else:
             submission.status = "reviewed"
 
-        db.session.commit()
-
+        # AUDIT ENG-8 FIX: single commit now covers the submission's
+        # feedback/status fields, _update_help_streak's mutations (which
+        # no longer commits on its own — see that function's docstring),
+        # and the notification below — previously up to three separate
+        # commits for what is logically one action, with no real
+        # atomicity between the streak update and the feedback it was
+        # triggered by.
         helper = User.query.get(submission.helper_id)
         if helper:
             notification_service.notify_homework_feedback_received(
                 helper.id, current_user.name, submission.title
             )
-            db.session.commit()
+
+        db.session.commit()
 
         return success_response("Feedback submitted successfully! 🎉")
 
