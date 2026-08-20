@@ -53,9 +53,14 @@ CLASS_LEVELS = ["100 Level", "200 Level", "300 Level", "400 Level", "500 Level"]
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID")
 
+_resolved_client_id     = os.getenv("GOOGLE_OAUTH_CLIENT_ID") or CLIENT_ID
+_resolved_client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET") or CLIENT_SECRET
+
+
+
 google_bp = make_google_blueprint(
-    client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID") or CLIENT_ID,
-    client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET") or CLIENT_SECRET,
+    client_id=_resolved_client_id,
+    client_secret=_resolved_client_secret,
     scope=[
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/userinfo.email",
