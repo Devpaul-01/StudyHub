@@ -3,6 +3,18 @@
 # IMPORTANT: Load environment variables FIRST before any other imports
 # ============================================================================
 from dotenv import load_dotenv
+import os
+
+# FIX: this MUST run before any local module is imported. Several modules
+# (routes/student/auth.py in particular) read os.environ.get(...) at
+# MODULE IMPORT TIME (to build the google_bp blueprint), not inside a
+# function. If load_dotenv() runs after those imports, os.environ is still
+# empty when auth.py executes, and GOOGLE_CLIENT_ID/GOOGLE_OAUTH_CLIENT_ID
+# resolve to None -> Google OAuth blueprint gets client_id=None ->
+# "Error 401: invalid_client" at the Google sign-in screen, even though
+# the .env file itself is correct and Cloud Console is configured fine.
+loaded = load_dotenv()
+
 import random
 
 from flask import Flask, render_template, request, jsonify
@@ -13,7 +25,6 @@ from services.websocket_messages import init_message_websocket
 from services.websocket_threads import thread_ws_manager
 from services.rate_limit_service import init_app as init_rate_limiter
 from extensions import db, mail
-import os
 from routes.student.helpers import (
     token_required, success_response, error_response
 )
@@ -25,7 +36,6 @@ import logging
 from routes.student import student_bp
 from routes.student.auth import google_bp
 from logging.handlers import RotatingFileHandler
-loaded = load_dotenv()
 
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
@@ -411,6 +421,9 @@ if __name__ == "__main__":
     print("🚀 StudyHub Starting...")
     print("="*60)
     print(f"📧 Email:            {'✅ Configured' if os.environ.get('MAIL_USERNAME') else '❌ Not configured'}")
+    # In auth.py, after google_bp is defined:
+    print(f"🔍 Google Client ID being used: {os.getenv('GOOGLE_OAUTH_CLIENT_ID') or os.getenv('GOOGLE_CLIENT_ID')}")
+    print(f"🔍 Google Client Secret being used: {'SET' if (os.getenv('GOOGLE_OAUTH_CLIENT_SECRET') or os.getenv('GOOGLE_CLIENT_SECRET')) else 'NOT SET'}")
     # AUDIT security-hygiene fix (extending the same reasoning as the
     # removed DATABASE_URL print above to this line, which the audit's
     # single quoted example didn't name explicitly but is the identical
@@ -418,6 +431,8 @@ if __name__ == "__main__":
     # string config.py's Config class reads via
     # DATABASE_URL = os.environ.get('DATABASE_NEW_URL'), potentially
     # including an embedded DB password): no longer prints the raw value.
+    
+    
     print(f"🗄️  Database:         {'✅ Configured' if os.environ.get('DATABASE_NEW_URL') else '❌ Not configured'}")
     print(f"🔑 Secret Key:       {'✅ Set' if os.environ.get('SECRET_KEY') else '❌ Missing'}")
     print(f"🌐 WebSocket:        threading + simple-websocket (Python 3.13 compatible)")
