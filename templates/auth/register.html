@@ -9,6 +9,33 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/auth/auth.css') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Button loading state */
+        .btn.loading {
+            position: relative;
+            color: transparent !important;
+            pointer-events: none;
+        }
+
+        .btn.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin: -10px 0 0 -10px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body>
     <div class="auth-page">
@@ -46,13 +73,6 @@
                 <!-- Hidden flag: set to "true" by JS when email comes from Google OAuth -->
                 <input type="hidden" id="google_verified" name="google_verified" value="false">
               
-                <div class="checkbox-group">
-                    <input type="checkbox" id="agree_terms" name="agree_terms" required>
-                    <label for="agree_terms">
-                        I agree to the <a href="/terms" target="_blank">Terms</a> and <a href="/privacy" target="_blank">Privacy Policy</a>
-                    </label>
-                </div>
-                
                 <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">
                     Create Account
                 </button>
@@ -136,6 +156,24 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 /**
+ * Set button loading state - FIXED
+ */
+function setButtonLoading(button, isLoading, text = '') {
+    if (!button) return;
+    
+    if (isLoading) {
+        button.disabled = true;
+        button.dataset.originalText = button.textContent;
+        button.textContent = text || 'Loading...';
+        button.classList.add('loading');
+    } else {
+        button.disabled = false;
+        button.textContent = button.dataset.originalText || 'Create Account';
+        button.classList.remove('loading');
+    }
+}
+
+/**
  * Handle registration form submission - COMPLETELY FIXED
  */
 async function handleRegistration(e) {
@@ -147,7 +185,7 @@ async function handleRegistration(e) {
     const data = {
         full_name: formData.get("full_name"),
         email: formData.get("email"),
-        agree_terms: formData.get("agree_terms") === "on",
+      
         // Pass the boolean — "true" string → true, anything else → false
         google_verified: formData.get("google_verified") === "true"
     };
@@ -243,16 +281,6 @@ function validateRegistrationForm(data) {
         }
     }
     
-    // Terms agreement
-    if (!data.agree_terms) {
-        if (typeof showToast === 'function') {
-            showToast("You must agree to the Terms and Privacy Policy", "warning");
-        } else {
-            alert("You must agree to the Terms and Privacy Policy");
-        }
-        hasError = true;
-    }
-    
     if (hasError) {
         console.log("❌ Form validation failed");
     } else {
@@ -293,11 +321,6 @@ function clearAllErrors() {
         el.classList.remove('error');
     });
 }
-
-/**
- * Set button loading state
- */
-
 
 /**
  * Clear Google OAuth session
