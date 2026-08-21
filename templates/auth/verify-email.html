@@ -82,17 +82,6 @@
             opacity: 0.6;
             cursor: not-allowed;
         }
-        .btn .spinner-btn {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-top: 2px solid white;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            vertical-align: middle;
-            margin-right: 8px;
-        }
         .mt-2 { margin-top: var(--spacing-sm); }
         .mt-3 { margin-top: var(--spacing-md); }
         .text-center { text-align: center; }
@@ -122,11 +111,9 @@
                     <h2 class="auth-title" style="color: var(--success-green, #22c55e);">Email Verified!</h2>
                     <p class="verification-message">
                         Your email has been verified successfully.<br>
-                        Please log in to continue.
+                        You are being redirected to complete your profile...
                     </p>
-                    <button class="btn btn-primary" id="login-btn" onclick="goToLogin()">
-                        Go to Login
-                    </button>
+                    <div class="spinner" style="width: 24px; height: 24px; margin: 0 auto;"></div>
                 </div>
 
                 <!-- Error State (hidden initially) -->
@@ -149,11 +136,11 @@
                     <div class="verification-icon success">✅</div>
                     <h2 class="auth-title" style="color: var(--success-green, #22c55e);">Already Verified!</h2>
                     <p class="verification-message">
-                        Your email is already verified. You can log in now.
+                        Your email is already verified. You can continue to your profile.
                     </p>
-                    <a href="/student/login" class="btn btn-primary">
-                        Go to Login
-                    </a>
+                    <button class="btn btn-primary" onclick="goToOnboard()">
+                        Continue to Profile
+                    </button>
                 </div>
             </div>
         </div>
@@ -169,7 +156,6 @@
         const errorState = document.getElementById('error-state');
         const alreadyVerifiedState = document.getElementById('already-verified-state');
         const errorMessage = document.getElementById('error-message');
-        const loginBtn = document.getElementById('login-btn');
 
         // ── Get token from URL ──
         const token = window.location.pathname.split('/').pop();
@@ -191,7 +177,6 @@
             }
 
             try {
-                // ✅ Auto-verify via POST
                 const response = await fetch(`/student/verify-email/${token}`, {
                     method: 'POST',
                     credentials: 'same-origin',
@@ -203,7 +188,7 @@
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    // ✅ FIXED: Store email for login
+                    // ✅ Store email for redirect
                     if (data.data && data.data.email) {
                         sessionStorage.setItem('verified_email', data.data.email);
                     }
@@ -212,6 +197,12 @@
                         showState('already-verified-state');
                     } else {
                         showState('success-state');
+                        
+                        // ✅ Auto-redirect to onboard after 2 seconds
+                        const redirectUrl = data.data.redirect_url || `/student/onboard/${data.data.email}`;
+                        setTimeout(() => {
+                            window.location.href = redirectUrl;
+                        }, 2000);
                     }
                 } else {
                     showState('error-state');
@@ -224,10 +215,14 @@
             }
         }
 
-        // ── Go to Login ──
-        function goToLogin() {
-            // ✅ FIXED: Redirect to login page
-            window.location.href = '/student/login';
+        // ── Go to Onboard ──
+        function goToOnboard() {
+            const email = sessionStorage.getItem('verified_email');
+            if (email) {
+                window.location.href = `/student/onboard/${email}`;
+            } else {
+                window.location.href = '/student/login';
+            }
         }
 
         // ── Start verification ──

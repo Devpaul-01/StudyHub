@@ -890,8 +890,6 @@ def reset_password_api(token):
             "redirect_url": f"/student/set-password?token={token}",
         },
     )
-
-
 @auth_bp.route("/verify-email/<token>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def verify_email_api(token):
@@ -921,17 +919,25 @@ def verify_email_api(token):
         user.email_verified = True
         db.session.commit()
 
-        # ✅ FIX: Redirect to onboarding, NOT complete-registration
-        return success_response(
+        # ✅ AUTO-LOGIN: Generate tokens like login does
+        access_token, refresh_token = generate_tokens_for_user(user)
+
+        # ✅ Set auth cookies
+        response = make_response(success_response(
             "Email verified successfully!",
             data={
                 "email": email,
                 "token": token,
                 "redirect_url": f"/student/onboard/{email}",
             },
-        )
+        ))
+        set_auth_cookies(response, access_token, refresh_token)
+
+        current_app.logger.info(f"Email verified and auto-login for {email}")
+        return response
 
     except Exception as e:
+        db.session.rollback()
         current_app.logger.error(f"Verification error: {str(e)}")
         return error_response("Verification failed. Please try again.")
 
