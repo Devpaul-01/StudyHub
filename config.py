@@ -97,7 +97,7 @@ class Config:
     # Feature flag for the H-1 cookie redesign (Security & Authorization
     # phase) - defaults False so the flip is a config change, not a code
     # deploy, and is instantly reversible. Not used by any code yet.
-    ACCESS_TOKEN_HTTPONLY = os.environ.get("ACCESS_TOKEN_HTTPONLY", "false").lower() == "true"
+    ACCESS_TOKEN_HTTPONLY = os.environ.get("ACCESS_TOKEN_HTTPONLY", "true").lower() == "true"
 
 
 class DevelopmentConfig(Config):
