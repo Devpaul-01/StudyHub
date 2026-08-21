@@ -8,17 +8,153 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/auth/auth.css') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* ── Loading Spinner ── */
+        .spinner-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: var(--spacing-xl) 0;
+        }
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid var(--gray-200, #e5e7eb);
+            border-top: 4px solid var(--primary, #2563eb);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto var(--spacing-md);
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .verification-icon {
+            font-size: 48px;
+            text-align: center;
+            margin-bottom: var(--spacing-md);
+        }
+        .verification-icon.success {
+            color: var(--success-green, #22c55e);
+        }
+        .verification-icon.error {
+            color: var(--error-red, #ef4444);
+        }
+        .auth-title {
+            text-align: center;
+            margin-bottom: var(--spacing-sm);
+        }
+        .verification-message {
+            text-align: center;
+            color: var(--gray-500, #6b7280);
+            margin-bottom: var(--spacing-lg);
+            line-height: 1.6;
+        }
+        .btn {
+            display: inline-block;
+            width: 100%;
+            text-align: center;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: all 0.2s;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-primary {
+            background: var(--primary, #2563eb);
+            color: white;
+        }
+        .btn-primary:hover {
+            background: var(--primary-dark, #1d4ed8);
+        }
+        .btn-secondary {
+            background: var(--gray-100, #f3f4f6);
+            color: var(--gray-700, #374151);
+        }
+        .btn-secondary:hover {
+            background: var(--gray-200, #e5e7eb);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .btn .spinner-btn {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        .mt-2 { margin-top: var(--spacing-sm); }
+        .mt-3 { margin-top: var(--spacing-md); }
+        .text-center { text-align: center; }
+        .text-sm { font-size: 0.875rem; }
+        .text-gray-500 { color: var(--gray-500, #6b7280); }
+        .link { color: var(--primary, #2563eb); text-decoration: none; }
+        .link:hover { text-decoration: underline; }
+        .hidden { display: none !important; }
+    </style>
 </head>
 <body>
     <div class="auth-page">
         <div class="auth-container">
             <div class="verification-page" id="verification-content">
                 <!-- Loading State -->
-                <div class="verification-icon">⏳</div>
-                <h2 class="auth-title">Verifying Your Email...</h2>
-                <p class="verification-message">
-                    Please wait while we verify your email address.
-                </p>
+                <div class="spinner-container" id="loading-state">
+                    <div class="spinner"></div>
+                    <h2 class="auth-title">Verifying Your Email...</h2>
+                    <p class="verification-message">
+                        Please wait while we verify your email address.
+                    </p>
+                </div>
+
+                <!-- Success State (hidden initially) -->
+                <div id="success-state" class="hidden">
+                    <div class="verification-icon success">✅</div>
+                    <h2 class="auth-title" style="color: var(--success-green, #22c55e);">Email Verified!</h2>
+                    <p class="verification-message">
+                        Your email has been verified successfully.<br>
+                        Please log in to continue.
+                    </p>
+                    <button class="btn btn-primary" id="login-btn" onclick="goToLogin()">
+                        Go to Login
+                    </button>
+                </div>
+
+                <!-- Error State (hidden initially) -->
+                <div id="error-state" class="hidden">
+                    <div class="verification-icon error">❌</div>
+                    <h2 class="auth-title" style="color: var(--error-red, #ef4444);">Verification Failed</h2>
+                    <p class="verification-message" id="error-message">
+                        The verification link is invalid or has expired.
+                    </p>
+                    <a href="/student/register" class="btn btn-primary">
+                        Register Again
+                    </a>
+                    <p class="mt-3 text-center text-sm text-gray-500">
+                        Already have an account? <a href="/student/login" class="link">Login here</a>
+                    </p>
+                </div>
+
+                <!-- Already Verified State (hidden initially) -->
+                <div id="already-verified-state" class="hidden">
+                    <div class="verification-icon success">✅</div>
+                    <h2 class="auth-title" style="color: var(--success-green, #22c55e);">Already Verified!</h2>
+                    <p class="verification-message">
+                        Your email is already verified. You can log in now.
+                    </p>
+                    <a href="/student/login" class="btn btn-primary">
+                        Go to Login
+                    </a>
+                </div>
             </div>
         </div>
     </div>
@@ -27,100 +163,74 @@
     <script src="{{ url_for('static', filename='js/core/api.js') }}"></script>
     <script src="{{ url_for('static', filename='js/core/utils.js') }}"></script>
     <script>
-        // Get token from URL
-        const urlParams = new URLSearchParams(window.location.search);
+        // ── DOM Elements ──
+        const loadingState = document.getElementById('loading-state');
+        const successState = document.getElementById('success-state');
+        const errorState = document.getElementById('error-state');
+        const alreadyVerifiedState = document.getElementById('already-verified-state');
+        const errorMessage = document.getElementById('error-message');
+        const loginBtn = document.getElementById('login-btn');
+
+        // ── Get token from URL ──
         const token = window.location.pathname.split('/').pop();
-        
-        // Auto-verify on page load
+
+        // ── Show/Hide Helpers ──
+        function showState(stateId) {
+            [loadingState, successState, errorState, alreadyVerifiedState].forEach(el => {
+                el.classList.add('hidden');
+            });
+            document.getElementById(stateId).classList.remove('hidden');
+        }
+
+        // ── Auto-verify on page load ──
         async function verifyEmail() {
             if (!token) {
-                showError('Invalid verification link');
+                showState('error-state');
+                errorMessage.textContent = 'Invalid verification link. No token provided.';
                 return;
             }
-            
+
             try {
-                // ✅ FIXED: Call the correct API endpoint
+                // ✅ Auto-verify via POST
                 const response = await fetch(`/student/verify-email/${token}`, {
                     method: 'POST',
-                    credentials: 'same-origin'
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (data.status === 'success') {
-                    showSuccess(data);
+                    // ✅ FIXED: Store email for login
+                    if (data.data && data.data.email) {
+                        sessionStorage.setItem('verified_email', data.data.email);
+                    }
+
+                    if (data.data && data.data.already_verified) {
+                        showState('already-verified-state');
+                    } else {
+                        showState('success-state');
+                    }
                 } else {
-                    showError(data.message || 'Verification failed');
+                    showState('error-state');
+                    errorMessage.textContent = data.message || 'Verification failed. Please try again.';
                 }
             } catch (error) {
                 console.error('Verification error:', error);
-                showError('Verification failed. Please try again.');
+                showState('error-state');
+                errorMessage.textContent = 'Verification failed. Please check your connection and try again.';
             }
         }
-        
-        // Show success state
-        function showSuccess(data) {
-            const content = document.getElementById('verification-content');
-            
-            if (data.data.already_verified) {
-                content.innerHTML = `
-                    <div class="verification-icon success">✅</div>
-                    <h2 class="auth-title" style="color: var(--success-green);">Already Verified!</h2>
-                    <p class="verification-message">
-                        Your email is already verified. You can login now.
-                    </p>
-                    <a href="/student/login" class="btn btn-primary btn-lg">
-                        Go to Login
-                    </a>
-                `;
-            } else {
-                content.innerHTML = `
-                    <div class="verification-icon success">✅</div>
-                    <h2 class="auth-title" style="color: var(--success-green);">Email Verified!</h2>
-                    <p class="verification-message">
-                        Great! Your email has been verified successfully.<br>
-                        Let's complete your registration.
-                    </p>
-                    <button class="btn btn-primary btn-lg" onclick="continueRegistration()">
-                        Continue to Setup
-                    </button>
-                `;
-                
-                // ✅ FIXED: Store email for next page
-                sessionStorage.setItem('verified_email', data.data.email);
-            }
+
+        // ── Go to Login ──
+        function goToLogin() {
+            // ✅ FIXED: Redirect to login page
+            window.location.href = '/student/login';
         }
-        
-        // Show error state
-        function showError(message) {
-            const content = document.getElementById('verification-content');
-            content.innerHTML = `
-                <div class="verification-icon">❌</div>
-                <h2 class="auth-title" style="color: var(--error-red);">Verification Failed</h2>
-                <p class="verification-message">
-                    ${message || 'The verification link is invalid or has expired.'}
-                </p>
-                <a href="/student/register" class="btn btn-primary btn-lg">
-                    Register Again
-                </a>
-                <p style="margin-top: var(--spacing-lg); font-size: 0.9rem; color: var(--gray-500);">
-                    Already have an account? <a href="/student/login">Login here</a>
-                </p>
-            `;
-        }
-        
-        // ✅ FIXED: Continue to complete registration with email
-        function continueRegistration() {
-            const email = sessionStorage.getItem('verified_email');
-            
-            if (email) {
-                window.location.href = `/student/complete-registration?email=${encodeURIComponent(email)}`;
-            } else {
-                showError("Email not found. Please try again.");
-            }
-        }
-        
-        // Start verification
+
+        // ── Start verification ──
         verifyEmail();
     </script>
 </body>
