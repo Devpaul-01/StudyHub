@@ -14,7 +14,7 @@ Changes vs original (Alembic will auto-detect these):
 import datetime
 from enum import Enum
 from flask_login import UserMixin
-from sqlalchemy.ext.mutable import MutableDict, MutableList
+from sqlalchemy.ext.mutable import MutableDict, MutableList 
 from sqlalchemy.dialects import postgresql
 from extensions import db
 
@@ -387,6 +387,49 @@ class StudySessionCalendar(db.Model):
 
     def __repr__(self):
         return f'<StudySessionCalendar {self.id}: {self.title}>'
+
+
+class StudySessions(db.Model):
+    """
+    Study session requests (invite/accept workflow), with an unseen-inbox
+    flag for the receiver.
+
+    ADDED: referenced via a local `from models import StudySessions` in
+    routes/crud.py (unseen_study_sessions_count) and routes/health.py
+    (partner study-session history) but was missing from this file —
+    both call sites wrap the import/query in try/except so the app did
+    not crash, but silently always returned an empty/zero result.
+    Fields below match exactly what those two call sites read/write:
+    requester_id, receiver_id, is_seen, status, subject, type, duration,
+    schedule_date, notes, requested_at.
+    """
+    __tablename__ = "study_sessions"
+
+    id           = db.Column(db.Integer, primary_key=True)
+    requester_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    receiver_id  = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    subject       = db.Column(db.String(100))
+    type          = db.Column(db.String(50))
+    duration      = db.Column(db.Integer)  # minutes
+    schedule_date = db.Column(db.DateTime)
+    notes         = db.Column(db.Text)
+
+    status   = db.Column(db.String(20), default="pending", index=True)  # pending | accepted | declined | cancelled
+    is_seen  = db.Column(db.Boolean, default=False, index=True)
+
+    requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+    requester = db.relationship("User", foreign_keys=[requester_id])
+    receiver  = db.relationship("User", foreign_keys=[receiver_id])
+
+    __table_args__ = (
+        db.Index("idx_study_sessions_receiver_status", "receiver_id", "status"),
+        db.Index("idx_study_sessions_pair", "requester_id", "receiver_id"),
+    )
+
+    def __repr__(self):
+        return f"<StudySessions {self.id}: {self.requester_id} -> {self.receiver_id} [{self.status}]>"
 
 
 class Assignment(db.Model):
@@ -1203,7 +1246,8 @@ class Connection(db.Model):
     receiver_notes   = db.Column(db.Text)
 
     # ✅ ADD THIS FIELD
-    requested_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+    responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     # C-3 fix: explicit "who blocked whom" column. Previously block_user()
     # swapped requester_id/receiver_id on an existing row so that
