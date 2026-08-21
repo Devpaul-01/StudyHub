@@ -94,6 +94,8 @@ CSRF_EXEMPT_PATHS = {
     "/student/complete-registration",
     "/student/set-password",
     "/student/validate-user",
+    "/student/clear-session",
+    "/student/check-username",
     "/student/reset-password",
 }
 
@@ -104,6 +106,7 @@ CSRF_EXEMPT_PREFIXES = (
     "/student/verify-email/",
     "/student/verify-reset/",
     "/student/complete-registration/",
+    "/student/clear-session",
     "/student/onboard/",
     "/google/",
 )
