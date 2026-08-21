@@ -408,8 +408,8 @@
           ✦ Connect with all
         </button>
         <button class="btn btn-primary" id="continue-btn" onclick="completeOnboarding()">
-          Continue to dashboard →
-        </button>
+    Continue Setup →
+</button>
       </div>
     </div>
 
@@ -1003,12 +1003,13 @@
     // =========================================================================
     // COMPLETE ONBOARDING  →  go to step 6 (set username + password)
     // =========================================================================
+    // In onboard.html - replace submitCompleteRegistration with redirect
     function completeOnboarding() {
-      document.getElementById('step-5').classList.remove('active');
-      document.getElementById('step-6').classList.add('active');
-      updateProgressTrack(6);          // progress track will show step 5 as done
-      window.scrollTo(0, 0);
-    }
+    const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
+    
+    // ✅ Redirect to complete-registration page instead of showing step 6
+    window.location.href = `/student/complete-registration?email=${email}`;
+}
 
     // ── Toggle password visibility ────────────────────────────────────────────
     function toggleRegPassword(inputId, btnId) {
