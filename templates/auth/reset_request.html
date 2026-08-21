@@ -19,72 +19,49 @@
       <a href="/student/login">Back to login</a>
     </p>
   </div>
+  
   <script src="{{ url_for('static', filename='js/core/api.js') }}"></script>
   <script src="{{ url_for('static', filename='js/core/utils.js') }}"></script>
   <script>
-    
     document.addEventListener("DOMContentLoaded", () => {
       const form = document.getElementById("reset-request-form");
       const span = document.querySelector(".input-error");
       const input = document.getElementById("emailOrUsername");
-      input.addEventListener("input", async(e) => {
-        const value = e.target.value;
-        callApi(value);
-        
-      })
+      
+      // ❌ REMOVED: live validation that was calling /check-user
+      // (caused 404 errors in logs)
+      
       form.addEventListener("submit", async(e) => {
         e.preventDefault();
-        if(input.value.trim().length === 0){
-          span.classList.remove("found");
-          span.classList.remove("not-found");
+        const value = input.value.trim();
+        
+        if (value.length === 0) {
+          span.classList.remove("found", "not-found");
           span.textContent = "Kindly enter an email or username";
           return;
         }
+        
         await resetPassword(e);
-      })
+      });
       
-      async function resetPassword(e){
-        try{
+      async function resetPassword(e) {
+        try {
           const emailOrUsername = document.getElementById("emailOrUsername").value.trim();
-          const response = await api.post("/validate-user", { data: emailOrUsername }); // ✅ Match backend
-          if (response.status == "success"){
+          const response = await api.post("/validate-user", { data: emailOrUsername });
+          
+          if (response.status == "success") {
             showToast(response.message, "success");
-          }
-          else{
+            setTimeout(() => {
+              window.location.href = "/student/login";
+            }, 3000);
+          } else {
             showToast(response.message, "error");
           }
-        }
-        catch(error){
-          showToast(error, "error");
-        }
-        }
-    async function callApi(value){
-      try{
-        const formData = new FormData();
-        formData.append("data", value);
-        const response = await api.post("/check-user", formData);
-        let type;
-        if(response.status == "success"){
-          type = response.data.type;
-          span.classList.remove("not-found");
-          span.classList.add("found");
-          span.textContent = "Searching";
-          span.textContent = `User found with this ${type}`;
-        }
-        else{
-          type = response.type;
-          span.classList.remove("found");
-          span.classList.add("not-found");
-          span.textContent = "Searching";
-          span.textContent = "No user found";
+        } catch(error) {
+          showToast(error.message || "Failed to send reset link", "error");
         }
       }
-      catch(error){
-        
-      }
-    }
-  });
+    });
   </script>
 </body>
 </html>
-    
