@@ -1202,6 +1202,9 @@ class Connection(db.Model):
     requester_notes  = db.Column(db.Text)
     receiver_notes   = db.Column(db.Text)
 
+    # ✅ ADD THIS FIELD
+    requested_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
     # C-3 fix: explicit "who blocked whom" column. Previously block_user()
     # swapped requester_id/receiver_id on an existing row so that
     # "receiver_id" would always mean "the blocker" — that corrupted the
