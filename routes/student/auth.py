@@ -189,15 +189,15 @@ def google_start():
     """Redirect to Google OAuth."""
     return redirect(url_for("google.login"))
 
-
 @google_bp.route("/callback")
 def google_callback():
     """Handle Google OAuth callback.
 
     Flow:
       1. Approved user    → log in, go to homepage
-      2. Partially set up → complete-registration (set username/password)
-      3. Brand-new user   → create account, go to onboarding
+      2. Needs onboarding → redirect to onboard
+      3. Needs complete-registration → redirect to complete-registration
+      4. Brand-new user   → create account, go to onboarding
     """
     try:
         if not google.authorized:
@@ -218,20 +218,30 @@ def google_callback():
         existing_user = User.query.filter_by(email=email).first()
 
         if existing_user:
+            # ✅ APPROVED USER → Login
             if existing_user.status == "approved":
                 existing_user = auth_service.record_login_and_commit(existing_user)
-
                 access_token, refresh_token_val = generate_tokens_for_user(existing_user)
                 response = make_response(redirect("/student/profile/homepage"))
                 set_auth_cookies(response, access_token, refresh_token_val)
                 current_app.logger.info(f"Google login: existing user {email}")
                 return response
 
-            current_app.logger.info(f"Google login: incomplete user {email}, redirecting to complete-registration")
+            # ✅ NEEDS ONBOARDING → Go to onboard (FIXED!)
+            if existing_user.status == "pending_onboarding":
+                current_app.logger.info(f"Google login: user {email} needs onboarding")
+                return redirect(f"/student/onboard/{email}")
+
+            # ✅ NEEDS COMPLETE-REGISTRATION → Go to complete-registration
+            if existing_user.status == "pending_verification":
+                current_app.logger.info(f"Google login: user {email} needs complete-registration")
+                return redirect(f"/student/complete-registration?email={email}")
+
+            # Fallback for any other status
+            current_app.logger.info(f"Google login: user {email} in unknown status: {existing_user.status}")
             return redirect(f"/student/complete-registration?email={email}")
 
         # ── 2. Brand-new user ─────────────────────────────────────────────────
-        # FIX: use dict() copies so each user gets independent mutable dicts
         new_user = User(
             name=name,
             email=email,
@@ -678,7 +688,7 @@ def register():
             email=email,
             role="student",
             pin="PENDING_VERIFICATION",
-            status="pending_onboarding" if google_verified else "pending_verification",
+            status="pending_verification",  # ✅ Same for both (was pending_onboarding for Google)
             email_verified=google_verified,
             privacy_settings=dict(privacy_settings),
             notification_settings=dict(notification_settings),
@@ -710,16 +720,11 @@ def register():
             current_app.logger.info(f"Google-verified registration for {email}")
             session.pop("google_email", None)
             session.pop("google_name", None)
-            token_for_setup = generate_verification_token(email)
-            redirect_url = (
-                f"/student/complete-registration?token={token_for_setup}"
-                if token_for_setup else "/student/complete-registration"
-            )
             return success_response(
                 "Account created! Let's set up your profile.",
                 data={
                     "google_verified": True,
-                    "redirect_url": redirect_url,
+                    "redirect_url": f"/student/onboard/{email}",  # ✅ FIX: Was complete-registration
                 },
             )
 
@@ -735,7 +740,7 @@ def register():
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Registration error: {str(e)}")
-        return error_response("Registration failed. Please try again.")   # FIX: no str(e) leak
+        return error_response("Registration failed. Please try again.")
 
 
 # ============================================================================
@@ -916,12 +921,13 @@ def verify_email_api(token):
         user.email_verified = True
         db.session.commit()
 
+        # ✅ FIX: Redirect to onboarding, NOT complete-registration
         return success_response(
             "Email verified successfully!",
             data={
                 "email": email,
                 "token": token,
-                "redirect_url": f"/student/complete-registration?token={token}",
+                "redirect_url": f"/student/onboard/{email}",
             },
         )
 
@@ -961,6 +967,26 @@ def check_username():
 def complete_registration():
     """Complete registration with username and password."""
     if request.method == "GET":
+        # ✅ Check if user has completed onboarding
+        email = request.args.get("email")
+        token = request.args.get("token")
+        
+        if token:
+            decoded_email = verify_token(token)
+            if isinstance(decoded_email, dict) and "error" in decoded_email:
+                return render_template("auth/complete-registration.html", error=decoded_email["error"])
+            email = decoded_email
+        
+        if email:
+            user = User.query.filter_by(email=email).first()
+            if user:
+                # ✅ If user hasn't done onboarding, redirect them
+                if user.status == "pending_verification":
+                    return redirect(f"/student/onboard/{email}")
+                # If status is pending_onboarding (Google), they should go through onboard too
+                if user.status == "pending_onboarding":
+                    return redirect(f"/student/onboard/{email}")
+        
         return render_template("auth/complete-registration.html")
 
     try:
@@ -989,6 +1015,10 @@ def complete_registration():
         if not re.match(r"^[a-z0-9]{3,20}$", username):
             return error_response("Username must be 3-20 lowercase letters and numbers only")
 
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return error_response("User not found")
+
         if User.query.filter_by(username=username).first():
             return error_response("Username already taken")
 
@@ -1015,7 +1045,7 @@ def complete_registration():
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Complete registration error: {str(e)}")
-        return error_response("Registration failed. Please try again.")   # FIX: no str(e) leak
+        return error_response("Registration failed. Please try again.")
 
 
 @auth_bp.route("/reset-password", methods=["GET"])
