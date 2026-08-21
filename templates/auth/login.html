@@ -148,8 +148,8 @@
 document.addEventListener("DOMContentLoaded", async () => {
     // Prefill email from Google OAuth if available
     try {
-        const res = await fetch("/student/google_temp_info");
-        const data = await res.json();
+        const result = await api.get("/google_temp_info");
+        const data = result.data || result;
         if (data.email) {
             document.getElementById("username_or_email").value = data.email;
             if (typeof showToast === 'function') showToast("Email prefilled from Google", "info");

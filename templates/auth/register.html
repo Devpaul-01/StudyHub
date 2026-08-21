@@ -103,8 +103,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     
     // Check for Google OAuth data
     try {
-        const res = await fetch("/student/google_temp_info");
-        const data = await res.json();
+        const result = await api.get("/google_temp_info");
+        const data = result.data || result;
         
         if (data.email) {
             const emailInput = document.getElementById("email");

@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Welcome to StudyHub — Onboarding</title>
   <link rel="stylesheet" href="/static/css/onboard.css">
+  <script src="{{ url_for('static', filename='js/core/api.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/core/utils.js') }}"></script>
 </head>
 <body>
 
@@ -108,7 +110,8 @@
           <option value="">Select your department</option>
         </select>
         <div id="other-dept-group" class="other-input-group">
-          <input type="text" id="other-department" class="form-input" placeholder="Enter your department name">
+          <input type="text" id="other-department" class="form-input" placeholder="Enter your department name"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();setCustomDepartment();}">
           <button class="btn btn-primary" onclick="setCustomDepartment()">Set</button>
         </div>
       </div>
@@ -741,7 +744,13 @@
           const dept  = document.getElementById('department').value;
           const level = document.querySelector('input[name="year"]:checked');
           const subs  = document.querySelectorAll('.subject-checkbox input:checked');
-          if (!dept)        { showToast('Please select your department', 'error');    return false; }
+          if (!dept)          { showToast('Please select your department', 'error'); return false; }
+          if (dept === 'other') {
+            // User opened the manual entry but never clicked "Set"
+            showToast('Please enter your department and click "Set"', 'error');
+            document.getElementById('other-department').focus();
+            return false;
+          }
           if (!level)       { showToast('Please select your current year', 'error');  return false; }
           if (!subs.length) { showToast('Please select at least one subject', 'error'); return false; }
           return true;
@@ -798,87 +807,81 @@
     // FORM SUBMISSION
     // =========================================================================
     async function submitOnboarding(skipped = false) {
-      if (!skipped) collectStepData(4);
-      const submitBtn = document.getElementById('submit-btn');
-      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Searching…'; }
+    if (!skipped) collectStepData(4);
+    const submitBtn = document.getElementById('submit-btn');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Searching…'; }
 
-      try {
+    try {
         const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
         if (!email) {
-          showToast('Session email not found. Please try again.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
-          return;
+            showToast('Session email not found. Please try again.', 'error');
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
+            return;
         }
 
-        const response = await fetch(`/student/onboard/${email}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(onboardingData)
-        });
-        const result = await response.json();
+        // ✅ Updated to use global API client
+        const result = await api.post(`/onboard/${email}`, onboardingData);
 
         if (result.status === 'success') {
-          showToast('Profile saved!', 'success');
-          document.getElementById(`step-${currentStep}`).classList.remove('active');
-          currentStep = 5;
-          document.getElementById('step-5').classList.add('active');
-          updateProgressTrack(5);
-          window.scrollTo(0, 0);
-          await showSuggestions();
+            showToast('Profile saved!', 'success');
+            document.getElementById(`step-${currentStep}`).classList.remove('active');
+            currentStep = 5;
+            document.getElementById('step-5').classList.add('active');
+            updateProgressTrack(5);
+            window.scrollTo(0, 0);
+            await showSuggestions();
         } else {
-          showToast(result.message || 'Submission failed', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
+            showToast(result.message || 'Submission failed', 'error');
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
         }
-      } catch (err) {
+    } catch (err) {
         showToast('Network error. Please try again.', 'error');
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
-      }
     }
+}
 
     // =========================================================================
     // SUGGESTIONS  — uses connections endpoint
     // =========================================================================
     async function showSuggestions() {
-      const container = document.getElementById('users-container');
-      container.innerHTML = `
+    const container = document.getElementById('users-container');
+    container.innerHTML = `
         <div class="spinner-wrap">
-          <div class="spinner"></div>
-          <span class="spinner-text">Finding your best study matches…</span>
+            <div class="spinner"></div>
+            <span class="spinner-text">Finding your best study matches…</span>
         </div>`;
 
-      try {
+    try {
         const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
         if (!email) throw new Error('Email not found');
 
-        // ── Uses the suggestions endpoint in connections.py ──────────────────
-        const response = await fetch(`/student/connections/suggestions-by-email/${email}`);
-        const result   = await response.json();
+        // ✅ Updated to use global API client
+        const result = await api.get(`/connections/suggestions-by-email/${email}`);
 
         if (result.status === 'success') {
-          const matches = result.data.matches;
-          if (!matches || matches.length === 0) {
-            container.innerHTML = `
-              <div class="empty-state">
-                <span class="empty-icon">🔍</span>
-                <p>No matches found yet — as more students join, your suggestions will appear here.</p>
-              </div>`;
-            return;
-          }
-          renderUserCards(matches);
+            const matches = result.data.matches;
+            if (!matches || matches.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <span class="empty-icon">🔍</span>
+                        <p>No matches found yet — as more students join, your suggestions will appear here.</p>
+                    </div>`;
+                return;
+            }
+            renderUserCards(matches);
         } else {
-          throw new Error(result.message || 'Failed to load suggestions');
+            throw new Error(result.message || 'Failed to load suggestions');
         }
-      } catch (err) {
+    } catch (err) {
         console.error('Suggestions error:', err);
         container.innerHTML = `
-          <div class="empty-state">
-            <span class="empty-icon">⚠️</span>
-            <p>Couldn't load suggestions right now.</p>
-            <button class="btn btn-primary" style="margin-top:1rem" onclick="showSuggestions()">Try again</button>
-          </div>`;
-      }
+            <div class="empty-state">
+                <span class="empty-icon">⚠️</span>
+                <p>Couldn't load suggestions right now.</p>
+                <button class="btn btn-primary" style="margin-top:1rem" onclick="showSuggestions()">Try again</button>
+            </div>`;
     }
+}
 
     function renderUserCards(matches) {
       const container = document.getElementById('users-container');
@@ -932,81 +935,70 @@
     // CONNECT  — direct accepted connection
     // =========================================================================
     async function connectUser(userId, btn) {
-      if (!btn) btn = document.getElementById(`connect-${userId}`);
-      btn.disabled = true;
-      btn.textContent = '…';
+    if (!btn) btn = document.getElementById(`connect-${userId}`);
+    btn.disabled = true;
+    btn.textContent = '…';
 
-      try {
+    try {
         const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
 
-        // ── Calls new endpoint in connections.py that always accepts ─────────
-        const response = await fetch(`/student/connections/onboard-connect/${email}/${userId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include'
-        });
-        const result = await response.json();
+        // ✅ Updated to use global API client
+        const result = await api.post(`/connections/onboard-connect/${email}/${userId}`);
 
         if (result.status === 'success') {
-          btn.textContent = '✓ Connected';
-          btn.classList.add('connected');
-          showToast('Connected!', 'success');
+            btn.textContent = '✓ Connected';
+            btn.classList.add('connected');
+            showToast('Connected!', 'success');
         } else {
-          btn.disabled = false;
-          btn.textContent = 'Connect';
-          showToast(result.message || 'Could not connect', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Connect';
+            showToast(result.message || 'Could not connect', 'error');
         }
-      } catch (err) {
+    } catch (err) {
         btn.disabled = false;
         btn.textContent = 'Connect';
         showToast('Network error — please try again', 'error');
-      }
     }
+}
 
     async function requestAll() {
-      const cards = document.querySelectorAll('.user-card');
-      if (!cards.length) { showToast('No users to connect with', 'info'); return; }
+    const cards = document.querySelectorAll('.user-card');
+    if (!cards.length) { showToast('No users to connect with', 'info'); return; }
 
-      const ids = Array.from(cards).map(c => parseInt(c.getAttribute('data-user-id'))).filter(Boolean);
-      const allBtn = document.getElementById('connect-all');
-      allBtn.disabled = true;
-      allBtn.textContent = 'Connecting…';
+    const ids = Array.from(cards).map(c => parseInt(c.getAttribute('data-user-id'))).filter(Boolean);
+    const allBtn = document.getElementById('connect-all');
+    allBtn.disabled = true;
+    allBtn.textContent = 'Connecting…';
 
-      try {
+    try {
         const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
 
-        // ── Calls new bulk endpoint in connections.py ─────────────────────────
-        const response = await fetch(`/student/connections/onboard-connect-all/${email}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ ids })
-        });
-        const result = await response.json();
+        // ✅ Updated to use global API client
+        const result = await api.post(`/connections/onboard-connect-all/${email}`, { ids });
 
         if (result.status === 'success') {
-          cards.forEach(card => {
-            const uid = card.getAttribute('data-user-id');
-            const btn = document.getElementById(`connect-${uid}`);
-            if (btn && !btn.classList.contains('connected')) {
-              btn.disabled = true;
-              btn.textContent = '✓ Connected';
-              btn.classList.add('connected');
-            }
-          });
-          allBtn.textContent = '✓ All Connected';
-          showToast('All connections accepted!', 'success');
+            cards.forEach(card => {
+                const uid = card.getAttribute('data-user-id');
+                const btn = document.getElementById(`connect-${uid}`);
+                if (btn && !btn.classList.contains('connected')) {
+                    btn.disabled = true;
+                    btn.textContent = '✓ Connected';
+                    btn.classList.add('connected');
+                }
+            });
+            allBtn.textContent = '✓ All Connected';
+            showToast('All connections accepted!', 'success');
         } else {
-          allBtn.disabled = false;
-          allBtn.textContent = '✦ Connect with all';
-          showToast(result.message || 'Failed to connect', 'error');
+            allBtn.disabled = false;
+            allBtn.textContent = '✦ Connect with all';
+            showToast(result.message || 'Failed to connect', 'error');
         }
-      } catch (err) {
+    } catch (err) {
         allBtn.disabled = false;
         allBtn.textContent = '✦ Connect with all';
         showToast('Network error — please try again', 'error');
-      }
     }
+}
 
     // =========================================================================
     // COMPLETE ONBOARDING  →  go to step 6 (set username + password)
@@ -1033,88 +1025,86 @@
 
     // ── Submit complete-registration to backend ───────────────────────────────
     async function submitCompleteRegistration() {
-      // Clear previous errors
-      ['reg-username-error','reg-password-error','reg-confirm-error'].forEach(id => {
+    // Clear previous errors
+    ['reg-username-error','reg-password-error','reg-confirm-error'].forEach(id => {
         const el = document.getElementById(id);
         if (el) { el.style.display = 'none'; el.textContent = ''; }
-      });
+    });
 
-      const username        = document.getElementById('reg-username').value.trim().toLowerCase();
-      const password        = document.getElementById('reg-password').value;
-      const confirmPassword = document.getElementById('reg-confirm').value;
-      const email           = localStorage.getItem('onboarding_email')
-                              || window.location.pathname.split('/').pop();
+    const username        = document.getElementById('reg-username').value.trim().toLowerCase();
+    const password        = document.getElementById('reg-password').value;
+    const confirmPassword = document.getElementById('reg-confirm').value;
+    const email           = localStorage.getItem('onboarding_email')
+                            || window.location.pathname.split('/').pop();
 
-      // ── Client-side validation ───────────────────────────────────────────
-      let hasError = false;
+    // ── Client-side validation ───────────────────────────────────────────
+    let hasError = false;
 
-      if (!username || !/^[a-z0-9]{3,20}$/.test(username)) {
+    if (!username || !/^[a-z0-9]{3,20}$/.test(username)) {
         const el = document.getElementById('reg-username-error');
         el.textContent = 'Username must be 3–20 lowercase letters and numbers only.';
         el.style.display = 'block';
         hasError = true;
-      }
+    }
 
-      if (!password || password.length < 6) {
+    if (!password || password.length < 6) {
         const el = document.getElementById('reg-password-error');
         el.textContent = 'Password must be at least 6 characters.';
         el.style.display = 'block';
         hasError = true;
-      }
+    }
 
-      if (password !== confirmPassword) {
+    if (password !== confirmPassword) {
         const el = document.getElementById('reg-confirm-error');
         el.textContent = 'Passwords do not match.';
         el.style.display = 'block';
         hasError = true;
-      }
+    }
 
-      if (hasError) return;
+    if (hasError) return;
 
-      // ── Submit to /student/complete-registration ─────────────────────────
-      const btn = document.getElementById('reg-submit-btn');
-      btn.disabled = true;
-      btn.textContent = 'Saving…';
+    // ── Submit to /student/complete-registration ─────────────────────────
+    const btn = document.getElementById('reg-submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
 
-      try {
-        const response = await fetch('/student/complete-registration', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, username, password, confirm_password: confirmPassword })
+    try {
+        // ✅ Updated to use global API client
+        const result = await api.post('/complete-registration', {
+            email,
+            username,
+            password,
+            confirm_password: confirmPassword
         });
-        const result = await response.json();
 
         if (result.status === 'success') {
-          showToast(`Welcome, @${username}! 🎉`, 'success');
-          // Show completion screen then redirect
-          document.getElementById('step-6').classList.remove('active');
-          document.getElementById('step-complete').classList.add('active');
-          setTimeout(() => { window.location.href = '/student/profile/homepage'; }, 3500);
+            showToast(`Welcome, @${username}! 🎉`, 'success');
+            document.getElementById('step-6').classList.remove('active');
+            document.getElementById('step-complete').classList.add('active');
+            setTimeout(() => { window.location.href = '/student/profile/homepage'; }, 3500);
         } else {
-          // Surface backend error on the right field
-          const msg = result.message || 'Registration failed. Please try again.';
-          if (msg.toLowerCase().includes('username')) {
-            const el = document.getElementById('reg-username-error');
-            el.textContent = msg;
-            el.style.display = 'block';
-          } else if (msg.toLowerCase().includes('password')) {
-            const el = document.getElementById('reg-password-error');
-            el.textContent = msg;
-            el.style.display = 'block';
-          } else {
-            showToast(msg, 'error');
-          }
-          btn.disabled = false;
-          btn.textContent = 'Finish & Go to Dashboard →';
+            const msg = result.message || 'Registration failed. Please try again.';
+            if (msg.toLowerCase().includes('username')) {
+                const el = document.getElementById('reg-username-error');
+                el.textContent = msg;
+                el.style.display = 'block';
+            } else if (msg.toLowerCase().includes('password')) {
+                const el = document.getElementById('reg-password-error');
+                el.textContent = msg;
+                el.style.display = 'block';
+            } else {
+                showToast(msg, 'error');
+            }
+            btn.disabled = false;
+            btn.textContent = 'Finish & Go to Dashboard →';
         }
-      } catch (err) {
+    } catch (err) {
         console.error('Complete registration error:', err);
         showToast('Network error — please try again.', 'error');
         btn.disabled = false;
         btn.textContent = 'Finish & Go to Dashboard →';
-      }
     }
+}
 
     // =========================================================================
     // TOAST NOTIFICATIONS
@@ -1138,8 +1128,8 @@
       // via session — the backend embeds email in the URL, but we also stored name
       // in session which the google_temp_info endpoint exposes).
       try {
-        const res  = await fetch("/student/google_temp_info");
-        const data = await res.json();
+        const result = await api.get("/google_temp_info");
+        const data   = result.data || result;
         if (data.name) {
           const nameInput = document.getElementById('onboard-name');
           if (nameInput && !nameInput.value) nameInput.value = data.name;

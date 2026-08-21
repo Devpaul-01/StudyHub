@@ -177,15 +177,7 @@
             }
 
             try {
-                const response = await fetch(`/student/verify-email/${token}`, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                });
-
-                const data = await response.json();
+                const data = await api.post(`/verify-email/${token}`, {});
 
                 if (data.status === 'success') {
                     // ✅ Store email for redirect
