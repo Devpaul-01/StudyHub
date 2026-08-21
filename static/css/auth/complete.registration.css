@@ -1,12 +1,12 @@
-/* Cool Graphite + Indigo Accent — updated 2026-06-26 */
 /* ===========================
-   StudyHub Auth - Complete Registration
+   StudyHub Auth - Set Password
    Cool Graphite + Indigo Accent Theme
+   (Matching complete.registration.css)
    =========================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 
-/* --- CSS Variables --- */
+/* --- CSS Variables (matching complete.registration.css) --- */
 :root {
   /* ── Primary — Cool Graphite ── */
   --primary:           #18181B;
@@ -57,19 +57,19 @@
   --shadow-lg:  0 4px 16px rgba(0,0,0,0.6);
   --shadow-xl:  0 8px 32px rgba(0,0,0,0.7);
 
-  /* ── Spacing (unchanged) ── */
+  /* ── Spacing ── */
   --spacing-xs: 0.25rem;
   --spacing-sm: 0.5rem;
   --spacing-md: 1rem;
   --spacing-lg: 1.5rem;
   --spacing-xl: 2rem;
 
-  /* ── Border Radius (unchanged) ── */
+  /* ── Border Radius ── */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 20px;
 
-  /* ── Transitions (unchanged) ── */
+  /* ── Transitions ── */
   --transition: 0.2s ease;
 
   font-family: 'Inter', sans-serif;
@@ -87,6 +87,9 @@ body {
   background-color: var(--bg-page);
   color: var(--text-primary);
   min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -111,6 +114,7 @@ body::before {
   justify-content: center;
   min-height: 100vh;
   padding: 2rem 1rem;
+  width: 100%;
 }
 
 /* --- Auth Card --- */
@@ -141,13 +145,6 @@ body::before {
   line-height: 1;
   margin-bottom: .75rem;
   display: inline-block;
-  animation: bounce .6s .4s cubic-bezier(.36,.07,.19,.97) both;
-}
-
-@keyframes bounce {
-  0%, 100% { transform: translateY(0);   }
-  40%       { transform: translateY(-10px); }
-  60%       { transform: translateY(-5px);  }
 }
 
 .auth-title {
@@ -221,84 +218,35 @@ body::before {
   box-shadow: 0 0 0 3px rgba(239,68,68,.12);
 }
 
-/* Help & Error Text */
-.form-help {
-  font-size: .8125rem;
-  color: var(--text-meta);
-}
-
+/* Error & Success Text */
 .form-error {
   font-size: .8125rem;
-  color: var(--danger);
   font-weight: 500;
+  min-height: 1.25rem;
 }
 
-.form-error.hidden,
-.form-help.hidden {
+.form-error.invalid {
+  color: var(--danger);
+}
+
+.form-error.valid {
+  color: var(--success);
+}
+
+.form-error.hidden {
   display: none;
 }
 
-/* --- Username Availability Check --- */
-.username-check {
+/* --- Password Toggle Wrapper --- */
+.password-wrapper {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: .4rem;
-  font-size: .8125rem;
-  font-weight: 500;
-  padding: .3rem .6rem;
-  border-radius: var(--radius-sm);
-  width: fit-content;
-  transition: background var(--transition), color var(--transition);
 }
 
-.username-check.hidden { display: none; }
-
-.username-check.available {
-  color: var(--success);
-  background: rgba(16,185,129,0.1);
+.password-wrapper .form-input {
+  padding-right: 44px;
 }
-
-.username-check.taken {
-  color: var(--danger);
-  background: rgba(239,68,68,0.1);
-}
-
-.username-check.checking {
-  color: var(--accent);
-  background: var(--accent-subtle);
-}
-
-/* --- Password Strength Bar --- */
-.password-strength {
-  height: 5px;
-  border-radius: 99px;
-  background: var(--bg-hover);
-  overflow: hidden;
-  margin-top: .25rem;
-}
-
-.password-strength.hidden { display: none; }
-
-.password-strength-bar {
-  height: 100%;
-  border-radius: 99px;
-  transition: width .4s ease, background .4s ease;
-}
-
-.password-strength-bar.weak   { width: 33%; background: var(--danger);  }
-.password-strength-bar.medium { width: 66%; background: var(--warning); }
-.password-strength-bar.strong { width: 100%; background: var(--success); }
-
-/* Strength Label */
-.password-strength-text {
-  font-size: .8125rem;
-  font-weight: 600;
-}
-
-.password-strength-text.hidden { display: none; }
-.password-strength-text.weak   { color: var(--danger);  }
-.password-strength-text.medium { color: var(--warning); }
-.password-strength-text.strong { color: var(--success); }
 
 /* --- Buttons --- */
 .btn {
@@ -345,7 +293,7 @@ body::before {
   margin-top: .25rem;
 }
 
-/* Loading spinner inside button */
+/* Button spinner */
 .btn .spinner {
   width: 16px;
   height: 16px;
@@ -357,6 +305,26 @@ body::before {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* --- Auth Footer --- */
+.auth-footer {
+  text-align: center;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.auth-footer a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: .875rem;
+  transition: color var(--transition);
+}
+
+.auth-footer a:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* --- Toast --- */
