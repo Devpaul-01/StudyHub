@@ -648,7 +648,22 @@ function showToast(message, type = "info", duration = 6000) {
   if (!container) {
     container = document.createElement("div");
     container.id = "toast-container";
-    container.style.cssText = "position:fixed;top:20px;right:20px;z-index:var(--z-tooltip, 9999);display:flex;flex-direction:column;gap:10px;";
+    // Container itself is the fixed, bottom-centered anchor.
+    // Toasts inside are normal-flow children stacked via flex column-reverse
+    // (newest toast appears closest to the bottom, like most modern apps).
+    container.style.cssText = `
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: var(--z-tooltip, 9999);
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: center;
+      gap: 10px;
+      max-width: 90vw;
+      pointer-events: none;
+    `;
     document.body.appendChild(container);
   }
 
@@ -664,42 +679,39 @@ function showToast(message, type = "info", duration = 6000) {
   };
   const stripeColor = accentColors[type] || accentColors.info;
 
-toast.style.cssText = `
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  display:flex;
-  align-items:center;
-  gap:10px;
-  padding:12px 20px;
-  border-radius:var(--radius-md);
-  font-family:sans-serif;
-  font-size:14px;
-  color:var(--text-primary);
-  background:var(--bg-card);
-  border:1px solid var(--border-light);
-  border-left:3px solid ${stripeColor};
-  box-shadow:var(--shadow-lg);
-  opacity:0;
-  transition:opacity var(--transition-base), transform var(--transition-base);
-  z-index: 9999;
-  max-width: 90%;
-  white-space: nowrap;
-`;
+  toast.style.cssText = `
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-radius: var(--radius-md);
+    font-family: sans-serif;
+    font-size: 14px;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-left: 3px solid ${stripeColor};
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity var(--transition-base), transform var(--transition-base);
+    max-width: 90vw;
+    white-space: nowrap;
+    pointer-events: auto;
+  `;
 
   toast.textContent = message;
   container.appendChild(toast);
 
-  // Fade/slide in
+  // Fade/slide in from below, matching modern app toast behavior
   requestAnimationFrame(() => {
     toast.style.opacity = "1";
-    toast.style.transform = "translateX(0)";
+    toast.style.transform = "translateY(0)";
   });
 
   setTimeout(() => {
     toast.style.opacity = "0";
-    toast.style.transform = "translateX(8px)";
+    toast.style.transform = "translateY(12px)";
     setTimeout(() => toast.remove(), 200);
   }, duration);
 }
