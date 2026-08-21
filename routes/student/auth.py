@@ -486,8 +486,10 @@ def onboard(email):
         onboarding_details.study_schedule    = study_schedule
         onboarding_details.session_length    = session_length
         onboarding_details.last_updated      = datetime.datetime.utcnow()
+        user.status = "pending_verification"
 
         db.session.commit()
+        
 
         access_token, refresh_token = generate_tokens_for_user(user)
 
@@ -856,7 +858,6 @@ def validate_user():
         current_app.logger.error(f"Password reset error: {str(e)}")
         return error_response("Password reset failed. Please try again.")   # FIX: no str(e) leak
 
-
 @auth_bp.route("/verify-reset/<token>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def reset_password_api(token):
@@ -874,22 +875,140 @@ def reset_password_api(token):
 
     from models import PasswordResetToken
 
+    current_app.logger.info(f"🔍 [verify-reset] Verifying token: {token[:20]}...")
+
     reset_row = PasswordResetToken.query.filter_by(token=token).first()
-    if not reset_row or not reset_row.is_valid():
+    
+    if not reset_row:
+        current_app.logger.warning(f"❌ [verify-reset] Token not found in database: {token[:20]}...")
+        return error_response("This password reset link is invalid or has expired.")
+
+    current_app.logger.info(f"📊 [verify-reset] Token found:")
+    current_app.logger.info(f"   - user_id: {reset_row.user_id}")
+    current_app.logger.info(f"   - used: {reset_row.used}")
+    current_app.logger.info(f"   - expires_at: {reset_row.expires_at}")
+    current_app.logger.info(f"   - is_valid: {reset_row.is_valid()}")
+
+    if not reset_row.is_valid():
+        current_app.logger.warning(f"❌ [verify-reset] Token is INVALID:")
+        if reset_row.used:
+            current_app.logger.warning(f"   - Token already used")
+        if reset_row.expires_at < datetime.datetime.utcnow():
+            current_app.logger.warning(f"   - Token expired at: {reset_row.expires_at}")
         return error_response("This password reset link is invalid or has expired.")
 
     user = User.query.get(reset_row.user_id)
     if not user:
+        current_app.logger.warning(f"❌ [verify-reset] User not found for token: {token[:20]}...")
         return error_response("User not found")
 
+    current_app.logger.info(f"✅ [verify-reset] Token verified successfully for user: {user.email}")
+    
     return success_response(
         "Password Reset Link Verified!",
         data={
             "email": user.email,
             "token": token,
-            "redirect_url": f"/student/set-password?token={token}",
+            "redirect_url": f"/student/set-password?token={token}&email={user.email}",
         },
     )
+
+@auth_bp.route("/set-password", methods=["GET", "POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
+def set_password():
+    """
+    Set new password after reset.
+
+    Document 3 §4: consumes the opaque PasswordResetToken (marks it used,
+    single-use enforced) via auth_service.consume_password_reset_token —
+    this is the point the reset link is actually spent, distinct from the
+    read-only peek in reset_password_api() above. finalize_password()
+    still does the actual pin/password_hash write, unchanged.
+    """
+    if request.method == "GET":
+        return render_template("auth/set_password.html")
+
+    from models import PasswordResetToken
+
+    data = request.get_json() or {}
+    token = data.get("token") or request.args.get("token")
+    password = data.get("password", "")
+    confirm_password = data.get("confirm_password", "")
+
+    current_app.logger.info(f"🔍 [set-password] Received request:")
+    current_app.logger.info(f"   - token: {token[:20] if token else 'MISSING'}...")
+    current_app.logger.info(f"   - password length: {len(password) if password else 0}")
+    current_app.logger.info(f"   - confirm_password length: {len(confirm_password) if confirm_password else 0}")
+
+    if not token:
+        current_app.logger.warning("❌ [set-password] No token provided in request")
+        return error_response("Reset token is required")
+
+    # ✅ Check token exists and is valid BEFORE consuming
+    reset_row = PasswordResetToken.query.filter_by(token=token).first()
+    
+    if not reset_row:
+        current_app.logger.warning(f"❌ [set-password] Token not found in database: {token[:20]}...")
+        return error_response("This password reset link is invalid or has expired.")
+
+    current_app.logger.info(f"📊 [set-password] Token found:")
+    current_app.logger.info(f"   - user_id: {reset_row.user_id}")
+    current_app.logger.info(f"   - used: {reset_row.used}")
+    current_app.logger.info(f"   - expires_at: {reset_row.expires_at}")
+    current_app.logger.info(f"   - is_valid: {reset_row.is_valid()}")
+
+    if not reset_row.is_valid():
+        current_app.logger.warning(f"❌ [set-password] Token is INVALID:")
+        if reset_row.used:
+            current_app.logger.warning(f"   - Token already used")
+        if reset_row.expires_at < datetime.datetime.utcnow():
+            current_app.logger.warning(f"   - Token expired at: {reset_row.expires_at}")
+        return error_response("This password reset link is invalid or has expired.")
+
+    if not all([password, confirm_password]):
+        current_app.logger.warning("❌ [set-password] Missing password or confirm_password")
+        return error_response("All fields are required")
+    
+    if password != confirm_password:
+        current_app.logger.warning("❌ [set-password] Passwords do not match")
+        return error_response("Passwords do not match")
+    
+    if len(password) < 6:
+        current_app.logger.warning("❌ [set-password] Password too short")
+        return error_response("Password must be at least 6 characters")
+
+    try:
+        current_app.logger.info(f"🔄 [set-password] Attempting to consume token for user_id: {reset_row.user_id}")
+        
+        # consume_password_reset_token commits internally (Document 2 §5's
+        # documented second exception) the moment the token is marked used,
+        # independent of whatever finalize_password does below.
+        reset_user = auth_service.consume_password_reset_token(token)
+        
+        current_app.logger.info(f"✅ [set-password] Token consumed successfully for: {reset_user.email}")
+        
+        user = auth_service.finalize_password(reset_user.email, password)
+        
+        current_app.logger.info(f"✅ [set-password] Password updated successfully for: {user.email}")
+        
+    except LookupError as e:
+        current_app.logger.error(f"❌ [set-password] LookupError: {str(e)}")
+        return error_response(str(e))
+    except ValidationError as e:
+        current_app.logger.error(f"❌ [set-password] ValidationError: {str(e)}")
+        return error_response(str(e))
+    except Exception as e:
+        current_app.logger.error(f"❌ [set-password] Unexpected error: {str(e)}")
+        return error_response("Failed to reset password. Please try again.")
+
+    db.session.commit()
+    return success_response(
+        f"Password reset complete, @{user.username}!",
+        data={"redirect_url": "/student/login"},
+    )
+    
+    
+    
 @auth_bp.route("/verify-email/<token>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def verify_email_api(token):
@@ -973,7 +1092,6 @@ def check_username():
 def complete_registration():
     """Complete registration with username and password."""
     if request.method == "GET":
-        # ✅ Check if user has completed onboarding
         email = request.args.get("email")
         token = request.args.get("token")
         
@@ -986,15 +1104,20 @@ def complete_registration():
         if email:
             user = User.query.filter_by(email=email).first()
             if user:
-                # ✅ If user hasn't done onboarding, redirect them
-                if user.status == "pending_verification":
-                    return redirect(f"/student/onboard/{email}")
-                # If status is pending_onboarding (Google), they should go through onboard too
+                # ✅ FIX: Only redirect to onboard if onboarding NOT done
                 if user.status == "pending_onboarding":
                     return redirect(f"/student/onboard/{email}")
+                
+                # ✅ FIX: pending_verification → show complete-registration
+                # (don't redirect)
+                
+                # ✅ FIX: approved → redirect to homepage
+                if user.status == "approved":
+                    return redirect("/student/profile/homepage")
         
         return render_template("auth/complete-registration.html")
 
+    # ── POST ──────────────────────────────────────────────────────────────────
     try:
         data = get_json_data()
         if not data:
@@ -1060,51 +1183,7 @@ def reset_password():
     return render_template("auth/reset_request.html")
 
 
-@auth_bp.route("/set-password", methods=["GET", "POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
-def set_password():
-    """
-    Set new password after reset.
 
-    Document 3 §4: consumes the opaque PasswordResetToken (marks it used,
-    single-use enforced) via auth_service.consume_password_reset_token —
-    this is the point the reset link is actually spent, distinct from the
-    read-only peek in reset_password_api() above. finalize_password()
-    still does the actual pin/password_hash write, unchanged.
-    """
-    if request.method == "GET":
-        return render_template("auth/set_password.html")
-
-    data             = request.get_json() or {}
-    token            = data.get("token") or request.args.get("token")
-    password         = data.get("password", "")
-    confirm_password = data.get("confirm_password", "")
-
-    if not token:
-        return error_response("Reset token is required")
-    if not all([password, confirm_password]):
-        return error_response("All fields are required")
-    if password != confirm_password:
-        return error_response("Passwords do not match")
-    if len(password) < 6:
-        return error_response("Password must be at least 6 characters")
-
-    try:
-        # consume_password_reset_token commits internally (Document 2 §5's
-        # documented second exception) the moment the token is marked used,
-        # independent of whatever finalize_password does below.
-        reset_user = auth_service.consume_password_reset_token(token)
-        user = auth_service.finalize_password(reset_user.email, password)
-    except LookupError as e:
-        return error_response(str(e))
-    except ValidationError as e:
-        return error_response(str(e))
-
-    db.session.commit()
-    return success_response(
-        f"Password reset complete, @{user.username}!",
-        data={"redirect_url": "/student/login"},
-    )
 
 
 @auth_bp.route("/refresh-token", methods=["POST"])
