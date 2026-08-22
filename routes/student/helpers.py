@@ -21,8 +21,21 @@ ALLOWED_IMAGE_EXT    = {"png", "jpg", "jpeg"}
 ALLOWED_DOCUMENT_EXT = {"pdf", "doc", "docx", "txt", "ppt", "pptx"}
 
 
-def generate_tokens_for_user(user):
-    """Generate JWT access and refresh tokens for a user."""
+def _build_access_token(user) -> str:
+    """
+    Auth-flow-audit fix (Finding #7): single source of truth for the
+    access-token JWT shape, used by both generate_tokens_for_user() (fresh
+    login) and auth.py's refresh_token() route (routine rotation) — these
+    two call sites previously hand-built near-identical payload dicts
+    independently, which had already silently drifted once (a stale
+    50-minute expiry in one path vs 30 minutes in the other, fixed
+    separately) and could drift again since nothing enforced they stay in
+    sync. refresh_token() intentionally does NOT call
+    generate_tokens_for_user() wholesale, since that also mints a brand
+    new refresh-token family — a routine access-token refresh must keep
+    rotating within the SAME family (see rotate_refresh_token), not start
+    a new one every 30 minutes.
+    """
     secret = current_app.config["SECRET_KEY"]
 
     access_payload = {
@@ -34,20 +47,68 @@ def generate_tokens_for_user(user):
         "exp":      datetime.datetime.utcnow() + datetime.timedelta(minutes=30),
     }
 
-    refresh_payload = {
-        "user_id": user.id,
-        "email":   user.email,
-        "exp":     datetime.datetime.utcnow() + datetime.timedelta(days=7),
-    }
-
-    access_token  = jwt.encode(access_payload,  secret, algorithm="HS256")
-    refresh_token = jwt.encode(refresh_payload, secret, algorithm="HS256")
+    access_token = jwt.encode(access_payload, secret, algorithm="HS256")
 
     # PyJWT < 2.0 returns bytes; >= 2.0 returns str
-    if isinstance(access_token,  bytes):
-        access_token  = access_token.decode("utf-8")
-    if isinstance(refresh_token, bytes):
-        refresh_token = refresh_token.decode("utf-8")
+    if isinstance(access_token, bytes):
+        access_token = access_token.decode("utf-8")
+
+    return access_token
+
+
+def generate_tokens_for_user(user):
+    """
+    Generate an access token (short-lived JWT, unchanged) and a refresh
+    token (opaque, DB-backed, rotatable — Auth-flow-audit Finding #6) for
+    a fresh login.
+
+    Auth-flow-audit fix: the refresh token used to be a stateless JWT
+    with a 7-day `exp` and nothing else — reissued unchanged by
+    /refresh-token every time, with no way to revoke a specific session
+    or detect a stolen token being replayed. It's now minted via
+    auth_service.issue_refresh_token(), which persists a DB row (hash
+    only, never the raw value) that /refresh-token can rotate-on-use and
+    logout can revoke. See models.RefreshToken's docstring for the full
+    design.
+
+    Commits internally at the point the refresh-token row is written (see
+    the inline comment below for why) — unlike most token-issuance
+    helpers in this codebase, callers do NOT need to commit afterward for
+    the tokens themselves to be valid, though callers should still commit
+    any of their OWN unrelated pending changes before calling this if
+    those changes need to be durable too.
+    """
+    from services import auth_service  # local import: avoids a circular
+                                        # import (auth_service imports
+                                        # models, which does not import
+                                        # helpers, so this is safe either
+                                        # direction, but kept local to
+                                        # match this module's existing
+                                        # style of not importing service
+                                        # modules at top level)
+
+    access_token = _build_access_token(user)
+
+    refresh_token = auth_service.issue_refresh_token(user)
+
+    # Auth-flow-audit fix (regression caught during Finding #6
+    # implementation): issue_refresh_token() adds a new RefreshToken row
+    # to the session but does not commit (matching every other
+    # token-issuance function's convention of leaving the commit to the
+    # caller). generate_tokens_for_user() previously did ZERO database
+    # writes (pure jwt.encode() calls), so none of its 4 existing call
+    # sites (login(), onboard(), complete_registration(),
+    # google_callback()'s existing-approved-user branch) commit
+    # afterward — each already commits its OWN changes earlier in the
+    # request, then calls this function and hands the resulting tokens
+    # straight to the client without a further commit. Without committing
+    # here, the refresh-token row would only exist in the SQLAlchemy
+    # session, not the database — leaving the client holding a raw
+    # refresh-token value that /refresh-token could never actually
+    # validate later. Committing here, at the point of the write, is
+    # simplest and safest: it doesn't require auditing/changing 4 call
+    # sites and can't be missed by a future 5th caller either.
+    db.session.commit()
 
     return access_token, refresh_token
 
