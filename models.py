@@ -531,6 +531,17 @@ class User(UserMixin, db.Model):
     pin               = db.Column(db.String(200), nullable=False)
     fcm_token         = db.Column(db.String(500), nullable=True)
 
+    # Auth-flow-audit fix (Finding #2): tracks which provider created this
+    # account. google_id is Google's stable, unique per-account "sub" claim
+    # (NOT the email — emails can be re-registered elsewhere/change).
+    # NULL google_id = password-created account. This is the anchor that
+    # lets google_callback() tell "an account already exists for this
+    # email, created via Google, safe to log in" apart from "an account
+    # already exists for this email, created via password, do NOT log in
+    # just because Google authenticated the same address" — closing the
+    # OAuth account-hijack gap the audit flagged.
+    google_id = db.Column(db.String(255), unique=True, nullable=True, index=True)
+
     name = db.Column(db.String(100), nullable=False)
     bio  = db.Column(db.String(500))
     avatar = db.Column(db.String(200))
@@ -1874,3 +1885,96 @@ class PasswordResetToken(db.Model):
 
     def __repr__(self):
         return f"<PasswordResetToken for User {self.user_id}>"
+
+
+class EmailVerificationToken(db.Model):
+    """
+    Auth-flow-audit fix (Finding #3): opaque, single-use, DB-backed email
+    verification tokens — the exact same pattern as PasswordResetToken,
+    replacing the stateless JWT previously issued by
+    utils.generate_verification_token / helpers.verify_token for this flow.
+
+    Why this was needed: the old JWT stayed valid (decodable and
+    accepted by the route) for its full 5-hour `exp` window regardless of
+    how many times it had already been used, and a *first* successful
+    verification auto-logged the caller in. A leaked/forwarded
+    verification link was therefore a live session-hijack vector for up
+    to 5 hours. Mirroring PasswordResetToken's mark-used-on-first-use
+    design closes that gap the same way it was already closed for
+    password resets.
+
+    verify_token()/generate_verification_token() (helpers.py / utils.py)
+    remain in place and ARE STILL USED — but only for the password-reset
+    email itself is no longer routed through them (that already used its
+    own opaque token); email verification is the flow being migrated
+    here. Nothing else in the codebase is confirmed to depend on the JWT
+    verification-token shape per the auth files reviewed.
+    """
+    __tablename__ = "email_verification_tokens"
+
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    token      = db.Column(db.String(500), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used       = db.Column(db.Boolean, default=False)
+    used_at    = db.Column(db.DateTime)
+
+    def is_valid(self):
+        return not self.used and datetime.datetime.utcnow() < self.expires_at
+
+    def __repr__(self):
+        return f"<EmailVerificationToken for User {self.user_id}>"
+
+
+class RefreshToken(db.Model):
+    """
+    Auth-flow-audit fix (Finding #6): DB-backed refresh tokens with
+    rotation-on-use and reuse detection, replacing the previous design
+    where the refresh token was a stateless JWT reissued unchanged on
+    every /refresh-token call for its full 7-day life with no way to
+    revoke or detect replay of a stolen token.
+
+    Access tokens are UNCHANGED — still short-lived (30 min) stateless
+    JWTs, since there's no benefit to making those DB-backed (they expire
+    fast enough that revocation isn't the primary defense for them).
+    Only the long-lived refresh token needed this.
+
+    The raw token value is never stored — only its SHA-256 hash
+    (`token_hash`), the same reasoning password hashing uses: a DB
+    leak/dump should not itself hand out usable long-lived credentials.
+    This differs deliberately from PasswordResetToken/
+    EmailVerificationToken (which store the raw value), because those are
+    short-lived (1h / 5h) and single-use-then-dead, so the exposure
+    window and blast radius are both much smaller; a refresh token is
+    valid for 7 days and is exactly the kind of long-lived bearer
+    credential worth hashing at rest.
+
+    family_id groups every token descended from one original login via
+    rotation — issuing a new refresh token on each /refresh-token call
+    keeps the same family_id, so the whole chain can be revoked together
+    (logout revokes its family; a detected replay of an already-rotated
+    token revokes its family too, since that's a strong signal of theft).
+    """
+    __tablename__ = "refresh_tokens"
+
+    id            = db.Column(db.Integer, primary_key=True)
+    user_id       = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
+    token_hash    = db.Column(db.String(64), unique=True, nullable=False, index=True)  # sha256 hex digest
+    family_id     = db.Column(db.String(64), nullable=False, index=True)
+    created_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    expires_at    = db.Column(db.DateTime, nullable=False)
+    revoked       = db.Column(db.Boolean, default=False, index=True)
+    revoked_at    = db.Column(db.DateTime, nullable=True)
+    replaced_by_id= db.Column(db.Integer, db.ForeignKey('refresh_tokens.id'), nullable=True)
+
+    __table_args__ = (
+        db.Index("idx_refresh_family", "family_id"),
+        db.Index("idx_refresh_user_revoked", "user_id", "revoked"),
+    )
+
+    def is_valid(self):
+        return not self.revoked and datetime.datetime.utcnow() < self.expires_at
+
+    def __repr__(self):
+        return f"<RefreshToken for User {self.user_id} family={self.family_id[:8]}>"
