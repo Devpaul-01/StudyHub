@@ -167,6 +167,25 @@
     <script src="{{ url_for('static', filename='js/core/utils.js') }}"></script>
     <script>
 document.addEventListener("DOMContentLoaded", async () => {
+    // Auth-flow-audit fix: surface the ?error= query param that
+    // google_callback() (auth.py) redirects here with on OAuth failure.
+    // Previously this was never read at all, so a failed Google sign-in
+    // silently dropped the user back on a blank login page with zero
+    // explanation — including the new account_exists_use_password case
+    // (Finding #2's fix), where the account genuinely exists but was
+    // created via password, not Google, and the user needs to know to
+    // use their password instead of retrying Google.
+    const oauthError = new URLSearchParams(window.location.search).get('error');
+    if (oauthError && typeof showToast === 'function') {
+        const oauthErrorMessages = {
+            oauth_failed: 'Google sign-in failed. Please try again or log in with your password.',
+            account_exists_use_password: 'An account already exists for that email. Please log in with your password.',
+        };
+        showToast(oauthErrorMessages[oauthError] || 'Google sign-in failed. Please try again.', 'error', 7000);
+        // Strip the query param so a page refresh doesn't re-show the toast.
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     // Prefill email from Google OAuth if available
     try {
         const result = await api.get("/google_temp_info");
