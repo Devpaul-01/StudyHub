@@ -89,11 +89,26 @@ GROQ_MODELS = [
 
 
 # ============================================================
-# CEREBRAS
+# GEMINI
+#
+# Uses Google's OpenAI-compatible endpoint
+# (https://generativelanguage.googleapis.com/v1beta/openai/) so it slots
+# into the exact same /chat/completions request/response shape every
+# other provider here already uses — no separate request-building or
+# streaming-parsing path needed. Auth still goes through the standard
+# `Authorization: Bearer <key>` header via that compatibility layer.
 # ============================================================
 
-CEREBRAS_MODELS = [
-    "gpt-oss-120b",
+GEMINI_VISION_MODELS = {
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
+}
+
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
 ]
 
 
@@ -148,7 +163,7 @@ NON_CHAT_PATTERN = re.compile(
 )
 
 # Provider order — mirrors multiProvider.js PROVIDER_ORDER
-PROVIDER_ORDER = ["cerebras", "groq", "mistral", "openrouter"]
+PROVIDER_ORDER = ["gemini", "groq", "mistral", "openrouter"]
 
 
 # ===========================================================
@@ -471,23 +486,25 @@ class MultiProviderManager:
     # ----------------------------------------------------------
 
     def _load_providers(self):
-        """Load Cerebras, Groq, Mistral, and OpenRouter providers from environment variables.
-        Each provider supports multiple keys (e.g. CEREBRAS_API_KEY_1 … _5).
-        Falls back to the no-suffix var (CEREBRAS_API_KEY) when only one key exists.
-        Provider order mirrors multiProvider.js: cerebras → groq → mistral → openrouter.
+        """Load Gemini, Groq, Mistral, and OpenRouter providers from environment variables.
+        Each provider supports multiple keys (e.g. GEMINI_API_KEY_1 … _5).
+        Falls back to the no-suffix var (GEMINI_API_KEY) when only one key exists.
+        Provider order mirrors multiProvider.js: gemini → groq → mistral → openrouter.
         """
         providers = []
 
         PROVIDER_DEFS = [
             {
-                "id":         "cerebras",
-                "type":       "cerebras",
-                "base_url":   "https://api.cerebras.ai/v1",
-                "env_prefix": "CEREBRAS_API_KEY",
+                "id":         "gemini",
+                "type":       "gemini",
+                # Google's OpenAI-compatible endpoint — lets Gemini use the
+                # exact same /chat/completions request/response handling as
+                # every other provider in this file.
+                "base_url":   "https://generativelanguage.googleapis.com/v1beta/openai",
+                "env_prefix": "GEMINI_API_KEY",
                 "max_keys":   10,
-                "models":     CEREBRAS_MODELS,
-                # Cerebras currently has no vision-capable models on public endpoints.
-                "vision_models": set(),
+                "models":     GEMINI_MODELS,
+                "vision_models": GEMINI_VISION_MODELS,
             },
             {
                 "id":         "groq",
@@ -588,6 +605,10 @@ class MultiProviderManager:
 
         Mistral and OpenRouter are skipped — Mistral uses provider-managed
         aliases that are already self-updating; OpenRouter uses a static list.
+        Gemini is also skipped — its OpenAI-compatible /models endpoint
+        naming doesn't line up with the priority-ranking logic below
+        (built around Groq's flat chat-model id list), so Gemini
+        relies on its static GEMINI_MODELS priority list instead.
 
         HORIZONTAL SCALING: before fetching, checks the shared Redis cache
         (populated by any instance within the last MODEL_CACHE_TTL_SECONDS)
@@ -620,8 +641,8 @@ class MultiProviderManager:
 
         def _discover():
             for pid, provider_slot in seen.items():
-                if pid in ("mistral", "openrouter"):
-                    continue  # mistral aliases are self-updating; openrouter uses static list
+                if pid in ("mistral", "openrouter", "gemini"):
+                    continue  # mistral aliases are self-updating; openrouter/gemini use static lists
 
                 if self.is_redis_state_enabled():
                     cached = self._redis_get(f"{self._REDIS_MODELS_PREFIX}{pid}")
@@ -664,7 +685,7 @@ class MultiProviderManager:
         """
         base_url   = representative_slot["base_url"]
         api_key    = representative_slot["api_key"]
-        priority   = CEREBRAS_MODELS if provider_id == "cerebras" else GROQ_MODELS
+        priority   = GROQ_MODELS
 
         try:
             resp = requests.get(
@@ -1222,7 +1243,7 @@ class StudyAssistant:
         IMPORTANT: messages stored in conversation.messages (the DB column)
         carry extra bookkeeping fields — timestamp, attachments, is_continue,
         model, provider, is_complete, error — for our own app's use. Several
-        providers (Cerebras in particular) run strict schema validation on
+        providers (Mistral in particular) run strict schema validation on
         the chat completions body and will reject the *entire request* with
         a 400 if a message object contains any property outside role/content.
         This is why the first message in a conversation (empty history) works
@@ -1453,7 +1474,7 @@ class StudyAssistant:
         for an error embedded in a chunk of an already-200 stream. That
         branch keeps its existing rate-limit/generic split unchanged.
         """
-        MAX_MODEL_RETRIES = max(len(CEREBRAS_MODELS), len(GROQ_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS))
+        MAX_MODEL_RETRIES = max(len(GEMINI_MODELS), len(GROQ_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS))
         self._provider_exhausted = False
 
         for model_attempt in range(MAX_MODEL_RETRIES):
@@ -1471,7 +1492,7 @@ class StudyAssistant:
                 # provider's key is now dead for the cooldown window, so
                 # trying its OTHER models (advance_to_fallback_model,
                 # below) would just burn every remaining model in
-                # CEREBRAS_MODELS/etc. against the same cooled key before
+                # GEMINI_MODELS/etc. against the same cooled key before
                 # ever giving the caller a chance to pick a different
                 # provider. Bug this fixes: a 402 (payment required, now
                 # classified KEY_FAULT — see classify_provider_error)

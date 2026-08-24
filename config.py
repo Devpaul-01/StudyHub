@@ -32,7 +32,7 @@ class Config:
     FLASK_ENV = os.environ.get('FLASK_ENV', 'production')
     DEBUG = False
     TESTING = False
-    LEARNORA_BOT_USER_ID = 0
+    LEARNORA_BOT_USER_ID = os.environ.get("LEARNORA_BOT_USER_ID")
 
     # Database
     DATABASE_URL = os.environ.get('DATABASE_NEW_URL')

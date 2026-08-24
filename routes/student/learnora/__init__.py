@@ -26,7 +26,7 @@ target tree's `learnora/__init__.py  # routes only` entry.
 --------------------------------------------------------------------------
 
 PROVIDERS (in fallback order — highest free TPM first):
-  1. Cerebras   (~60K TPM free)  — gpt-oss-120b (production) + dynamic discovery
+  1. Gemini     (generous free tier) — gemini-2.5-flash (vision!) + gemini-2.5-pro + static model list
   2. Groq       (~30K TPM free)  — llama-4-scout (vision!) + llama-3.3-70b + dynamic discovery
   3. Mistral    (500K TPM free*) — mistral-small-latest / mistral-medium-latest (provider aliases)
   4. OpenRouter (pay-per-use)    — meta-llama/llama-4-scout (vision!) + static model list
@@ -71,7 +71,7 @@ from services.ai_provider_service import (
     _call_provider_sync,
     clean_ai_response,
     generate_conversation_title,
-    CEREBRAS_MODELS,
+    GEMINI_MODELS,
     GROQ_MODELS,
     MISTRAL_MODELS,
     OPENROUTER_MODELS,
