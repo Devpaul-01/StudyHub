@@ -499,12 +499,41 @@ def get_department_leaderboard(
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. NEARBY USERS
 # ─────────────────────────────────────────────────────────────────────────────
-
+@cache_service.cached(
+    "sh:1:lb:rank:{user_id}:nearby-core:{period}:{department_key}:{n_range}:{my_score}:{my_rank}",
+    ttl_seconds=60,
+)
 def _get_nearby_for_user(
     user_id: int, my_score: int, my_rank: int, period: str,
-    department: str | None, n_range: int,
+    department_key: str | None, n_range: int,
 ) -> list:
-    """Core nearby-user computation. Includes the viewer themself in the middle."""
+    """Core nearby-user computation. Includes the viewer themself in the middle.
+
+    Uses its own `nearby-core:` key namespace (distinct from
+    _get_nearby_users_cached's `nearby:` namespace below) — these are two
+    different functions with two different signatures/return shapes, and
+    previously shared an identical key template purely by copy-paste,
+    which meant (a) this function's real parameter was named `department`
+    while the template referenced `{department_key}`, causing every call
+    to raise KeyError('department_key') and silently skip caching (see
+    cache_service.cached's fail-open KeyError branch), and (b) even once
+    fixed, an accidental key collision between two distinct cached
+    functions is a correctness bug in its own right — this function is
+    also called directly by _get_my_rank_cached with different arguments
+    than _get_nearby_users_cached passes, so they must not share a cache
+    key. `my_score`/`my_rank` are included in the key since callers can
+    legitimately pass different values in for the same
+    user/period/department (e.g. _get_my_rank_cached always passes
+    department_key=None regardless of the department filter requested),
+    and those values directly determine the returned window of entries.
+
+    `department_key` here is the already-`_dept_key()`-normalized string
+    (never raw None) — same convention as every other @cached function in
+    this module, for the same reason: the decorator interpolates from the
+    raw call arguments, so normalization must happen before this function
+    is invoked, not inside its body.
+    """
+    department = None if department_key in (None, "_") else department_key
     user = User.query.get(user_id)
     profile = StudentProfile.query.filter_by(user_id=user_id).first() if user_id else None
 
@@ -627,7 +656,7 @@ def _get_nearby_users_cached(
     my_score = _user_period_score(user_id, period)
     my_rank = get_user_rank(user_id, period, department)
 
-    nearby = _get_nearby_for_user(user_id, my_score, my_rank, period, department, n_range)
+    nearby = _get_nearby_for_user(user_id, my_score, my_rank, period, department_key, n_range)
 
     nearby_ids = [e["user"]["id"] for e in nearby]
     cmap = _connection_map(user_id, nearby_ids)
@@ -661,9 +690,7 @@ def get_nearby_users(
 # 3. MY RANK CARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached(
-    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
-)
+
 @cache_service.cached(
     "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
 )
@@ -778,7 +805,7 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
 
     nearby = _get_nearby_for_user(
         user_id=user_id, my_score=my_score, my_rank=global_rank,
-        period=period, department=None, n_range=n_nearby,
+        period=period, department_key="_", n_range=n_nearby,
     )
     nearby_user_ids = [u["user"]["id"] for u in nearby]
     nearby_cmap = _connection_map(user_id, nearby_user_ids)
