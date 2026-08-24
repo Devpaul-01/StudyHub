@@ -140,7 +140,7 @@ def enforce_csrf():
 
     if not cookie_value or not header_value or cookie_value != header_value:
 
-        current_app.logger.warning("no csrf  found for chat route:  ")
+        current_app.logger.warning("no csrf  found")
         
         raise ValidationError("CSRF token missing or invalid", status_code=403)
 
