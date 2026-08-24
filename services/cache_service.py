@@ -31,6 +31,10 @@ import os
 
 from extensions import redis_client
 
+# ── Logger: uses Flask's app logger via current_app when available ──────
+# This module-level logger is a fallback; the preferred logger is
+# current_app.logger (used in the wrapper below). For services that
+# don't have Flask app context, this falls back to standard logging.
 logger = logging.getLogger(__name__)
 
 # Bump this to invalidate every cached key at once, with zero explicit
@@ -65,6 +69,8 @@ def _get_redis_url_safe():
         return redacted
     return url
 
+# ── NOTE: These logs run at module import time ─────────────────────────────
+# Use the module logger here since current_app may not exist yet.
 logger.info(f"[CACHE] Redis URL configured: {_get_redis_url_safe()}")
 logger.info(f"[CACHE] Redis client type: {type(redis_client)}")
 
@@ -80,6 +86,16 @@ except Exception as e:
     logger.error(f"[CACHE] Redis connection test FAILED: {e}")
 
 
+def _get_logger():
+    """Get the best available logger — Flask's current_app.logger if
+    available in context, otherwise the module-level fallback logger."""
+    try:
+        from flask import current_app
+        return current_app.logger
+    except (ImportError, RuntimeError):
+        return logger
+
+
 def get(key):
     """
     Retrieve a cached value by key.
@@ -90,28 +106,29 @@ def get(key):
     callers — a cache miss — which is what makes the cache-aside pattern
     (get() -> None -> recompute -> set()) safe to use unconditionally.
     """
-    logger.debug(f"[CACHE] GET: {key}")
+    log = _get_logger()
+    log.info(f"[CACHE] GET: {key}")
     
     try:
         raw = redis_client.get(key)
-        logger.debug(f"[CACHE] GET raw response: {raw is not None}")
+        log.info(f"[CACHE] GET raw response: {raw is not None}")
     except Exception as e:
-        logger.warning(
+        log.warning(
             f"[CACHE] Redis GET failed for key={key!r} — treating as cache miss. Error: {e}",
             exc_info=True
         )
         return None
 
     if raw is None:
-        logger.debug(f"[CACHE] GET: {key} — CACHE MISS (not found)")
+        log.info(f"[CACHE] GET: {key} — CACHE MISS (not found)")
         return None
 
     try:
         value = json.loads(raw)
-        logger.debug(f"[CACHE] GET: {key} — CACHE HIT ✅")
+        log.info(f"[CACHE] GET: {key} — CACHE HIT ✅")
         return value
     except (TypeError, ValueError) as e:
-        logger.warning(
+        log.warning(
             f"[CACHE] Redis value for key={key!r} was not valid JSON — treating as cache miss. Error: {e}"
         )
         return None
@@ -123,24 +140,25 @@ def set(key, value, ttl_seconds):
     Never raises. On failure the write is silently dropped — see plan §8:
     a cache write failure must never fail the request that triggered it.
     """
-    logger.debug(f"[CACHE] SET: {key} (TTL: {ttl_seconds}s)")
+    log = _get_logger()
+    log.info(f"[CACHE] SET: {key} (TTL: {ttl_seconds}s)")
     
     try:
         serialized = json.dumps(value)
-        logger.debug(f"[CACHE] SET: {key} — serialized size: {len(serialized)} bytes")
+        log.info(f"[CACHE] SET: {key} — serialized size: {len(serialized)} bytes")
         
         result = redis_client.set(key, serialized, ex=ttl_seconds)
-        logger.debug(f"[CACHE] SET: {key} — result: {result}")
+        log.info(f"[CACHE] SET: {key} — result: {result}")
         
         # Verify the write
         verify = redis_client.get(key)
         if verify:
-            logger.debug(f"[CACHE] SET: {key} — verified ✅")
+            log.info(f"[CACHE] SET: {key} — verified ✅")
         else:
-            logger.warning(f"[CACHE] SET: {key} — verification FAILED (key not found after write)")
+            log.warning(f"[CACHE] SET: {key} — verification FAILED (key not found after write)")
             
     except Exception as e:
-        logger.warning(
+        log.warning(
             f"[CACHE] Redis SET failed for key={key!r} — write silently dropped. Error: {e}",
             exc_info=True
         )
@@ -153,16 +171,17 @@ def delete(key):
     the plan's §5 already carries a TTL as a backstop for exactly this
     failure mode.
     """
-    logger.debug(f"[CACHE] DELETE: {key}")
+    log = _get_logger()
+    log.info(f"[CACHE] DELETE: {key}")
     
     try:
         result = redis_client.delete(key)
         if result:
-            logger.debug(f"[CACHE] DELETE: {key} — deleted {result} key(s)")
+            log.info(f"[CACHE] DELETE: {key} — deleted {result} key(s)")
         else:
-            logger.debug(f"[CACHE] DELETE: {key} — key not found")
+            log.info(f"[CACHE] DELETE: {key} — key not found")
     except Exception as e:
-        logger.warning(
+        log.warning(
             f"[CACHE] Redis DELETE failed for key={key!r}. Error: {e}",
             exc_info=True
         )
@@ -186,7 +205,8 @@ def delete_pattern(prefix):
     TTL backstop on every hard-invalidated cache already exists to bound.
     Never raises.
     """
-    logger.debug(f"[CACHE] DELETE_PATTERN: {prefix}")
+    log = _get_logger()
+    log.info(f"[CACHE] DELETE_PATTERN: {prefix}")
     
     try:
         cursor = 0
@@ -194,14 +214,14 @@ def delete_pattern(prefix):
         while True:
             cursor, keys = redis_client.scan(cursor=cursor, match=prefix, count=200)
             if keys:
-                logger.debug(f"[CACHE] DELETE_PATTERN: found {len(keys)} keys in batch")
+                log.info(f"[CACHE] DELETE_PATTERN: found {len(keys)} keys in batch")
                 redis_client.delete(*keys)
                 deleted_count += len(keys)
             if cursor == 0:
                 break
-        logger.debug(f"[CACHE] DELETE_PATTERN: deleted {deleted_count} keys matching {prefix}")
+        log.info(f"[CACHE] DELETE_PATTERN: deleted {deleted_count} keys matching {prefix}")
     except Exception as e:
-        logger.warning(
+        log.warning(
             f"[CACHE] Redis pattern delete failed for prefix={prefix!r}. Error: {e}",
             exc_info=True
         )
@@ -212,7 +232,8 @@ def clear():
     (not the whole Redis DB, in case Redis is ever shared with another
     application). Mainly useful for tests.
     """
-    logger.info("[CACHE] CLEAR: Clearing all cache entries")
+    log = _get_logger()
+    log.info("[CACHE] CLEAR: Clearing all cache entries")
     delete_pattern(f"sh:{CACHE_SCHEMA_VERSION}:*")
 
 
@@ -258,38 +279,40 @@ def cached(key_template, ttl_seconds):
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            log = _get_logger()
+            
             bound = dict(zip(param_names, args))
             bound.update(kwargs)
             
-            logger.debug(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
+            log.info(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
             
             try:
                 key = key_template.format(**bound)
-                logger.debug(f"[CACHE] WRAPPER: generated key: {key}")
+                log.info(f"[CACHE] WRAPPER: generated key: {key}")
             except (KeyError, IndexError) as e:
                 # A referenced placeholder wasn't supplied (e.g. called
                 # with fewer args than the template expects). Fail open —
                 # don't cache this call rather than raising, since a
                 # caching bug shouldn't be able to break the underlying
                 # function.
-                logger.warning(
+                log.warning(
                     f"[CACHE] WRAPPER: key template {key_template!r} missing placeholder — skipping cache. Error: {e}"
                 )
                 return func(*args, **kwargs)
 
             cached_value = get(key)
             if cached_value is not None:
-                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE HIT ✅")
+                log.info(f"[CACHE] WRAPPER: {func.__name__} — CACHE HIT ✅")
                 return cached_value
 
-            logger.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
+            log.info(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
             result = func(*args, **kwargs)
             
             if result is not None:
-                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — caching result")
+                log.info(f"[CACHE] WRAPPER: {func.__name__} — caching result")
                 set(key, result, ttl_seconds)
             else:
-                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
+                log.info(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
             
             return result
 
