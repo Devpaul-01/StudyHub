@@ -405,8 +405,27 @@ class ThreadWebSocketManager:
         """
         Called from the Learnora background thread after saving the AI reply.
         Emits to the thread room so all connected members see it instantly.
+
+        FIX: LEARNORA_BOT_USER_ID may not correspond to a real row in the
+        users table (e.g. bot user not yet seeded in this environment). If
+        User.query.get(...) returns None, fall back to a synthetic user
+        object instead of leaking None-driven defaults silently — and log
+        it, since a persistently missing bot user is worth noticing.
         """
         bot_user = User.query.get(msg.sender_id)
+
+        if not bot_user:
+            bot_user = type('DummyUser', (), {
+                'id':       msg.sender_id,
+                'name':     'Learnora',
+                'username': 'learnora',
+                'avatar':   None
+            })()
+            current_app.logger.debug(
+                f"[LEARNORA_SYNTHETIC_USER] msg_id={msg.id} "
+                f"user_id={msg.sender_id} using synthetic user object"
+            )
+
         payload = {
             "id":             msg.id,
             "thread_id":      thread_id,
@@ -414,9 +433,9 @@ class ThreadWebSocketManager:
             "sender_id":      msg.sender_id,
             "sender": {
                 "id":       msg.sender_id,
-                "name":     bot_user.name if bot_user else "Learnora",
-                "username": bot_user.username if bot_user else "learnora",
-                "avatar":   bot_user.avatar if bot_user else None
+                "name":     bot_user.name,
+                "username": bot_user.username,
+                "avatar":   bot_user.avatar
             },
             "is_ai_response":  True,
             "is_edited":       False,
@@ -818,7 +837,28 @@ class ThreadWebSocketManager:
                 )
 
                 # ── Learnora trigger — WS-only, see docstring above for why ──
-                matched_personality = result.matched_ai_trigger
+                # FIX: result.matched_ai_trigger comes from thread_message_service
+                # and is NOT guaranteed to carry the full AI_PERSONALITIES shape
+                # (e.g. may be missing "system_prompt") — that mismatch was
+                # crashing _call_learnora_for_thread with a KeyError on
+                # personality["system_prompt"]. Re-resolve the canonical dict
+                # from AI_PERSONALITIES by key here instead of trusting the
+                # service's return shape to stay in lockstep with this file's
+                # constant. Falls back to plain "learnora" if the service's
+                # key doesn't match anything known (defensive — should not
+                # normally happen given _TRIGGER_MAP is this file's own source
+                # of truth for trigger detection).
+                raw_matched = result.matched_ai_trigger
+                matched_personality = None
+                if raw_matched:
+                    trigger_key = (
+                        raw_matched.get("key")
+                        if isinstance(raw_matched, dict)
+                        else getattr(raw_matched, "key", None)
+                    )
+                    matched_personality = AI_PERSONALITIES.get(
+                        trigger_key, AI_PERSONALITIES["learnora"]
+                    )
 
                 if matched_personality:
                     self.broadcast_to_thread(thread_id, "learnora_thinking", {
@@ -1927,7 +1967,7 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
     with app.app_context():
         t_total_start = time.monotonic()
         try:
-            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
+            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID",0)
 
             # Hard guard — skip entirely if bot not configured
             if not bot_user_id:
@@ -1984,8 +2024,17 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
             )
 
             # ── System prompt ─────────────────────────────────────────
+            # FIX: use .get() with a fallback rather than personality["system_prompt"]
+            # directly — a caller passing a personality dict/object that doesn't
+            # carry system_prompt (see the resolve-by-key fix at the trigger
+            # detection call site above) previously crashed this whole
+            # background thread with a KeyError instead of degrading gracefully.
             personality = personality or AI_PERSONALITIES["learnora"]
-            base_system = personality["system_prompt"]
+            base_system = (
+                personality.get("system_prompt")
+                if isinstance(personality, dict)
+                else getattr(personality, "system_prompt", None)
+            ) or AI_PERSONALITIES["learnora"]["system_prompt"]
 
             system = f'{base_system} Thread: "{thread.title}".'
             if thread.department:
@@ -2000,7 +2049,7 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
             ]
 
             # ── Get provider and call AI ──────────────────────────────
-            from learnora import provider_manager, _call_provider_sync
+            from routes.student.learnora import provider_manager, _call_provider_sync
             provider = provider_manager.get_working_provider(needs_vision=False)
             if not provider:
                 logger.warning(
