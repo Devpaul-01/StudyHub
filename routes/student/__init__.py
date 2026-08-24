@@ -50,7 +50,7 @@ and future — is protected by default. See enforce_csrf() below.
 --------------------------------------------------------------------------
 """
 
-from flask import Blueprint, request, g
+from flask import Blueprint, request, current_app,  g
 from errors import ValidationError
 
 # ============================================================================
@@ -94,6 +94,7 @@ CSRF_EXEMPT_PATHS = {
     "/student/complete-registration",
     "/student/set-password",
     "/student/validate-user",
+    "/student/learnora/api/chat",
     "/student/clear-session",
     "/student/check-username",
     "/student/reset-password",
@@ -138,6 +139,9 @@ def enforce_csrf():
     header_value = request.headers.get("X-CSRF-Token")
 
     if not cookie_value or not header_value or cookie_value != header_value:
+
+        current_app.logger.warning("no csrf  found for chat route:  ")
+        
         raise ValidationError("CSRF token missing or invalid", status_code=403)
 
 
