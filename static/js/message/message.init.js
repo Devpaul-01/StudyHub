@@ -35,12 +35,10 @@ export async function initializeMessaging() {
     await _bootstrapCurrentUser();
 
     // 2. Connect WebSocket using token from cookie
-    const token = getCookie('access_token');
-    if (!token) {
-      _toast('Token not found', 'warning');
-    } else {
-      messageWS.connect(token);
-    }
+    
+  
+    messageWS.connect();
+    
 
     // 3. Load initial conversation data
     await loadInitialData();
@@ -120,8 +118,8 @@ function _setupNetworkMonitoring() {
       render.hideOfflineBanner();
       _toast('Back online', 'success');
 
-      const token = getCookie('access_token');
-      if (token) messageWS.connect(token);
+      // ✅ FIX: Just reconnect - backend reads cookie
+      messageWS.connect();  // ← Remove token parameter
     },
     () => {
       messageState.setOnlineStatus(false);

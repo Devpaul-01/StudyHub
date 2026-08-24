@@ -39,11 +39,9 @@ class MessageWebSocket {
   // CONNECT / DISCONNECT
   // --------------------------------------------------------------------------
 
-  connect(token) {
-    if (!token) {
-      return;
-    }
-    this.token = token;
+  connect() {
+  
+    
     this.socket = socket;
 
     this._registerHandlers();
