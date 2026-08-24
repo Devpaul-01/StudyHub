@@ -75,8 +75,8 @@ def _create_redis_client():
         client = redis.Redis.from_url(
             redis_url,
             decode_responses=True,
-            socket_connect_timeout=5,      # Increased from 2s to 5s
-            socket_timeout=5,              # Increased from 2s to 5s
+            socket_connect_timeout=10,      # Increased from 2s to 5s
+            socket_timeout=10,              # Increased from 2s to 5s
             retry_on_timeout=False,
             **extra_kwargs,
         )
