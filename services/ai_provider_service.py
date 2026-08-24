@@ -131,7 +131,10 @@ PROVIDER_ORDER = ["cerebras", "groq", "mistral", "openrouter"]
 #
 #   KEY_FAULT          — cool the specific key, try next key/provider.
 #                        Attributable to the key itself (bad credentials,
-#                        or this key specifically hit its rate limit).
+#                        this key specifically hit its rate limit, or this
+#                        key/account is out of quota — 402 Payment Required
+#                        included, since that's an account-billing state,
+#                        not a provider-wide outage).
 #   PROVIDER_TRANSIENT — do NOT cool the key, try next key/provider.
 #                        Provider-wide or network condition unrelated to
 #                        this key's validity — penalizing the key would
@@ -163,7 +166,7 @@ class ProviderCallError(Exception):
         self.raw_message = message                    # kept for logging ONLY — never used for classification
 
 
-_KEY_FAULT_STATUSES = {401, 403, 429}
+_KEY_FAULT_STATUSES = {401, 402, 403, 429}
 _PROVIDER_TRANSIENT_STATUSES = {500, 502, 503, 504}
 # Python's requests library raises ConnectionError/Timeout as exception
 # TYPES, not as a networkErrorCode string the way Node's fetch does via
@@ -1419,17 +1422,63 @@ class StudyAssistant:
             # exactly which failures set _last_error_category and why
             # this is scoped to header-stage only.
             category = getattr(self, "_last_error_category", None)
-            if category == "KEY_FAULT":
-                provider_manager.mark_provider_failed(self.provider["name"], "streaming KEY_FAULT")
-            elif category == "BAD_MODEL":
-                provider_manager.evict_model(self.provider.get("_provider_id", self.provider["name"]), self.model)
             self._last_error_category = None
+
+            if category == "KEY_FAULT":
+                # Cooling the key here is not enough on its own — this
+                # provider's key is now dead for the cooldown window, so
+                # trying its OTHER models (advance_to_fallback_model,
+                # below) would just burn every remaining model in
+                # CEREBRAS_MODELS/etc. against the same cooled key before
+                # ever giving the caller a chance to pick a different
+                # provider. Bug this fixes: a 402 (payment required, now
+                # classified KEY_FAULT — see classify_provider_error)
+                # used to fall through to the generic "not a model error"
+                # branch below, which does nothing for KEY_FAULT, so the
+                # loop kept re-streaming from the SAME already-failed key
+                # up to MAX_MODEL_RETRIES times.
+                provider_manager.mark_provider_failed(self.provider["name"], "streaming KEY_FAULT")
+                logger.warning(
+                    f"⚠️ {self.provider['name']} hit a KEY_FAULT mid-stream — "
+                    "cooling key and switching providers rather than retrying it"
+                )
+                self._provider_exhausted = True
+                return
+
+            if category == "PROVIDER_TRANSIENT":
+                # Provider-wide/network issue — don't cool the key, but
+                # also don't keep hammering the SAME provider with a
+                # different model; a 503 is not model-specific, so
+                # advance_to_fallback_model would just repeat the same
+                # failure under a different model name. Let the caller
+                # rotate to a different provider instead.
+                logger.warning(
+                    f"⚠️ {self.provider['name']} hit a PROVIDER_TRANSIENT error mid-stream — "
+                    "switching providers rather than retrying it"
+                )
+                self._provider_exhausted = True
+                return
+
+            if category == "BAD_MODEL":
+                provider_manager.evict_model(self.provider.get("_provider_id", self.provider["name"]), self.model)
+
+            elif category == "NON_RETRYABLE":
+                # Genuinely not retryable anywhere for this request — don't
+                # cycle models on this provider, but also don't treat it as
+                # a clean exit (see below): signal the caller so it doesn't
+                # silently reuse this same provider for the same request.
+                logger.error(
+                    f"❌ {self.provider['name']} hit a NON_RETRYABLE error mid-stream — aborting fallback chain"
+                )
+                self._provider_exhausted = True
+                return
 
             # _do_stream sets self._model_error_occurred if a model error occurred
             if not getattr(self, "_model_error_occurred", False):
                 return  # clean exit
 
-            # Try next fallback model
+            # Try next fallback model (BAD_MODEL, or a mid-stream model-not-
+            # found signal with no header-stage category at all)
             advanced = self.advance_to_fallback_model(has_images)
             if not advanced:
                 # All models in this provider exhausted — signal caller to switch providers
