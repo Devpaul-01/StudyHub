@@ -157,43 +157,21 @@ export async function removeReaction(messageId) {
  * @param {Function} [onProgress]  – called with percent (0-100)
  * @returns {Promise<object>}  { id, url, type, filename, size }
  */
-export function uploadResource(file, onProgress = null) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', API_ENDPOINTS.UPLOAD_RESOURCE);
-
-    // Copy auth headers from the global api client if available
-    const token = localStorage.getItem('token');
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-
-    if (onProgress) {
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      };
-    }
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          resolve(data.data ?? data);
-        } catch {
-          reject(new Error('Invalid response from upload endpoint'));
-        }
-      } else {
-        reject(new Error(`Upload failed with status ${xhr.status}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Network error during upload'));
-
-    xhr.send(formData);
-  });
+/**
+ * Upload a file resource using the enhanced API client
+ */
+export async function uploadResource(file, onProgress = null) {
+  try {
+    const result = await api.uploadWithProgress(
+      API_ENDPOINTS.UPLOAD_RESOURCE,
+      file,
+      onProgress
+    );
+    return result;
+  } catch (error) {
+    console.error('Failed to upload resource:', error);
+    throw error;
+  }
 }
 
 export async function getSharedMedia(partnerId, params = {}) {

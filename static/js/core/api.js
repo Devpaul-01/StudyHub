@@ -16,6 +16,84 @@ class APIClient {
     this.refreshSubscribers = [];
     this.maxRetries = 1;
   }
+  
+  // In api.js, add this method:
+
+/**
+ * Upload file with progress tracking using XMLHttpRequest
+ * This maintains the same API as uploadResource but uses api client's auth
+ */
+async uploadWithProgress(endpoint, file, onProgress = null, additionalData = {}) {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    for (const [key, value] of Object.entries(additionalData)) {
+      formData.append(key, value);
+    }
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${this.baseURL}${endpoint}`);
+    xhr.withCredentials = true;
+
+    // Use the API client's header generation (includes X-CSRF-Token and,
+    // for backward compatibility, a Bearer Authorization header if
+    // access_token is still JS-readable — see getHeadersSync below).
+    // isJSON=false: this is a multipart FormData upload, so we must NOT
+    // set Content-Type: application/json, or the multipart boundary the
+    // browser needs to add will be overwritten and the server won't be
+    // able to parse the body.
+    const headers = this.getHeadersSync(false);
+    for (const [key, value] of Object.entries(headers)) {
+      xhr.setRequestHeader(key, value);
+    }
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          resolve(data.data ?? data);
+        } catch {
+          reject(new Error('Invalid response from upload endpoint'));
+        }
+      } else {
+        reject(new Error(`Upload failed with status ${xhr.status}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.send(formData);
+  });
+}
+
+// Add a sync version of getHeaders for XHR use
+getHeadersSync(isJSON = true) {
+  const headers = {};
+  
+  if (isJSON) {
+    headers['Content-Type'] = 'application/json';
+  }
+  
+  const csrfToken = this.getCsrfToken();
+  if (csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  
+  const token = this.getToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return headers;
+}
 
   /**
    * Check if current page is a public auth page (no token needed)
@@ -101,41 +179,33 @@ class APIClient {
   /**
    * Refresh access token
    */
-  async refreshAccessToken() {
-    try {
-      console.log('🔄 Refreshing access token...');
-      
-      const response = await fetch(`${this.baseURL}/refresh-token`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('Token refresh failed');
-      }
-
-      const data = await response.json();
-      
-      if (data.status === 'success') {
-        console.log('✅ Token refreshed successfully');
-        return true;
-      }
-      
-      throw new Error('Token refresh failed');
-    } catch (error) {
-      console.error('❌ Token refresh error:', error);
-      
-      // ✅ FIXED: Only clear auth if NOT on public pages
-      if (!this.isPublicAuthPage()) {
-        this.clearAuth();
-      }
-      
-      return false;
+  /**
+ * Refresh access token
+ */
+async refreshAccessToken() {
+  try {
+    console.log('🔄 Refreshing access token...');
+    
+    // ✅ Use api.post to include CSRF token automatically
+    const data = await this.post('/refresh-token', {});
+    
+    if (data.status === 'success') {
+      console.log('✅ Token refreshed successfully');
+      return true;
     }
+    
+    throw new Error('Token refresh failed');
+  } catch (error) {
+    console.error('❌ Token refresh error:', error);
+    
+    // ✅ Only clear auth if NOT on public pages
+    if (!this.isPublicAuthPage()) {
+      this.clearAuth();
+    }
+    
+    return false;
   }
+}
 
   /**
    * Clear authentication and redirect
@@ -715,7 +785,6 @@ function showToast(message, type = "info", duration = 6000) {
     setTimeout(() => toast.remove(), 200);
   }, duration);
 }
-
 window.addEventListener('unhandledrejection', (event) => {
   console.error('Unhandled promise rejection:', event.reason);
   if (typeof showToast === 'function') {
