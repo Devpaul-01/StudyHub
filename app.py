@@ -422,8 +422,6 @@ if __name__ == "__main__":
     print("="*60)
     print(f"📧 Email:            {'✅ Configured' if os.environ.get('MAIL_USERNAME') else '❌ Not configured'}")
     # In auth.py, after google_bp is defined:
-    print(f"🔍 Google Client ID being used: {os.getenv('GOOGLE_OAUTH_CLIENT_ID') or os.getenv('GOOGLE_CLIENT_ID')}")
-    print(f"🔍 Google Client Secret being used: {'SET' if (os.getenv('GOOGLE_OAUTH_CLIENT_SECRET') or os.getenv('GOOGLE_CLIENT_SECRET')) else 'NOT SET'}")
     # AUDIT security-hygiene fix (extending the same reasoning as the
     # removed DATABASE_URL print above to this line, which the audit's
     # single quoted example didn't name explicitly but is the identical
