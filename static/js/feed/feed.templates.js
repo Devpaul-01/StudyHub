@@ -777,6 +777,7 @@ export function buildDynamicOptionsMenu(data) {
       ` : ''}
       
       
+      ${is_author ? `
       <!-- Delete Post -->
       <div 
         class="post-option-item" 
@@ -797,6 +798,7 @@ export function buildDynamicOptionsMenu(data) {
           <div class="option-description" style="font-size: 0.8rem; color: var(--text-secondary);">Permanently remove</div>
         </div>
       </div>
+      ` : ''}
       
       <!-- ✅ DYNAMIC: Mark Solved/Unsolved based on current state -->
       ${canSolve ? (
