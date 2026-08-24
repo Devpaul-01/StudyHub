@@ -101,24 +101,38 @@ export const learnoraAPI = {
    * @param {FormData} formData  Must include conversation_id, message, mode, optional files
    * @returns {Promise<Response>}
    */
-  async streamChat(formData) {
-    const opts = _getFetchOptions();
-    // Do NOT set Content-Type — the browser sets it with the multipart boundary
+  /**
+ * Stream chat response with SSE (Server-Sent Events)
+ * 
+ * ✅ Uses fetch directly (not api.post)
+ * ✅ credentials: 'include' sends cookies automatically
+ * ✅ No manual token handling (httponly cookie is sent by browser)
+ * ✅ No Content-Type header (browser sets multipart boundary)
+ * ✅ CSRF token is NOT needed for this endpoint (exempted)
+ */
+async streamChat(formData) {
+  try {
     const response = await fetch('/student/learnora/api/chat', {
       method: 'POST',
-      ...opts,
-      body: formData,
+      credentials: 'include',  // ✅ Sends httponly cookies automatically
+      body: formData,          // ✅ Browser sets Content-Type with boundary
     });
 
     if (!response.ok) {
       let errMsg = `HTTP ${response.status}`;
       try {
         const body = await response.json();
-        errMsg = body.error ?? errMsg;
-      } catch (_) { /* ignore parse error */ }
+        errMsg = body.error || body.message || errMsg;
+      } catch (_) {
+        // Ignore parse error
+      }
       throw new Error(errMsg);
     }
 
     return response;
-  },
-};
+  } catch (error) {
+    console.error('[streamChat] Error:', error);
+    throw error;
+  }
+}
+}
