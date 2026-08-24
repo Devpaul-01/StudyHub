@@ -1021,7 +1021,7 @@ class ThreadMessage(db.Model):
 
     id        = db.Column(db.Integer, primary_key=True)
     thread_id = db.Column(db.Integer, db.ForeignKey("threads.id"), nullable=False, index=True)
-    sender_id = db.Column(db.Integer, db.ForeignKey("users.id"),   nullable=False, index=True)
+    sender_id = db.Column(db.Integer, nullable=False, index=True)  # ← Removed db.ForeignKey
 
     text_content = db.Column(db.Text, nullable=False, default="")
 
