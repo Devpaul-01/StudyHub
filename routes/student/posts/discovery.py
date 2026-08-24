@@ -114,8 +114,11 @@ def get_posts_by_tag(current_user, tag):
         page = request.args.get("page", 1, type=int)
         per_page = request.args.get("per_page", 20, type=int)
         
-        # PostgreSQL array contains operator
-        query = Post.query.filter(Post.tags.contains([tag]))
+        # ✅ FIXED: Cast the COLUMN (not just the param) to JSONB, then use the @> operator
+        from sqlalchemy.dialects.postgresql import JSONB
+        from sqlalchemy import cast
+        
+        query = Post.query.filter(cast(Post.tags, JSONB).contains([tag]))
         query = query.order_by(Post.posted_at.desc())
         
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -330,12 +333,11 @@ def get_posts_by_tag(current_user, tag):
                 }
             })
 
-        # ✅ FIXED: Return with correct data structure (removed undefined filter_type)
         return jsonify({
             "status": "success",
             "data": {
                 "posts": posts_data,
-                "tag": tag,  # ✅ FIX: Use 'tag' instead of undefined 'filter_type'
+                "tag": tag,
                 "pagination": {
                     "page": page,
                     "per_page": per_page,
@@ -350,6 +352,7 @@ def get_posts_by_tag(current_user, tag):
     except Exception as e:
         current_app.logger.error(f"Get posts by tag error: ", exc_info=True)
         return error_response("Failed to load posts by tag")
+
 
 
 @posts_discovery_bp.route("/posts/tags", methods=["GET"])
