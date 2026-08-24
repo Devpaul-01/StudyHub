@@ -439,10 +439,19 @@ def chat(current_user):
 
                 if not error_in_stream:
                     # Also check if stream_response exhausted all models in the provider
-                    # (model-not-found failures that never produced a stream error chunk)
+                    # (model-not-found failures that never produced a stream error chunk) —
+                    # OR gave up on this provider entirely for a KEY_FAULT / PROVIDER_TRANSIENT /
+                    # NON_RETRYABLE header-stage failure. StudyAssistant.stream_response now sets
+                    # _provider_exhausted for all of these (previously only a fully-exhausted
+                    # model list set it), so this branch covers e.g. a 402 payment-required
+                    # error that never even got here as a mid-stream 'error' chunk.
                     if getattr(assistant, '_provider_exhausted', False) and not full_response:
-                        logger.warning(f"⚠️ Provider {provider['name']} exhausted all models — forcing provider switch")
-                        provider_manager.mark_provider_failed(provider['name'], "all models returned 404")
+                        exhaustion_reason = error_message or "provider exhausted (see server logs for classified error category)"
+                        logger.warning(
+                            f"⚠️ Provider {provider['name']} exhausted — forcing provider switch "
+                            f"(reason: {exhaustion_reason})"
+                        )
+                        provider_manager.mark_provider_failed(provider['name'], exhaustion_reason)
                         provider_manager.rotate()
 
                         next_provider = provider_manager.get_working_provider(
