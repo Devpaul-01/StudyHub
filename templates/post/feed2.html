@@ -315,7 +315,7 @@ html { scroll-behavior: smooth; }
          The toggle button is now a sibling of <header>, not a child,
          wrapped together in #header-bar so it keeps the same visual spot. -->
     <div id="header-bar" class="header-bar">
-        <button class="icon-button mobile-menu-btn" id='sidebar-toggle-btn' data-action="toggle-mobile-sidebar">
+        <button class="icon-button mobile-menu-btn" id='sidebar-toggle-btn' data-action="toggle-mobile-sidebar" aria-label="Toggle sidebar" aria-expanded="false" aria-controls="sections-sidebar">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="3" y1="12" x2="21" y2="12"></line>
                 <line x1="3" y1="6" x2="21" y2="6"></line>
@@ -373,9 +373,15 @@ html { scroll-behavior: smooth; }
 
     <!-- ==================== MAIN LAYOUT ==================== -->
     <div class="main-layout">
-        
+
+        <!-- Dimmed tap-to-close layer, shown only on tablet/mobile while the
+             off-canvas sidebar is open (see feed3.css). Sits behind the
+             sidebar and in front of the content, so a tap anywhere on the
+             visible strip of pushed content closes the panel. -->
+        <div id="sidebar-backdrop" aria-hidden="true"></div>
+
         <!-- ==================== SIDEBAR NAVIGATION ==================== -->
-        <aside id='sections-sidebar' class='sidebar'>
+        <aside id='sections-sidebar' class='sidebar' aria-label="Main navigation">
         
             <!-- Primary Navigation -->
             <nav class="nav-section">
@@ -5651,7 +5657,7 @@ function _openMessagesOverlay() {
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
 
     // ── Close mobile sidebar if open ─────────────────────────────────
-    toggleMobileSidebar();
+    closeMobileSidebar();
 
     // ── Initialise messaging once (prevents stacked socket listeners) ─
     if (!_messagingInitialized && typeof initializeMessaging === 'function') {
@@ -5678,7 +5684,7 @@ function _closeMessagesOverlay() {
     if (headerBar) headerBar.classList.remove('hidden');
     _bottomNav?.classList.remove('hidden');
     _helpBtn?.classList.remove('hidden');
-    toggleMobileSidebar();
+    closeMobileSidebar();
 }
 
 
@@ -5687,59 +5693,45 @@ function _closeMessagesOverlay() {
 
 function toggleMobileSidebar(event) {
     if (event) event.preventDefault();
-    const sidebar = document.getElementById('sections-sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (!sidebar) return;
-    const headerEl = document.getElementById('header');
-    const headerBarEl = document.getElementById('header-bar');
+    const layout = document.querySelector('.main-layout');
+    if (!layout) return;
 
-    // Sidebar is visible by default (no .hidden class). Toggling .hidden
-    // (display:none !important — already defined globally in feed3.css)
-    // works at ANY screen width, unlike .active's transform which only
-    // has a visual effect inside the @media (max-width: 768px) block.
-    const isHidden = sidebar.classList.contains('hidden');
-
-    // Helper to create toast messages
-    const createToast = (label, extra = '') => {
-        return `${label}\n` +
-               `Header: ${headerEl?.className || 'N/A'}\n` +
-               `Header Bar: ${headerBarEl?.className || 'N/A'}\n` +
-               `Sidebar: ${sidebar.className}\n` +
-               `Body Overflow: ${document.body.style.overflow || 'visible'}\n` +
-               `${extra}`;
-    };
-    // Show BEFORE
-
-    // Toggle
-    if (isHidden) {
-        sidebar.classList.remove('hidden');
-        if (backdrop) backdrop.classList.add('active');
-    } else {
-        sidebar.classList.add('hidden');
-        if (backdrop) backdrop.classList.remove('active');
+    // Desktop keeps the sidebar open by default (pure CSS, no class
+    // needed) and collapses via .sidebar-collapsed. Tablet/mobile default
+    // to closed and open via .sidebar-open. Same button, same functions,
+    // different class depending on breakpoint so each screen size gets
+    // its own natural default with no flash on load.
+    if (window.innerWidth >= 1025) {
+        layout.classList.toggle('sidebar-collapsed');
+        const isOpen = !layout.classList.contains('sidebar-collapsed');
+        el?.setAttribute('aria-expanded', String(isOpen));
+        return;
     }
 
-    // Show AFTER
-    // Async checks
-    
+    const willOpen = !layout.classList.contains('sidebar-open');
+    layout.classList.toggle('sidebar-open', willOpen);
+    el?.setAttribute('aria-expanded', String(willOpen));
 }
 
 function closeMobileSidebar() {
-    const sidebar = document.getElementById('sections-sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (sidebar) sidebar.classList.add('hidden');
-    if (backdrop) backdrop.classList.remove('active');
+    const layout = document.querySelector('.main-layout');
+    if (!layout) return;
+    // Only clears the mobile/tablet off-canvas state; desktop's
+    // persistent sidebar (.sidebar-collapsed) is left untouched, since
+    // "close the mobile sidebar" shouldn't collapse the desktop panel
+    // when e.g. the Messages overlay opens.
+    layout.classList.remove('sidebar-open');
+    el?.setAttribute('aria-expanded', 'false');
 }
 
 function logout(event) {
     if (event) event.preventDefault();
     if (confirm('Are you sure you want to logout?')) {
-        api.get("/logout");
+        api.post("/logout");
         
     }
 }
 
-window.closeMobileSidebar = closeMobileSidebar;
 function handleAskLearnoraClick() {
   const modal = document.getElementById('ask-learnora-modal');
   const input = document.getElementById('ask-learnora-input');
@@ -5757,8 +5749,7 @@ document.addEventListener('keydown', function(e) {
             }
         });
         document.body.style.overflow = '';
-        /*
-        closeMobileSidebar();*/
+        closeMobileSidebar();
     }
 
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
@@ -5766,6 +5757,20 @@ document.addEventListener('keydown', function(e) {
         const searchInput = document.getElementById('global-search-input');
         if (searchInput) searchInput.focus();
     }
+});
+
+// Tap the dimmed area behind the off-canvas sidebar (tablet/mobile) to
+// close it — the element existed in CSS/JS before but was never actually
+// in the markup, so this never had anything to attach to.
+document.getElementById('sidebar-backdrop')?.addEventListener('click', closeMobileSidebar);
+
+// Auto-close the off-canvas sidebar after picking a section, so users
+// aren't left staring at the drawer after navigating. Desktop's
+// persistent sidebar is left alone (closeMobileSidebar is a no-op for it).
+document.querySelectorAll('#sections-sidebar .nav-item').forEach((item) => {
+    item.addEventListener('click', () => {
+        if (window.innerWidth <= 1024) closeMobileSidebar();
+    });
 });
 
 document.addEventListener('input', (e) => {

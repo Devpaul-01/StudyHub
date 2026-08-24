@@ -27,7 +27,7 @@ export const API_ENDPOINTS = {
   REMOVE_REACTION: (messageId) => `/messages/${messageId}/react`,
 
   // Resources (file / voice note upload)
-  UPLOAD_RESOURCE: '/student/messages/resources/upload',
+  UPLOAD_RESOURCE: '/messages/resources/upload',
   SHARED_MEDIA:    (partnerId) => `/messages/shared-media/${partnerId}`,
 
   // Permissions / blocking
