@@ -16,6 +16,7 @@ import os
 loaded = load_dotenv()
 
 import random
+import json
 
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -39,6 +40,36 @@ from logging.handlers import RotatingFileHandler
 
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+
+# ============================================================================
+# Logging: ExtraFormatter
+# ============================================================================
+# FIX: logger.info(..., extra={...}) attaches those fields to the LogRecord,
+# but the default Formatter (and Flask's default logger config) never
+# prints them — they were being silently discarded. This formatter appends
+# any non-standard fields as JSON so extra={...} calls throughout the app
+# (e.g. routes/student/posts/*.py's request_id/author_id/etc. debug logs)
+# actually show up in output instead of only living in a message string.
+_STANDARD_LOG_ATTRS = set(vars(logging.LogRecord('', 0, '', 0, '', (), None)).keys()) | {
+    'message', 'asctime'
+}
+
+
+class ExtraFormatter(logging.Formatter):
+    def format(self, record):
+        base = super().format(record)
+        extras = {
+            k: v for k, v in record.__dict__.items()
+            if k not in _STANDARD_LOG_ATTRS
+        }
+        if extras:
+            try:
+                extras_str = json.dumps(extras, default=str)
+            except Exception:
+                extras_str = str(extras)
+            return f"{base} | {extras_str}"
+        return base
 
 
 # ============================================================================
@@ -169,25 +200,48 @@ def create_app(config_class=None):
     # ========================================================================
     # Logging Configuration
     # ========================================================================
-    if not app.debug and not app.testing:
-        # Create logs directory if itesn't exist
-        if not os.path.exists('logs'):
-            os.mkdir('logs')
-        
-        # File handler for error logs
-        file_handler = RotatingFileHandler(
-            'logs/studyhub.log',
-            maxBytes=10240000,  # 10MB
-            backupCount=10
-        )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-        
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('StudyHub startup')
+    # FIX: this used to be gated behind `if not app.debug and not app.testing`,
+    # so in local/dev runs (app.debug=True) NONE of this ever executed —
+    # app.logger fell back to Flask's default handler, which is WARNING+
+    # only and has no formatter that prints extra={...} fields. That's why
+    # INFO/DEBUG logs and extra fields (request_id, author_id, etc. from
+    # routes like posts/feed) were invisible. Logging config now always
+    # runs, in every environment.
+    #
+    # Console handler — always attached, so `flask run` / `python app.py`
+    # show everything live in the terminal, not just what ends up in the
+    # log file.
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(ExtraFormatter(
+        '%(asctime)s %(levelname)s: %(message)s'
+    ))
+    app.logger.handlers = [console_handler]
+    app.logger.propagate = False
+
+    # File handler — kept for production/persistent logs, now also uses
+    # ExtraFormatter so extra={...} fields land in the log file too, and
+    # no longer gated behind app.debug/app.testing.
+    if not os.path.exists('logs'):
+        os.mkdir('logs')
+
+    file_handler = RotatingFileHandler(
+        'logs/studyhub.log',
+        maxBytes=10240000,  # 10MB
+        backupCount=10
+    )
+    file_handler.setFormatter(ExtraFormatter(
+        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+    ))
+    file_handler.setLevel(logging.DEBUG)
+    app.logger.addHandler(file_handler)
+
+    # DEBUG so all log types (debug/info/warning/error) are shown, not just
+    # info+. Dial back to logging.INFO once you're done chasing the bug —
+    # DEBUG is chatty (per-post assembly logs, query timings, etc.) and not
+    # meant to stay on indefinitely in production.
+    app.logger.setLevel(logging.DEBUG)
+    app.logger.info('StudyHub startup')
     
     # ========================================================================
     # Error Handlers
