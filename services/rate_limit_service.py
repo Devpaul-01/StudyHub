@@ -40,10 +40,12 @@ down is worse than no rate limiter. This is achieved by:
 """
 from __future__ import annotations
 
-from flask import request, g, jsonify
+import logging
+from flask import request, current_app, g, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────
 # TIERS — named rate strings. Route authors pick a tier by name; nobody
@@ -66,7 +68,9 @@ class RateLimitTier:
 def ip_key() -> str:
     """IP-based key — for pre-auth routes (login/register) where there's no
     user identity yet to key on."""
-    return get_remote_address()
+    ip = get_remote_address()
+    logger.debug(f"[RATE_LIMIT] 🔑 ip_key() → {ip}")
+    return ip
 
 
 def user_or_ip_key() -> str:
@@ -84,8 +88,13 @@ def user_or_ip_key() -> str:
     """
     user_id = getattr(g, "current_user_id", None)
     if user_id:
-        return f"user:{user_id}"
-    return get_remote_address()
+        key = f"user:{user_id}"
+        logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")
+        return key
+    
+    ip = get_remote_address()
+    logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {ip} (fallback to IP)")
+    return ip
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -105,7 +114,10 @@ limiter = Limiter(
 
 def _is_exempt_path(path: str) -> bool:
     """Health/readiness endpoints are never rate limited."""
-    return path in ("/health", "/ping", "/ready")
+    exempt = path in ("/health", "/ping", "/ready")
+    if exempt:
+        logger.debug(f"[RATE_LIMIT] 🛡️ Path {path} is EXEMPT from rate limiting")
+    return exempt
 
 
 def init_app(app) -> Limiter:
@@ -118,6 +130,9 @@ def init_app(app) -> Limiter:
     storage_uri = app.config.get("RATE_LIMIT_STORAGE_URI", "memory://")
     is_redis = storage_uri.startswith("redis://") or storage_uri.startswith("rediss://")
 
+    logger.info(f"[RATE_LIMIT] ⚙️ Initializing with storage: {storage_uri}")
+    logger.info(f"[RATE_LIMIT] ⚙️ Storage type: {'Redis' if is_redis else 'Memory'}")
+
     app.config.setdefault("RATELIMIT_STORAGE_URI", storage_uri)
     if is_redis:
         # Fail fast against a down/unreachable Redis instead of hanging
@@ -127,6 +142,8 @@ def init_app(app) -> Limiter:
             "socket_timeout": 1,
             "retry_on_timeout": False,
         })
+        logger.info("[RATE_LIMIT] ⚙️ Redis storage options: socket_connect_timeout=1s, socket_timeout=1s")
+    
     app.config.setdefault("RATELIMIT_STRATEGY", "fixed-window")
     app.config.setdefault("RATELIMIT_ENABLED", app.config.get("RATE_LIMIT_ENABLED", True))
     app.config.setdefault("RATELIMIT_HEADERS_ENABLED", True)
@@ -136,6 +153,10 @@ def init_app(app) -> Limiter:
     # request through unlimited rather than 500ing or blocking everything.
     app.config.setdefault("RATELIMIT_SWALLOW_ERRORS", True)
     app.config.setdefault("RATELIMIT_IN_MEMORY_FALLBACK_ENABLED", True)
+
+    logger.info(f"[RATE_LIMIT] ⚙️ RATELIMIT_ENABLED: {app.config.get('RATELIMIT_ENABLED')}")
+    logger.info(f"[RATE_LIMIT] ⚙️ RATELIMIT_SWALLOW_ERRORS: {app.config.get('RATELIMIT_SWALLOW_ERRORS')}")
+    logger.info(f"[RATE_LIMIT] ⚙️ RATELIMIT_IN_MEMORY_FALLBACK_ENABLED: {app.config.get('RATELIMIT_IN_MEMORY_FALLBACK_ENABLED')}")
 
     limiter.init_app(app)
 
@@ -153,10 +174,79 @@ def init_app(app) -> Limiter:
         assigns to an attribute that doesn't exist on modern Flask-Limiter
         and would raise AttributeError before a single request is served.
         """
+        logger.warning(f"[RATE_LIMIT] 🚫 429 Rate limit exceeded for {request.path} - {err.description}")
         return jsonify({
             "status": "error",
             "message": "Rate limit exceeded. Please slow down your requests.",
             "details": {"limit": str(getattr(err, "description", "")) or None},
         }), 429
 
+    logger.info("[RATE_LIMIT] ✅ Rate limiter initialized successfully")
     return limiter
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# DECORATOR WRAPPER WITH DEBUG LOGGING
+# ─────────────────────────────────────────────────────────────────────────
+
+def limit(tier: str, key_func=None):
+    """
+    Wrapper around limiter.limit() that adds debug logging for rate limit
+    checks. Use exactly like @limiter.limit():
+
+        @rate_limit_service.limit(RateLimitTier.AI_EXPENSIVE)
+        def my_route():
+            ...
+    """
+    def decorator(f):
+        import functools
+        
+        # Get the actual limiter.limit decorator
+        if key_func:
+            decorated = limiter.limit(tier, key_func=key_func)(f)
+        else:
+            decorated = limiter.limit(tier)(f)
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            endpoint = request.path
+            user_id = getattr(g, "current_user_id", None)
+            
+            # Log the rate limit check
+            actual_key = key_func() if key_func else None
+            logger.debug(
+                f"[RATE_LIMIT] 🔍 Checking limit '{tier}' for endpoint {endpoint} "
+                f"(user: {user_id or 'anonymous'}, key: {actual_key})"
+            )
+            
+            try:
+                result = decorated(*args, **kwargs)
+                logger.debug(f"[RATE_LIMIT] ✅ Request to {endpoint} passed rate limit check")
+                return result
+            except Exception as e:
+                # If rate limiter raises, log it
+                if hasattr(e, 'description') and '429' in str(e):
+                    logger.warning(f"[RATE_LIMIT] 🚫 Rate limit exceeded for {endpoint}")
+                raise
+                
+        return wrapper
+    return decorator
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# REQUEST FILTER LOGGING (if you use limiter.request_filter)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Optional: Add logging for request filtering
+# This can be used in app.py if you want to skip rate limiting for certain requests
+
+def log_request_filter(f):
+    """Wrapper to log when a request is filtered out of rate limiting."""
+    import functools
+    @functools.wraps(f)
+    def wrapper():
+        result = f()
+        if result:
+            logger.debug(f"[RATE_LIMIT] 🛡️ Request to {request.path} is EXEMPT from rate limiting")
+        return result
+    return wrapper
