@@ -1259,6 +1259,7 @@ class Connection(db.Model):
     # ✅ ADD THIS FIELD
     requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+    is_seen = db.Column(db.Boolean, default=False)
 
     # C-3 fix: explicit "who blocked whom" column. Previously block_user()
     # swapped requester_id/receiver_id on an existing row so that
