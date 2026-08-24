@@ -27,6 +27,7 @@ boundary is entirely inside this file.
 import functools
 import json
 import logging
+import os
 
 from extensions import redis_client
 
@@ -53,6 +54,31 @@ CACHE_SCHEMA_VERSION = 1
 # exposed more broadly than this app's own containers. See plan §6.2.
 # ============================================================================
 
+# ── DEBUG: Log Redis URL (without password) ────────────────────────────────
+def _get_redis_url_safe():
+    """Get Redis URL with password redacted for logging."""
+    url = os.environ.get('REDIS_URL', 'NOT_SET')
+    if url and url != 'NOT_SET':
+        # Redact password if present
+        import re
+        redacted = re.sub(r':([^@]+)@', ':***@', url)
+        return redacted
+    return url
+
+logger.info(f"[CACHE] Redis URL configured: {_get_redis_url_safe()}")
+logger.info(f"[CACHE] Redis client type: {type(redis_client)}")
+
+# Test Redis connection at import time
+try:
+    if redis_client:
+        logger.info("[CACHE] Testing Redis connection...")
+        result = redis_client.ping()
+        logger.info(f"[CACHE] Redis ping result: {result}")
+    else:
+        logger.error("[CACHE] Redis client is None! Check extensions.py")
+except Exception as e:
+    logger.error(f"[CACHE] Redis connection test FAILED: {e}")
+
 
 def get(key):
     """
@@ -64,22 +90,29 @@ def get(key):
     callers — a cache miss — which is what makes the cache-aside pattern
     (get() -> None -> recompute -> set()) safe to use unconditionally.
     """
+    logger.debug(f"[CACHE] GET: {key}")
+    
     try:
         raw = redis_client.get(key)
-    except Exception:
+        logger.debug(f"[CACHE] GET raw response: {raw is not None}")
+    except Exception as e:
         logger.warning(
-            "Redis GET failed for key=%r — treating as cache miss", key, exc_info=True
+            f"[CACHE] Redis GET failed for key={key!r} — treating as cache miss. Error: {e}",
+            exc_info=True
         )
         return None
 
     if raw is None:
+        logger.debug(f"[CACHE] GET: {key} — CACHE MISS (not found)")
         return None
 
     try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
+        value = json.loads(raw)
+        logger.debug(f"[CACHE] GET: {key} — CACHE HIT ✅")
+        return value
+    except (TypeError, ValueError) as e:
         logger.warning(
-            "Redis value for key=%r was not valid JSON — treating as cache miss", key
+            f"[CACHE] Redis value for key={key!r} was not valid JSON — treating as cache miss. Error: {e}"
         )
         return None
 
@@ -90,11 +123,26 @@ def set(key, value, ttl_seconds):
     Never raises. On failure the write is silently dropped — see plan §8:
     a cache write failure must never fail the request that triggered it.
     """
+    logger.debug(f"[CACHE] SET: {key} (TTL: {ttl_seconds}s)")
+    
     try:
-        redis_client.set(key, json.dumps(value), ex=ttl_seconds)
-    except Exception:
+        serialized = json.dumps(value)
+        logger.debug(f"[CACHE] SET: {key} — serialized size: {len(serialized)} bytes")
+        
+        result = redis_client.set(key, serialized, ex=ttl_seconds)
+        logger.debug(f"[CACHE] SET: {key} — result: {result}")
+        
+        # Verify the write
+        verify = redis_client.get(key)
+        if verify:
+            logger.debug(f"[CACHE] SET: {key} — verified ✅")
+        else:
+            logger.warning(f"[CACHE] SET: {key} — verification FAILED (key not found after write)")
+            
+    except Exception as e:
         logger.warning(
-            "Redis SET failed for key=%r — write silently dropped", key, exc_info=True
+            f"[CACHE] Redis SET failed for key={key!r} — write silently dropped. Error: {e}",
+            exc_info=True
         )
 
 
@@ -105,10 +153,19 @@ def delete(key):
     the plan's §5 already carries a TTL as a backstop for exactly this
     failure mode.
     """
+    logger.debug(f"[CACHE] DELETE: {key}")
+    
     try:
-        redis_client.delete(key)
-    except Exception:
-        logger.warning("Redis DELETE failed for key=%r", key, exc_info=True)
+        result = redis_client.delete(key)
+        if result:
+            logger.debug(f"[CACHE] DELETE: {key} — deleted {result} key(s)")
+        else:
+            logger.debug(f"[CACHE] DELETE: {key} — key not found")
+    except Exception as e:
+        logger.warning(
+            f"[CACHE] Redis DELETE failed for key={key!r}. Error: {e}",
+            exc_info=True
+        )
 
 
 def delete_pattern(prefix):
@@ -129,17 +186,24 @@ def delete_pattern(prefix):
     TTL backstop on every hard-invalidated cache already exists to bound.
     Never raises.
     """
+    logger.debug(f"[CACHE] DELETE_PATTERN: {prefix}")
+    
     try:
         cursor = 0
+        deleted_count = 0
         while True:
             cursor, keys = redis_client.scan(cursor=cursor, match=prefix, count=200)
             if keys:
+                logger.debug(f"[CACHE] DELETE_PATTERN: found {len(keys)} keys in batch")
                 redis_client.delete(*keys)
+                deleted_count += len(keys)
             if cursor == 0:
                 break
-    except Exception:
+        logger.debug(f"[CACHE] DELETE_PATTERN: deleted {deleted_count} keys matching {prefix}")
+    except Exception as e:
         logger.warning(
-            "Redis pattern delete failed for prefix=%r", prefix, exc_info=True
+            f"[CACHE] Redis pattern delete failed for prefix={prefix!r}. Error: {e}",
+            exc_info=True
         )
 
 
@@ -148,6 +212,7 @@ def clear():
     (not the whole Redis DB, in case Redis is ever shared with another
     application). Mainly useful for tests.
     """
+    logger.info("[CACHE] CLEAR: Clearing all cache entries")
     delete_pattern(f"sh:{CACHE_SCHEMA_VERSION}:*")
 
 
@@ -195,23 +260,37 @@ def cached(key_template, ttl_seconds):
         def wrapper(*args, **kwargs):
             bound = dict(zip(param_names, args))
             bound.update(kwargs)
+            
+            logger.debug(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
+            
             try:
                 key = key_template.format(**bound)
-            except (KeyError, IndexError):
+                logger.debug(f"[CACHE] WRAPPER: generated key: {key}")
+            except (KeyError, IndexError) as e:
                 # A referenced placeholder wasn't supplied (e.g. called
                 # with fewer args than the template expects). Fail open —
                 # don't cache this call rather than raising, since a
                 # caching bug shouldn't be able to break the underlying
                 # function.
+                logger.warning(
+                    f"[CACHE] WRAPPER: key template {key_template!r} missing placeholder — skipping cache. Error: {e}"
+                )
                 return func(*args, **kwargs)
 
             cached_value = get(key)
             if cached_value is not None:
+                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE HIT ✅")
                 return cached_value
 
+            logger.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
             result = func(*args, **kwargs)
+            
             if result is not None:
+                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — caching result")
                 set(key, result, ttl_seconds)
+            else:
+                logger.debug(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
+            
             return result
 
         # Expose the underlying function and manual cache controls for
