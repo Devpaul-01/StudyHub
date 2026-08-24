@@ -395,13 +395,24 @@ class MessageWebSocketManager:
             ),
             Connection.status == 'accepted'
             ).all()
-            
+
+            # ✅ FIX: Only broadcast to connections that are ACTUALLY ONLINE
+            connection_ids = []
             for conn in connections:
               other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
-              self.emit_to_user(other_id, 'user_status_changed', {
-                'user_id': user_id,
-                'is_online': True
-            })
+              connection_ids.append(other_id)
+
+            # ✅ Check which connections are actually online
+            online_connections = presence_service.get_online_user_ids(connection_ids)
+
+            for conn in connections:
+              other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
+              # ✅ Only emit if the other user is online
+              if other_id in online_connections:
+                self.emit_to_user(other_id, 'user_status_changed', {
+                  'user_id': user_id,
+                  'is_online': True
+                })
             
             print(f'User {user_id} authenticated on WebSocket (via handshake)')
           except jwt.ExpiredSignatureError:
@@ -461,12 +472,18 @@ class MessageWebSocketManager:
                         Connection.status == 'accepted'
                     ).all()
 
+                    # ✅ Get all connection IDs and check which are online
+                    connection_ids = [conn.receiver_id if conn.requester_id == user_id else conn.requester_id for conn in connections]
+                    online_connections = presence_service.get_online_user_ids(connection_ids)
+
                     for conn in connections:
                         other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
-                        self.emit_to_user(other_id, 'user_status_changed', {
-                            'user_id': user_id,
-                            'is_online': False
-                        })
+                        # ✅ Only emit if the other user is online
+                        if other_id in online_connections:
+                            self.emit_to_user(other_id, 'user_status_changed', {
+                                'user_id': user_id,
+                                'is_online': False
+                            })
 
                 del self.socket_to_user[request.sid]
 
@@ -546,12 +563,21 @@ class MessageWebSocketManager:
                     Connection.status == 'accepted'
                 ).all()
                 
+                # ✅ FIX: Only broadcast to online connections
+                connection_ids = []
                 for conn in connections:
                     other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
-                    self.emit_to_user(other_id, 'user_status_changed', {
-                        'user_id': user_id,
-                        'is_online': True
-                    })
+                    connection_ids.append(other_id)
+
+                online_connections = presence_service.get_online_user_ids(connection_ids)
+
+                for conn in connections:
+                    other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
+                    if other_id in online_connections:
+                        self.emit_to_user(other_id, 'user_status_changed', {
+                            'user_id': user_id,
+                            'is_online': True
+                        })
                 
                 print(f'User {user_id} authenticated on WebSocket')
                 
