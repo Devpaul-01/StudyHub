@@ -70,35 +70,75 @@ logger = logging.getLogger(__name__)
 # ===========================================================
 
 # Groq vision models — these support image input (multimodal).
+# ============================================================
+# GROQ
+# ============================================================
+
 GROQ_VISION_MODELS = {
     "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
 }
-
-CEREBRAS_MODELS = [
-    "gpt-oss-120b"      # current production model on Cerebras (June 2026)
-]
 
 GROQ_MODELS = [
-    "openai/gpt-oss-120b",                    # Best reasoning & complex tasks
-    "meta-llama/llama-4-scout-17b-16e-instruct", # Vision + multimodal + strong general chat
-    "qwen/qwen3-32b",                         # Fast, smart, cost-efficient middle tier
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3-32b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
 ]
+
+
+# ============================================================
+# CEREBRAS
+# ============================================================
+
+CEREBRAS_MODELS = [
+    "gpt-oss-120b",
+]
+
+
+# ============================================================
+# MISTRAL
+# ============================================================
+
+MISTRAL_VISION_MODELS = {
+    "mistral-medium-latest",
+    "mistral-large-latest",
+    "mistral-small-latest",
+    "ministral-14b-latest",
+    "ministral-8b-latest",
+    "ministral-3b-latest",
+}
 
 MISTRAL_MODELS = [
-    "mistral-large-2512",     # Best reasoning & quality
-    "mistral-medium-latest",  # Balanced quality/cost
-    "ministral-3b-2512",      # Ultra-fast & cheap fallback
+    "mistral-medium-latest",
+    "mistral-large-latest",
+    "mistral-small-latest",
+    "ministral-14b-latest",
+    "ministral-8b-latest",
+    "ministral-3b-latest",
 ]
 
-# OpenRouter vision models — these support image input (multimodal).
+
+# ============================================================
+# OPENROUTER
+# ============================================================
+
 OPENROUTER_VISION_MODELS = {
-    "meta-llama/llama-4-scout",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-nano-omni:free",
 }
+
 OPENROUTER_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free", # Default
-    "google/gemma-4-31b-it:free",            # Vision tasks
-    "nousresearch/hermes-3-405b:free",       # Escalation
+    "openai/gpt-oss-120b:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-nano-omni:free",
+    "nvidia/nemotron-nano-9b-v2:free",
 ]
+
+OPENROUTER_FREE_ROUTER = "openrouter/free"
 
 
 # Non-chat model filter: skip these during dynamic model discovery.
@@ -393,6 +433,8 @@ class MultiProviderManager:
         enabled, disabled only when the env var is the literal string
         'false'."""
         return os.environ.get("AI_PROVIDER_REDIS_STATE_ENABLED", "true").lower() != "false"
+        
+
 
     @staticmethod
     def _redis_get(key):
