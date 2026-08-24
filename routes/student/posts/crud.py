@@ -84,20 +84,54 @@ def decode_cursor(cursor: str):
     except Exception:
         return None
 
+
+import logging
+import json
+
+# ════════════════════════════════════════════════════════════════════
+# LOGGING SETUP — put this once in your app factory / app.py
+# ════════════════════════════════════════════════════════════════════
+STANDARD_ATTRS = set(vars(logging.LogRecord('', 0, '', 0, '', (), None)).keys()) | {
+    'message', 'asctime'
+}
+
+
+class ExtraFormatter(logging.Formatter):
+    """Formatter that appends any `extra={...}` fields as JSON so they
+    actually show up in the log output instead of being silently dropped."""
+    def format(self, record):
+        base = super().format(record)
+        extras = {
+            k: v for k, v in record.__dict__.items()
+            if k not in STANDARD_ATTRS
+        }
+        if extras:
+            try:
+                extras_str = json.dumps(extras, default=str)
+            except Exception:
+                extras_str = str(extras)
+            return f"{base} | {extras_str}"
+        return base
+
+
+def configure_logging(app):
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(ExtraFormatter("%(asctime)s %(levelname)s %(message)s"))
+
+    app.logger.handlers = [handler]
+    app.logger.setLevel(logging.DEBUG)   # <-- was logging.INFO, now shows everything
+    app.logger.propagate = False
+
+
+# ════════════════════════════════════════════════════════════════════
+# ENDPOINT
+# ════════════════════════════════════════════════════════════════════
 @posts_crud_bp.route("/posts/feed", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_feed(current_user):
-    start_time = time.time()
     request_id = request.headers.get("X-Request-Id") or f"feed_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
-    
-    current_app.logger.info(f"[FEED] {request_id} ⚡ START", extra={
-        "user_id": current_user.id,
-        "user_email": current_user.email,
-        "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
-        "user_agent": request.headers.get("User-Agent"),
-        "request_id": request_id,
-    })
 
     try:
         # ── Step 1: Parse request parameters ──────────────────────────────────
@@ -106,34 +140,15 @@ def get_feed(current_user):
         limit       = min(request.args.get("limit", 10, type=int), 20)
         post_type   = request.args.get("post_type", "").strip()
 
-        current_app.logger.info(f"[FEED] {request_id} Parameters parsed", extra={
-            "filter_type": filter_type,
-            "cursor_str": cursor_str,
-            "limit": limit,
-            "post_type": post_type or "None",
-            "request_id": request_id,
-        })
-
         # ── Step 2: Decode cursor ──────────────────────────────────────────────
         cursor_date = decode_cursor(cursor_str) if cursor_str else None
-        current_app.logger.debug(f"[FEED] {request_id} Cursor decoded", extra={
-            "cursor_date": cursor_date.isoformat() if cursor_date else None,
-            "request_id": request_id,
-        })
 
         # ── Step 3: Get user's department ──────────────────────────────────────
         profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
         user_dept = profile.department if profile else None
-        current_app.logger.debug(f"[FEED] {request_id} User profile", extra={
-            "user_dept": user_dept,
-            "has_profile": bool(profile),
-            "request_id": request_id,
-        })
 
         # ── Step 4: Build base query ───────────────────────────────────────────
         if filter_type == "connections":
-            current_app.logger.info(f"[FEED] {request_id} Filter: connections", extra={"request_id": request_id})
-            
             conns = Connection.query.filter(
                 or_(
                     Connection.requester_id == current_user.id,
@@ -142,18 +157,12 @@ def get_feed(current_user):
                 Connection.status == "accepted"
             ).all()
 
-            current_app.logger.debug(f"[FEED] {request_id} Connections found", extra={
-                "conn_count": len(conns),
-                "request_id": request_id,
-            })
-
             conn_ids = [
                 c.receiver_id if c.requester_id == current_user.id else c.requester_id
                 for c in conns
             ]
 
             if not conn_ids:
-                current_app.logger.info(f"[FEED] {request_id} No connections, returning empty", extra={"request_id": request_id})
                 return jsonify({
                     "status": "success",
                     "data": {
@@ -167,31 +176,24 @@ def get_feed(current_user):
             query = Post.query.filter(Post.student_id.in_(conn_ids))
 
         elif filter_type == "department":
-            current_app.logger.info(f"[FEED] {request_id} Filter: department", extra={"request_id": request_id})
             query = Post.query.filter(Post.department == user_dept)
 
         elif filter_type == "trending":
-            current_app.logger.info(f"[FEED] {request_id} Filter: trending", extra={"request_id": request_id})
             week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
             query = Post.query.filter(Post.posted_at >= week_ago)
 
         elif filter_type == "unsolved":
-            current_app.logger.info(f"[FEED] {request_id} Filter: unsolved", extra={"request_id": request_id})
             query = Post.query.filter(
                 Post.post_type.in_(["question", "problem"]),
                 Post.is_solved == False
             )
         else:
-            current_app.logger.info(f"[FEED] {request_id} Filter: all", extra={"request_id": request_id})
             query = Post.query
 
         # ── Step 5: Apply post_type filter ─────────────────────────────────────
         valid_types = ["question", "discussion", "announcement", "resource", "problem"]
         if post_type and post_type in valid_types:
-            current_app.logger.debug(f"[FEED] {request_id} Filtering by post_type: {post_type}", extra={"request_id": request_id})
             query = query.filter(Post.post_type == post_type)
-        elif post_type:
-            current_app.logger.warning(f"[FEED] {request_id} Invalid post_type: {post_type}", extra={"request_id": request_id})
 
         # ── Step 6: Apply ordering ─────────────────────────────────────────────
         if filter_type == "trending":
@@ -204,29 +206,14 @@ def get_feed(current_user):
 
         if cursor_date:
             query = query.filter(Post.posted_at < cursor_date)
-            current_app.logger.debug(f"[FEED] {request_id} Applied cursor filter", extra={
-                "cursor_date": cursor_date.isoformat(),
-                "request_id": request_id,
-            })
 
         # ── Step 7: Execute query ──────────────────────────────────────────────
-        query_start = time.time()
         posts_raw = query.limit(limit + 1).all()
-        query_elapsed = (time.time() - query_start) * 1000
-
-        current_app.logger.info(f"[FEED] {request_id} Query executed", extra={
-            "posts_found": len(posts_raw),
-            "limit": limit,
-            "query_elapsed_ms": round(query_elapsed, 2),
-            "request_id": request_id,
-        })
-
         has_more = len(posts_raw) > limit
         posts_page = posts_raw[:limit]
         next_cursor = encode_cursor(posts_page[-1].posted_at) if has_more and posts_page else None
 
         if not posts_page:
-            current_app.logger.info(f"[FEED] {request_id} No posts found, returning empty", extra={"request_id": request_id})
             return jsonify({
                 "status": "success",
                 "data": {
@@ -241,15 +228,8 @@ def get_feed(current_user):
         # ════════════════════════════════════════════════════════════════════
         # BATCH LOAD EVERYTHING
         # ════════════════════════════════════════════════════════════════════
-        batch_start = time.time()
         post_ids = [p.id for p in posts_page]
         author_ids = list({p.student_id for p in posts_page})
-
-        current_app.logger.debug(f"[FEED] {request_id} Batch loading", extra={
-            "post_count": len(post_ids),
-            "author_count": len(author_ids),
-            "request_id": request_id,
-        })
 
         # 1. Authors
         authors_map = {u.id: u for u in User.query.filter(User.id.in_(author_ids)).all()}
@@ -355,13 +335,6 @@ def get_feed(current_user):
             ).all()
             comment_liked_set = {lk.comment_id for lk in liked_rows}
 
-        batch_elapsed = (time.time() - batch_start) * 1000
-        current_app.logger.debug(f"[FEED] {request_id} Batch load complete", extra={
-            "batch_elapsed_ms": round(batch_elapsed, 2),
-            "top_comments": len(top_comments_all),
-            "request_id": request_id,
-        })
-
         # ════════════════════════════════════════════════════════════════════
         # ASSEMBLE PAYLOADS
         # ════════════════════════════════════════════════════════════════════
@@ -369,11 +342,6 @@ def get_feed(current_user):
         for post in posts_page:
             author = authors_map.get(post.student_id)
             if not author:
-                current_app.logger.warning(f"[FEED] {request_id} Author not found for post", extra={
-                    "post_id": post.id,
-                    "student_id": post.student_id,
-                    "request_id": request_id,
-                })
                 continue
 
             user_reacted = reactions_map.get(post.id)
@@ -446,15 +414,6 @@ def get_feed(current_user):
                 }
             })
 
-        total_elapsed = (time.time() - start_time) * 1000
-        current_app.logger.info(f"[FEED] {request_id} ✅ SUCCESS", extra={
-            "posts_returned": len(posts_data),
-            "has_more": has_more,
-            "total_elapsed_ms": round(total_elapsed, 2),
-            "filter_type": filter_type,
-            "request_id": request_id,
-        })
-
         return jsonify({
             "status": "success",
             "data": {
@@ -464,24 +423,13 @@ def get_feed(current_user):
                 "has_more": has_more,
                 "debug": {
                     "request_id": request_id,
-                    "response_time_ms": round(total_elapsed, 2)
+                    "response_time_ms": round((time.time() - start_time) * 1000, 2)
                 }
             }
         })
 
     except Exception as e:
-        total_elapsed = (time.time() - start_time) * 1000
-        current_app.logger.error(f"[FEED] {request_id} ❌ ERROR", extra={
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "traceback": traceback.format_exc(),
-            "total_elapsed_ms": round(total_elapsed, 2),
-            "request_id": request_id,
-            "args": request.args.to_dict(),
-        })
         return error_response("Failed to load feed")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 2: Like-only toggle  (replaces the multi-reaction endpoint)
 # ─────────────────────────────────────────────────────────────────────────────
