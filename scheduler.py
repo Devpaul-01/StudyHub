@@ -52,6 +52,26 @@ Jobs registered here:
     • weekly_leaderboard_snapshot  – every Sunday 00:05 UTC
     • monthly_leaderboard_snapshot – 1st of every month 00:10 UTC
     • counter_reconciliation       – every Sunday 00:20 UTC
+    • activity_feed_cleanup        – daily 03:00 UTC
+    • stale_ai_conversation_alert  – every Sunday 00:25 UTC
+
+BACKGROUND JOBS PHASE (BACKGROUND_JOBS_IMPLEMENTATION.md §5):
+    The two newest jobs above (activity_feed_cleanup,
+    stale_ai_conversation_alert) differ structurally from the three
+    original jobs in one specific way: their locked scheduler tick
+    ENQUEUES the work onto services/job_queue.py's maintenance_queue
+    (run later by worker.py) rather than executing it inline, the way
+    the three original jobs still do. This split follows a concrete
+    rule, not an arbitrary choice: the three original jobs each already
+    have their own idempotency guard independent of the distributed
+    lock (take_snapshot()'s one-per-day DB check; reconcile's natural
+    recompute-and-compare) AND bounded runtime regardless of table size
+    — so running them inline, inside the lock, adds nothing. The two
+    new jobs' cost scales with table size (activity_feed_cleanup) or
+    have no independent idempotency guard of their own — so per §5's
+    rule, the scheduler tick's job is only to acquire the lock and
+    enqueue; the RQ job itself is the idempotent, retryable unit. See
+    services/jobs/maintenance_jobs.py for the actual job bodies.
 
 SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
     The actual snapshot computation used to be duplicated here (as
@@ -200,6 +220,57 @@ def _job_reconcile_counters(app):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NEW JOB WRAPPERS — background-jobs phase (enqueue, don't execute inline)
+#
+# See this file's module docstring's "BACKGROUND JOBS PHASE" note above
+# for why these two wrappers enqueue onto maintenance_queue instead of
+# calling their job function directly inside _work(), unlike the three
+# wrappers above them.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _job_activity_feed_cleanup(app):
+    """
+    Enqueues (does not execute inline) — see this module's docstring
+    for why this job, unlike the three above it, is enqueued rather
+    than run directly inside the locked scheduler tick.
+    """
+    def _work():
+        logger.info("[Scheduler] ▶ Enqueueing activity feed cleanup job")
+        with app.app_context():
+            from services.job_queue import maintenance_queue
+            from services.jobs.maintenance_jobs import cleanup_expired_activity_feed_job
+            from services.jobs.job_specs import ACTIVITY_FEED_CLEANUP_RETRY
+            job = maintenance_queue.enqueue(
+                cleanup_expired_activity_feed_job,
+                retry=ACTIVITY_FEED_CLEANUP_RETRY,
+            )
+            logger.info(
+                "[SCHED_JOB_ENQUEUED] job_id=%s queue=%s", job.id, maintenance_queue.name
+            )
+
+    _run_locked("activity_feed_cleanup", _work)
+
+
+def _job_stale_conversation_alert(app):
+    """See _job_activity_feed_cleanup's docstring — identical shape."""
+    def _work():
+        logger.info("[Scheduler] ▶ Enqueueing stale AI conversation alert job")
+        with app.app_context():
+            from services.job_queue import maintenance_queue
+            from services.jobs.maintenance_jobs import alert_stale_ai_conversations_job
+            from services.jobs.job_specs import STALE_CONVERSATION_ALERT_RETRY
+            job = maintenance_queue.enqueue(
+                alert_stale_ai_conversations_job,
+                retry=STALE_CONVERSATION_ALERT_RETRY,
+            )
+            logger.info(
+                "[SCHED_JOB_ENQUEUED] job_id=%s queue=%s", job.id, maintenance_queue.name
+            )
+
+    _run_locked("stale_ai_conversation_alert", _work)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # EVENT LISTENER  (logs job outcomes to your existing logger)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -282,6 +353,32 @@ def init_scheduler(app) -> None:
         trigger=CronTrigger(day_of_week="sun", hour=0, minute=20, timezone="UTC"),
         id="counter_reconciliation",
         name="Denormalized Counter Reconciliation",
+        replace_existing=True,
+    )
+
+    # ── Activity feed cleanup: daily at 03:00 UTC ─────────────────────────────
+    # Background-jobs phase addition. Enqueues onto maintenance_queue
+    # rather than running inline — see this module's docstring.
+    scheduler.add_job(
+        func=_job_activity_feed_cleanup,
+        args=[app],
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="activity_feed_cleanup",
+        name="Activity Feed Cleanup",
+        replace_existing=True,
+    )
+
+    # ── Stale AI conversation alert: every Sunday at 00:25 UTC ────────────────
+    # Background-jobs phase addition. Placed 5 minutes after
+    # counter_reconciliation's 00:20 slot, for the same "don't contend
+    # for DB load in the same window" reasoning already used to space
+    # the original three jobs apart. Enqueues, does not run inline.
+    scheduler.add_job(
+        func=_job_stale_conversation_alert,
+        args=[app],
+        trigger=CronTrigger(day_of_week="sun", hour=0, minute=25, timezone="UTC"),
+        id="stale_ai_conversation_alert",
+        name="Stale AI Conversation Alert",
         replace_existing=True,
     )
 
