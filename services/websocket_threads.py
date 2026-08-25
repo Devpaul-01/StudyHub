@@ -64,6 +64,7 @@ Usage in app factory:
 """
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import time
 import os
@@ -151,6 +152,20 @@ LEARNORA_TRIGGERS = list(_TRIGGER_MAP.keys())
 # Rate-limit buckets
 _ai_action_buckets: dict = {}
 _auto_reply_buckets: dict = {}
+
+# Background-jobs phase hardening (BACKGROUND_JOBS_IMPLEMENTATION.md
+# §18): bounds concurrent Learnora background calls across ALL threads/
+# actions combined, replacing the previous unbounded
+# threading.Thread(...).start() calls. AI dispatch stays threaded, NOT
+# moved to RQ, per explicit product decision (no frontend polling
+# change) -- this is a hardening pass on the existing pattern, not a
+# migration. Each in-flight call holds one DB connection from the pool
+# for its duration (a few seconds, per an AI provider round trip), so
+# this ceiling is chosen well under typical pool sizes to leave
+# headroom for normal HTTP request traffic sharing the same pool.
+# [DEFAULT -- TUNE LATER once real concurrent-AI-call volume is
+# observed.]
+_learnora_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="learnora-bg")
 
 # Per-user rate limit  (env-overridable)
 _RATE_LIMIT_MAX    = int(os.environ.get("THREAD_MSG_RATE_MAX",    "30"))
@@ -866,11 +881,10 @@ class ThreadWebSocketManager:
                         "personality": matched_personality["display_name"]
                     })
                     app_ref = current_app._get_current_object()
-                    threading.Thread(
-                        target=_call_learnora_for_thread,
-                        args=(app_ref, thread_id, text_content, user_id, matched_personality),
-                        daemon=True
-                    ).start()
+                    _learnora_executor.submit(
+                        _call_learnora_for_thread,
+                        app_ref, thread_id, text_content, user_id, matched_personality,
+                    )
 
                 # Auto-reply: if the user replied to an AI message without a manual trigger,
                 # let the AI continue the conversation (rate-limited 3 per 5 min per user/thread)
@@ -893,12 +907,11 @@ class ThreadWebSocketManager:
                                 "thread_id": thread_id,
                                 "personality": personality["display_name"]
                             })
-                            threading.Thread(
-                                target=_call_learnora_for_thread,
-                                args=(current_app._get_current_object(), thread_id, text_content,
-                                      user_id, personality, msg.id),
-                                daemon=True
-                            ).start()
+                            _learnora_executor.submit(
+                                _call_learnora_for_thread,
+                                current_app._get_current_object(), thread_id, text_content,
+                                user_id, personality, msg.id,
+                            )
 
             except Exception as e:
                 current_app.logger.error(
@@ -1887,17 +1900,15 @@ class ThreadWebSocketManager:
                 })
 
                 app_ref = current_app._get_current_object()
-                t = threading.Thread(
-                    target=_call_learnora_for_thread,
-                    args=(app_ref, thread_id, trigger_text, user_id),
-                    daemon=True
+                future = _learnora_executor.submit(
+                    _call_learnora_for_thread,
+                    app_ref, thread_id, trigger_text, user_id,
                 )
-                t.start()
 
                 current_app.logger.info(
                     f"[AI_REQUEST_DISPATCHED] "
                     f"user_id={user_id} thread_id={thread_id} "
-                    f"mode={mode!r} daemon_thread={t.name}"
+                    f"mode={mode!r} executor=learnora-bg"
                 )
 
             except Exception as e:
@@ -1937,12 +1948,11 @@ class ThreadWebSocketManager:
                 "personality": "Learnora"
             })
 
-            threading.Thread(
-                target=_call_learnora_action,
-                args=(current_app._get_current_object(), thread_id, message_id, action,
-                      data.get("target_lang"), user_id),
-                daemon=True
-            ).start()
+            _learnora_executor.submit(
+                _call_learnora_action,
+                current_app._get_current_object(), thread_id, message_id, action,
+                data.get("target_lang"), user_id,
+            )
 
 
 # ============================================================================
@@ -1967,7 +1977,7 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
     with app.app_context():
         t_total_start = time.monotonic()
         try:
-            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID",0)
+            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
 
             # Hard guard — skip entirely if bot not configured
             if not bot_user_id:
