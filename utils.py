@@ -97,76 +97,81 @@ def generate_verification_token(email):
 
 
 def send_password_reset(email, link):
-    """Send password reset email"""
-    with current_app.app_context():
-        try:
-            msg = Message(
-                subject="🔐 Reset Your StudyHub Password",
-                recipients=[email],
-                html=f"""
-                <html>
-                <body style="font-family: Arial; padding: 40px; text-align: center;">
-                    <h1 style="color: #667eea;">Reset Your Password</h1>
-                    <p>Click the button below to reset your password:</p>
-                    <a href="{link}" style="display: inline-block; margin: 20px 0; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px;">Reset Password</a>
-                    <p style="color: #999; font-size: 12px;">This link expires in 5 hours.</p>
-                </body>
-                </html>
-                """,
-                sender=os.environ.get('MAIL_DEFAULT_SENDER')
-            )
-            mail.send(msg)
-            logger.info(f"✅ Password reset email sent to {email}")
-        except Exception as e:
-            logger.error(f"❌ Password reset email failed: {e}")
+    """
+    Send password reset email.
+
+    Background-jobs phase (BACKGROUND_JOBS_IMPLEMENTATION.md §6.2/§20):
+    HTML-building is unchanged; only the final send mechanism moved off
+    an in-request, blocking mail.send() call onto a durable RQ job.
+    """
+    html = f"""
+    <html>
+    <body style="font-family: Arial; padding: 40px; text-align: center;">
+        <h1 style="color: #667eea;">Reset Your Password</h1>
+        <p>Click the button below to reset your password:</p>
+        <a href="{link}" style="display: inline-block; margin: 20px 0; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px;">Reset Password</a>
+        <p style="color: #999; font-size: 12px;">This link expires in 5 hours.</p>
+    </body>
+    </html>
+    """
+    from services.job_queue import email_queue
+    from services.jobs.email_jobs import send_email_job
+    from services.jobs.job_specs import EMAIL_RETRY
+    job = email_queue.enqueue(
+        send_email_job,
+        retry=EMAIL_RETRY,
+        to_email=email,
+        subject="🔐 Reset Your StudyHub Password",
+        html_content=html,
+    )
+    logger.info(f"[EMAIL_JOB_ENQUEUED] to={email} type=password_reset job_id={job.id}")
 
 def send_verification_email(email, link):
-    """Send email verification link"""
-    with current_app.app_context():
-        try:
-            msg = Message(
-                subject="✅ Verify Your StudyHub Email",
-                recipients=[email],
-                html=f"""
-                <html>
-                <body style="font-family: Arial; padding: 40px; text-align: center;">
-                    <h1 style="color: #667eea;">Welcome to StudyHub!</h1>
-                    <p>Click the button below to verify your email address:</p>
-                    <a href="{link}" style="display: inline-block; margin: 20px 0; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px;">Verify Email</a>
-                    <p style="color: #999; font-size: 12px;">This link expires in 5 hours.</p>
-                </body>
-                </html>
-                """,
-                sender= os.environ.get('MAIL_DEFAULT_SENDER')
-            )
-            mail.send(msg)
-            logger.info(f"✅ Verification email sent to {email}")
-        except Exception as e:
-            logger.error(f"❌ Verification email failed: {e}")
+    """
+    Send email verification link.
 
-
-def send_async_email(app, msg):
-    """Send email in background thread"""
-    with app.app_context():
-        try:
-            mail.send(msg)
-            logger.info(f"✅ Background email sent to {msg.recipients[0]}")
-        except Exception as e:
-            logger.error(f"❌ Background email failed: {e}")
+    Background-jobs phase: same treatment as send_password_reset above
+    -- HTML unchanged, send mechanism now a durable RQ job.
+    """
+    html = f"""
+    <html>
+    <body style="font-family: Arial; padding: 40px; text-align: center;">
+        <h1 style="color: #667eea;">Welcome to StudyHub!</h1>
+        <p>Click the button below to verify your email address:</p>
+        <a href="{link}" style="display: inline-block; margin: 20px 0; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px;">Verify Email</a>
+        <p style="color: #999; font-size: 12px;">This link expires in 5 hours.</p>
+    </body>
+    </html>
+    """
+    from services.job_queue import email_queue
+    from services.jobs.email_jobs import send_email_job
+    from services.jobs.job_specs import EMAIL_RETRY
+    job = email_queue.enqueue(
+        send_email_job,
+        retry=EMAIL_RETRY,
+        to_email=email,
+        subject="✅ Verify Your StudyHub Email",
+        html_content=html,
+    )
+    logger.info(f"[EMAIL_JOB_ENQUEUED] to={email} type=email_verification job_id={job.id}")
 
 
 def send_email_now(to_email, subject, html_content, async_send=True):
     """
-    Send email with optional async mode for production
-    
-    Args:
-        to_email: Recipient email
-        subject: Email subject
-        html_content: HTML content
-        async_send: If True, send in background thread (default for production)
-    
+    Send email, either via a durable background job (default, matches
+    prior "don't block the request" intent) or synchronously
+    (test-only path, unchanged).
+
+    Background-jobs phase (BACKGROUND_JOBS_IMPLEMENTATION.md §6.2/§20):
+    the async_send=True branch previously spawned an untracked daemon
+    thread (send_async_email) with no retry and no persistence -- a
+    failure was silently gone forever, logged only. It now enqueues
+    onto the same durable send_email_job every other email path uses.
+    send_async_email itself is removed as dead code now that nothing
+    calls it.
+
     Returns:
-        bool: True if queued/sent, False if failed
+        bool: True if enqueued/sent, False if failed to enqueue/send.
     """
     print("\n" + "="*70)
     print("📧 SENDING EMAIL")
@@ -175,31 +180,36 @@ def send_email_now(to_email, subject, html_content, async_send=True):
     print(f"Subject: {subject}")
     print(f"Async: {async_send}")
     print("="*70)
-    
+
     try:
-        msg = Message(
-            subject=subject,
-            recipients=[to_email],
-            html=html_content,
-            sender=current_app.config.get('MAIL_DEFAULT_SENDER')
-        )
-        
         if async_send:
-            # Send in background thread to avoid blocking
-            app = current_app._get_current_object()
-            thread = Thread(target=send_async_email, args=(app, msg))
-            thread.daemon = True  # Thread dies when main process exits
-            thread.start()
-            print("✅ EMAIL QUEUED FOR BACKGROUND SEND")
+            from services.job_queue import email_queue
+            from services.jobs.email_jobs import send_email_job
+            from services.jobs.job_specs import EMAIL_RETRY
+            job = email_queue.enqueue(
+                send_email_job,
+                retry=EMAIL_RETRY,
+                to_email=to_email,
+                subject=subject,
+                html_content=html_content,
+            )
+            logger.info(f"[EMAIL_JOB_ENQUEUED] to={to_email} type=generic job_id={job.id}")
+            print("✅ EMAIL JOB ENQUEUED")
             print("="*70 + "\n")
             return True
         else:
-            # Synchronous send (for testing only)
+            # Synchronous send (for testing only) -- unchanged.
+            msg = Message(
+                subject=subject,
+                recipients=[to_email],
+                html=html_content,
+                sender=current_app.config.get('MAIL_DEFAULT_SENDER')
+            )
             mail.send(msg)
             print("✅ EMAIL SENT SYNCHRONOUSLY!")
             print("="*70 + "\n")
             return True
-        
+
     except Exception as e:
         print(f"❌ FAILED: {e}")
         print("="*70 + "\n")
