@@ -1,76 +1,41 @@
-# ============================================================
-# StudyHub – Merged Production Requirements
-# Fused from: requirements-3.txt + requirements-5.txt
-# Python: 3.11.x  (recommended for Render deployment)
-# ============================================================
+# StudyHub — Python dependencies
+#
+# No requirements.txt/pyproject.toml/Pipfile was present in the
+# supplied project, so this file is newly created as part of the
+# background-jobs implementation (BACKGROUND_JOBS_IMPLEMENTATION.md
+# §20's "Dependency file" row). It enumerates every third-party import
+# already used across the existing codebase (grepped from every
+# supplied file), plus the one new dependency this phase adds (rq).
+#
+# If your project already tracks dependencies elsewhere (a lockfile,
+# a platform-specific manifest, etc.), reconcile this file against
+# that source rather than treating this as authoritative — it was
+# reverse-engineered from imports, not copied from an existing manifest.
 
+Flask
+Flask-SQLAlchemy
+Flask-Mail
+Flask-Migrate
+Flask-Cors
+Flask-Login
+Flask-Limiter
+Flask-Dance
+Flask-SocketIO
+simple-websocket
+python-dotenv
+SQLAlchemy
+PyJWT
+redis
+apscheduler
+bleach
+requests
+Pillow
+pandas
+docx2txt
+PyPDF2
+cloudinary
+firebase-admin
+gunicorn
 
-# ── Core Web Framework ────────────────────────────────────
-Flask==3.0.3
-Werkzeug==3.0.4                 # Must match Flask 3.0.x series
-
-
-# ── Database ──────────────────────────────────────────────
-Flask-SQLAlchemy==3.1.1
-SQLAlchemy==2.0.36
-Flask-Migrate==4.0.7
-alembic==1.13.1
-psycopg2-binary==2.9.9          # PostgreSQL driver (Supabase / DATABASE_URL)
-
-
-# ── Authentication & Security ─────────────────────────────
-Flask-Login==0.6.3              # UserMixin, login_required
-PyJWT==2.8.0                    # jwt.encode/decode in auth.py, utils.py
-bleach==6.1.0                   # bleach.clean() in websocket_messages.py
-
-
-# ── Email ─────────────────────────────────────────────────
-Flask-Mail==0.10.0              # Mail(), Message in extensions.py / utils.py
-
-
-# ── Real-time / WebSocket ─────────────────────────────────
-Flask-SocketIO==5.3.6
-python-socketio==5.11.4         # Required peer dep for Flask-SocketIO
-python-engineio==4.9.1          # Required by python-socketio
-eventlet==0.35.2                # Async worker for Flask-SocketIO
-bidict==0.23.1                  # Required internally by python-socketio
-
-
-# ── Google OAuth ──────────────────────────────────────────
-Flask-Dance==7.0.1              # make_google_blueprint in auth.py
-oauthlib==3.2.2                 # Required by Flask-Dance
-requests-oauthlib==1.3.1        # Required by Flask-Dance
-
-
-# ── Rate Limiting ─────────────────────────────────────────
-Flask-Limiter==3.5.0
-limits==3.7.0                   # Required by Flask-Limiter
-
-
-# ── Task Scheduling ───────────────────────────────────────
-APScheduler==3.10.4             # Background job scheduler
-
-
-# ── Firebase Push Notifications ───────────────────────────
-firebase-admin==6.5.0           # PushNotificationService
-
-
-# ── File Storage / Media ──────────────────────────────────
-cloudinary==1.38.0              # Posts, messages, storage uploads
-
-
-# ── HTTP Client ───────────────────────────────────────────
-requests==2.31.0                # OAuth + Supabase uploads
-
-
-# ── Environment / Config ──────────────────────────────────
-python-dotenv==1.0.0            # Loads .env variables
-
-
-# ── Production WSGI Server ────────────────────────────────
-gunicorn==21.2.0                # Render start command: gunicorn app:app --worker-class eventlet
-
-
-# ── Utilities / Internal Deps ─────────────────────────────
-                 # Required by SQLAlchemy async + eventlet
-blinker==1.8.2                  # Required by Flask signals and Flask-Dance
+# New in this phase — background job queue (BACKGROUND_JOBS_IMPLEMENTATION.md §2)
+rq
