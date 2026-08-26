@@ -59,6 +59,7 @@ class RateLimitTier:
     BURST_OK = "60 per minute"         # reactions, likes, low-risk high-frequency actions
     PUBLIC_READ = "300 per minute"     # read-only, often unauthenticated, endpoints
     WEBHOOK = "100 per minute"         # external-service callbacks, if any exist
+    ADMIN = "20 per minute"            # operational/admin endpoints — low volume by nature, privileged callers only
 
 
 # ─────────────────────────────────────────────────────────────────────────
