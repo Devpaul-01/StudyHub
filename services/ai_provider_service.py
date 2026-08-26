@@ -67,24 +67,29 @@ logger = logging.getLogger(__name__)
 #
 # Mistral exception: uses provider-managed alias IDs that are always
 # current — no dynamic discovery needed, no manual updates required.
+#
+# Cohere and Cloudflare are static-only too, to keep their curated lists
+# exact. OpenRouter is static by construction now — it points at the
+# openrouter/free auto-router instead of specific model IDs (see the
+# OPENROUTER section below), so there's nothing to discover.
 # ===========================================================
 
-# Groq vision models — these support image input (multimodal).
 # ============================================================
 # GROQ
 # ============================================================
 
-GROQ_VISION_MODELS = {
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-}
+# None of the current Groq models below support image input — the old
+# vision entries (llama-4-scout / llama-4-maverick) aren't in this lineup
+# anymore. Left as an explicit empty set (rather than removed) so
+# _load_providers' "primary_vision = None → supports_vision = False"
+# wiring keeps working exactly like it does for any vision-less provider.
+GROQ_VISION_MODELS = set()
 
 GROQ_MODELS = [
     "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3-32b",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "moonshotai/kimi-k2-instruct-0905",
 ]
 
 
@@ -100,60 +105,90 @@ GROQ_MODELS = [
 # ============================================================
 
 GEMINI_VISION_MODELS = {
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
 }
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
 ]
 
 
 # ============================================================
 # MISTRAL
+#
+# Trimmed to the one model confirmed working on the current key/plan —
+# mistral-medium-latest (currently resolves to Mistral Medium 3.5, which
+# is multimodal, so it doubles as the text AND vision model here).
 # ============================================================
 
 MISTRAL_VISION_MODELS = {
     "mistral-medium-latest",
-    "mistral-large-latest",
-    "mistral-small-latest",
-    "ministral-14b-latest",
-    "ministral-8b-latest",
-    "ministral-3b-latest",
 }
 
 MISTRAL_MODELS = [
     "mistral-medium-latest",
-    "mistral-large-latest",
-    "mistral-small-latest",
-    "ministral-14b-latest",
-    "ministral-8b-latest",
-    "ministral-3b-latest",
+]
+
+
+# ============================================================
+# COHERE
+#
+# Uses Cohere's OpenAI-compatible endpoint
+# (https://api.cohere.ai/compatibility/v1) — same /chat/completions
+# request/response shape as every other provider in this file.
+# ============================================================
+
+COHERE_VISION_MODELS = set()
+
+COHERE_MODELS = [
+    "command-a-03-2025",
+    "command-r7b-12-2024",
+]
+
+
+# ============================================================
+# CLOUDFLARE WORKERS AI
+#
+# Uses Cloudflare's OpenAI-compatible endpoint
+# (https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1).
+# Unlike every other provider here, the base URL itself is account-scoped
+# — set CLOUDFLARE_ACCOUNT_ID (in addition to CLOUDFLARE_API_KEY, which
+# holds a Cloudflare API Token) or this provider is skipped entirely at
+# load time. See _load_providers() below.
+# ============================================================
+
+CLOUDFLARE_VISION_MODELS = set()
+
+CLOUDFLARE_MODELS = [
+    "@cf/openai/gpt-oss-120b",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/meta/llama-3.1-8b-instruct-fast",
 ]
 
 
 # ============================================================
 # OPENROUTER
+#
+# Points at the Free Models Router (openrouter/free) instead of a
+# hand-picked list of specific ":free" model IDs. OpenRouter's free-tier
+# catalog turns over fast enough that a static list goes stale within
+# weeks — models get delisted with little notice. openrouter/free
+# auto-selects from whatever free models are actually live right now, and
+# it already filters that pool for what the request needs (vision, tool
+# calling, structured outputs) — which is also why it can safely stand in
+# as the vision entry below instead of naming one specific multimodal
+# model that might itself get delisted.
 # ============================================================
 
-OPENROUTER_VISION_MODELS = {
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-3-nano-omni:free",
-}
-
-OPENROUTER_MODELS = [
-    "openai/gpt-oss-120b:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-3-nano-omni:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-]
-
 OPENROUTER_FREE_ROUTER = "openrouter/free"
+
+OPENROUTER_VISION_MODELS = {OPENROUTER_FREE_ROUTER}
+
+OPENROUTER_MODELS = [OPENROUTER_FREE_ROUTER]
 
 
 # Non-chat model filter: skip these during dynamic model discovery.
@@ -162,8 +197,11 @@ NON_CHAT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Provider order — mirrors multiProvider.js PROVIDER_ORDER
-PROVIDER_ORDER = ["gemini", "groq", "mistral", "openrouter"]
+# Provider order — actual call/fallback order is driven by the
+# PROVIDER_DEFS list order inside _load_providers() below; this constant
+# mirrors it for logging/display only (see the loaded-providers log line
+# at the end of _load_providers). Keep the two in sync.
+PROVIDER_ORDER = ["gemini", "groq", "cohere", "cloudflare", "mistral", "openrouter"]
 
 
 # ===========================================================
@@ -486,10 +524,14 @@ class MultiProviderManager:
     # ----------------------------------------------------------
 
     def _load_providers(self):
-        """Load Gemini, Groq, Mistral, and OpenRouter providers from environment variables.
+        """Load Gemini, Groq, Cohere, Cloudflare, Mistral, and OpenRouter providers
+        from environment variables.
         Each provider supports multiple keys (e.g. GEMINI_API_KEY_1 … _5).
         Falls back to the no-suffix var (GEMINI_API_KEY) when only one key exists.
-        Provider order mirrors multiProvider.js: gemini → groq → mistral → openrouter.
+        Provider order: gemini → groq → cohere → cloudflare → mistral → openrouter.
+        Cloudflare additionally requires CLOUDFLARE_ACCOUNT_ID since its base URL
+        is account-scoped — that provider is skipped (with a warning) if the var
+        isn't set, same as any provider with no key configured.
         """
         providers = []
 
@@ -513,9 +555,40 @@ class MultiProviderManager:
                 "env_prefix": "GROQ_API_KEY",
                 "max_keys":   10,
                 "models":     GROQ_MODELS,
-                # llama-4-scout supports multimodal image input on Groq.
+                # No vision-capable models in the current Groq lineup.
                 "vision_models": GROQ_VISION_MODELS,
             },
+            {
+                "id":         "cohere",
+                "type":       "cohere",
+                "base_url":   "https://api.cohere.ai/compatibility/v1",
+                "env_prefix": "COHERE_API_KEY",
+                "max_keys":   5,
+                "models":     COHERE_MODELS,
+                "vision_models": COHERE_VISION_MODELS,
+            },
+        ]
+
+        # Cloudflare's OpenAI-compatible endpoint is account-scoped — the
+        # account ID lives in the URL path itself, not a header/param — so
+        # it needs its own env var on top of the usual API-key one. Skip
+        # the provider entirely (same outcome as a provider with no key
+        # at all) rather than build a malformed URL if it's missing.
+        cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+        if cloudflare_account_id:
+            PROVIDER_DEFS.append({
+                "id":         "cloudflare",
+                "type":       "cloudflare",
+                "base_url":   f"https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1",
+                "env_prefix": "CLOUDFLARE_API_KEY",
+                "max_keys":   5,
+                "models":     CLOUDFLARE_MODELS,
+                "vision_models": CLOUDFLARE_VISION_MODELS,
+            })
+        else:
+            logger.warning("⚠️ CLOUDFLARE_ACCOUNT_ID not set — skipping Cloudflare provider")
+
+        PROVIDER_DEFS += [
             {
                 "id":         "mistral",
                 "type":       "mistral",
@@ -523,7 +596,9 @@ class MultiProviderManager:
                 "env_prefix": "MISTRAL_API_KEY",
                 "max_keys":   5,
                 "models":     MISTRAL_MODELS,
-                "vision_models": set(),
+                # Was hardcoded to set() before — mistral-medium-latest is
+                # actually multimodal, so this now wires in the real list.
+                "vision_models": MISTRAL_VISION_MODELS,
             },
             {
                 "id":         "openrouter",
@@ -532,7 +607,8 @@ class MultiProviderManager:
                 "env_prefix": "OPENROUTER_API_KEY",
                 "max_keys":   5,
                 "models":     OPENROUTER_MODELS,
-                # llama-4-scout supports multimodal image input on OpenRouter.
+                # openrouter/free filters for vision itself — see the
+                # OPENROUTER section near the top of the file.
                 "vision_models": OPENROUTER_VISION_MODELS,
             },
         ]
@@ -603,11 +679,13 @@ class MultiProviderManager:
         provider's /v1/models endpoint. Updates each provider slot's model
         lists in-place once discovery completes.
 
-        Mistral and OpenRouter are skipped — Mistral uses provider-managed
-        aliases that are already self-updating; OpenRouter uses a static list.
-        Gemini is also skipped — its OpenAI-compatible /models endpoint
-        naming doesn't line up with the priority-ranking logic below
-        (built around Groq's flat chat-model id list), so Gemini
+        Mistral, Cohere, Cloudflare, and OpenRouter are skipped — Mistral uses
+        provider-managed aliases that are already self-updating; Cohere and
+        Cloudflare stick to their small curated lists on purpose; OpenRouter
+        points at the openrouter/free auto-router, so there's no fixed model
+        id to discover against. Gemini is also skipped — its OpenAI-compatible
+        /models endpoint naming doesn't line up with the priority-ranking
+        logic below (built around Groq's flat chat-model id list), so Gemini
         relies on its static GEMINI_MODELS priority list instead.
 
         HORIZONTAL SCALING: before fetching, checks the shared Redis cache
@@ -641,8 +719,8 @@ class MultiProviderManager:
 
         def _discover():
             for pid, provider_slot in seen.items():
-                if pid in ("mistral", "openrouter", "gemini"):
-                    continue  # mistral aliases are self-updating; openrouter/gemini use static lists
+                if pid in ("mistral", "cohere", "cloudflare", "openrouter", "gemini"):
+                    continue  # mistral aliases are self-updating; the rest use static lists
 
                 if self.is_redis_state_enabled():
                     cached = self._redis_get(f"{self._REDIS_MODELS_PREFIX}{pid}")
@@ -1281,7 +1359,7 @@ class StudyAssistant:
             else:
                 logger.info(f"🤖 Text model selected: {self.model}")
 
-    def build_messages(self, user_input, extracted_data, mode, post_content=None):
+    def build_messages(self, user_input, extracted_data, mode, post_content=None, continuation_text=None):
         """
         Build the full message array for the API call.
 
@@ -1290,11 +1368,33 @@ class StudyAssistant:
             inside image_url content parts (standard OpenAI vision format).
           - If self.vision_active is False: image items are replaced with a plain
             text notice so non-vision models don't crash or silently ignore them.
+
+        continuation_text (Learnora Chat Audit — Issue 13): the stored
+        AIConversation.last_incomplete_message text, passed only when
+        this request is resuming a token-limit-truncated response.
+        Previously "Continue" sent nothing but a bare "continue" user
+        turn and relied entirely on the model inferring intent from
+        conversation history — last_incomplete_message was written but
+        never read back anywhere. When provided, an explicit system
+        instruction is added telling the model exactly what it already
+        said and to continue from there without repeating itself.
         """
         messages = []
 
         messages.append({"role": "system", "content": self.base_system})
         messages.append({"role": "system", "content": self.get_mode_prompt(mode)})
+
+        if continuation_text:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The previous response was cut off before it finished. "
+                    "Continue writing from exactly where it left off — do not "
+                    "repeat, restate, or summarize what was already said. "
+                    "The truncated response so far was:\n\n"
+                    f"{continuation_text}"
+                )
+            })
 
         context_messages = self.get_working_messages()
         messages.extend(context_messages)
@@ -1474,7 +1574,10 @@ class StudyAssistant:
         for an error embedded in a chunk of an already-200 stream. That
         branch keeps its existing rate-limit/generic split unchanged.
         """
-        MAX_MODEL_RETRIES = max(len(GEMINI_MODELS), len(GROQ_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS))
+        MAX_MODEL_RETRIES = max(
+            len(GEMINI_MODELS), len(GROQ_MODELS), len(COHERE_MODELS),
+            len(CLOUDFLARE_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS),
+        )
         self._provider_exhausted = False
 
         for model_attempt in range(MAX_MODEL_RETRIES):
