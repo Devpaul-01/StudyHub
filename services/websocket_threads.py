@@ -2161,54 +2161,61 @@ def _call_learnora_action(app, thread_id, message_id, action, target_lang, trigg
     }
 
     with app.app_context():
-        bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
-        if not bot_user_id:
-            return
-
-        target_msg = ThreadMessage.query.get(message_id)
-        thread = Thread.query.get(thread_id)
-        if not target_msg or not thread:
-            return
-
-        system = f'You are Learnora in thread "{thread.title}". Perform the requested action concisely.'
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"{ACTION_PROMPTS[action]}\n\n---\n\n{target_msg.text_content}"}
-        ]
-
-        from learnora import provider_manager, _call_provider_sync
-        provider = provider_manager.get_working_provider(needs_vision=False)
-        if not provider:
-            return
-
-        ai_text = _call_provider_sync(messages, provider)
-        if not ai_text:
-            return
-
-        bot_msg = ThreadMessage(
-            thread_id=thread_id,
-            sender_id=bot_user_id,
-            text_content=ai_text,
-            reply_to_id=message_id,
-            is_ai_response=True,
-            ai_personality="learnora",
-            status="sent",
-            sent_at=datetime.datetime.utcnow()
-        )
-        db.session.add(bot_msg)
-
-        Thread.query.filter_by(id=thread_id).update(
-            {
-                Thread.message_count: Thread.message_count + 1,
-                Thread.last_activity: datetime.datetime.utcnow()
-            },
-            synchronize_session=False
-        )
-
         try:
+            bot_user_id = app.config.get("LEARNORA_BOT_USER_ID", 0)
+            if not bot_user_id:
+                return
+
+            target_msg = ThreadMessage.query.get(message_id)
+            thread = Thread.query.get(thread_id)
+            if not target_msg or not thread:
+                return
+
+            system = f'You are Learnora in thread "{thread.title}". Perform the requested action concisely.'
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"{ACTION_PROMPTS[action]}\n\n---\n\n{target_msg.text_content}"}
+            ]
+
+            from learnora import provider_manager, _call_provider_sync
+            provider = provider_manager.get_working_provider(needs_vision=False)
+            if not provider:
+                return
+
+            ai_text = _call_provider_sync(messages, provider)
+            if not ai_text:
+                return
+
+            bot_msg = ThreadMessage(
+                thread_id=thread_id,
+                sender_id=bot_user_id,
+                text_content=ai_text,
+                reply_to_id=message_id,
+                is_ai_response=True,
+                ai_personality="learnora",
+                status="sent",
+                sent_at=datetime.datetime.utcnow()
+            )
+            db.session.add(bot_msg)
+
+            Thread.query.filter_by(id=thread_id).update(
+                {
+                    Thread.message_count: Thread.message_count + 1,
+                    Thread.last_activity: datetime.datetime.utcnow()
+                },
+                synchronize_session=False
+            )
+
             db.session.commit()
             thread_ws_manager.broadcast_ai_message(thread_id, bot_msg, ai_text)
-        except Exception:
+
+        except Exception as e:
+            logger.error(
+                f"[LEARNORA_ACTION_ERROR] "
+                f"thread_id={thread_id} message_id={message_id} action={action} "
+                f"triggered_by={triggering_user_id} error={e!r}",
+                exc_info=True
+            )
             db.session.rollback()
 
 

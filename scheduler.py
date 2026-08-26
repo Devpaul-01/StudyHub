@@ -131,6 +131,9 @@ scheduler = BackgroundScheduler(
 _JOB_LOCK_TTL_SECONDS = 600  # 10 minutes
 
 
+_CONSECUTIVE_SKIP_ALERT_THRESHOLD = 5  # ~5 ticks of the SAME job with no execution
+
+
 def _run_locked(job_id: str, work_fn) -> None:
     """
     Shared wrapper: attempt the distributed lock for job_id, run work_fn()
@@ -144,15 +147,55 @@ def _run_locked(job_id: str, work_fn) -> None:
     is the current owner, via distributed_lock.py's own logging), and
     does NOT log anything for the common no-op "nothing to do" case beyond
     what work_fn() itself already logs — no added heartbeat-style noise.
+
+    Also tracks CONSECUTIVE skips of the same job_id (SENTRY_IMPLEMENTATION_PLAN.md
+    §5): a single skip is normal (another instance legitimately won the
+    lock this tick), but if Redis is down for an extended period every
+    tick skips silently forever with no signal beyond a warning log line
+    each time. After _CONSECUTIVE_SKIP_ALERT_THRESHOLD consecutive skips,
+    this escalates to logger.error + a Sentry message, then keeps
+    counting without re-alerting until the job successfully runs again
+    and resets the counter (avoids alert spam from a Redis-down window
+    that lasts hours). Uses cache_service.get/set directly (fail-open,
+    matching every other Redis consumer in this codebase) — a Redis
+    hiccup on THIS bookkeeping must never itself break the scheduler skip
+    path.
     """
+    from services import cache_service  # local import, matches this module's existing style
+
     lock_key = f"sh:1:sched:lock:{job_id}"
+    skip_counter_key = f"sh:1:sched:skipcount:{job_id}"
+
     with DistributedLock(lock_key, ttl_seconds=_JOB_LOCK_TTL_SECONDS) as lock:
         if not lock.acquired:
             logger.info(
                 "[SCHED_JOB_SKIPPED_LOCK_HELD] job_id=%s — another instance "
                 "owns this tick's execution", job_id,
             )
+            # Fail-open read/write, matching cache_service.py's own
+            # convention — a Redis hiccup on THIS bookkeeping must never
+            # itself break the scheduler skip path.
+            skip_count = (cache_service.get(skip_counter_key) or 0) + 1
+            cache_service.set(skip_counter_key, skip_count, ttl_seconds=86400)
+            if skip_count >= _CONSECUTIVE_SKIP_ALERT_THRESHOLD:
+                logger.error(
+                    "[SCHED_JOB_REPEATEDLY_SKIPPED] job_id=%s skip_count=%s — "
+                    "this instance has failed to acquire the lock %s times in a "
+                    "row; if no other instance is genuinely running this job, "
+                    "Redis or the lock itself may be stuck",
+                    job_id, skip_count, skip_count,
+                )
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_message(
+                        f"Scheduler job '{job_id}' skipped {skip_count} consecutive ticks",
+                        level="error",
+                    )
+                except Exception:
+                    pass
             return
+        # Lock acquired — reset the skip counter and run.
+        cache_service.set(skip_counter_key, 0, ttl_seconds=86400)
         work_fn()
 
 
@@ -280,6 +323,12 @@ def _job_listener(event):
             "[Scheduler] Job '%s' raised an exception: %s",
             event.job_id, event.exception,
         )
+        try:
+            import sentry_sdk
+            sentry_sdk.set_tag("scheduler_job_id", event.job_id)
+            sentry_sdk.capture_exception(event.exception)
+        except Exception:
+            pass
     else:
         logger.info(
             "[Scheduler] Job '%s' completed successfully",
