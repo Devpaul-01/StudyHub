@@ -12,6 +12,7 @@ already moved to services/ai_provider_service.py in the prior phase, since
 those are consumed by other blueprints too).
 """
 
+import os
 import base64
 import mimetypes
 import logging
@@ -143,8 +144,13 @@ class FileHandler:
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
                     tmp.write(file.read())
                     tmp_path = tmp.name
-                content = docx2txt.process(tmp_path)
-                os.unlink(tmp_path)
+                try:
+                    content = docx2txt.process(tmp_path)
+                finally:
+                    # Audit Issue 1: always clean up the temp file, even if
+                    # docx2txt.process() itself raises — previously the
+                    # unlink line never ran on that path either.
+                    os.unlink(tmp_path)
                 if len(content) > 400_000:
                     return "[ERROR: Document too large. Max 400KB]"
                 return content
