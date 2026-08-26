@@ -1005,7 +1005,6 @@ class ThreadJoinRequest(db.Model):
     message     = db.Column(db.Text)
     status      = db.Column(db.Enum(ThreadJoinRequestStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=ThreadJoinRequestStatus.PENDING.value, index=True)
     reviewed_at = db.Column(db.DateTime)
-    requested_at = db.Column(db.DateTime)
     reviewed_by = db.Column(db.Integer, db.ForeignKey("users.id"))
 
     __table_args__ = (
@@ -1259,7 +1258,7 @@ class Connection(db.Model):
 
     # ✅ ADD THIS FIELD
     requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
-    responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=True)
+    responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     is_seen = db.Column(db.Boolean, default=False)
 
     # C-3 fix: explicit "who blocked whom" column. Previously block_user()
@@ -1709,6 +1708,17 @@ class AIConversation(db.Model):
 
     created_at      = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     last_message_at = db.Column(db.DateTime)
+
+    # Learnora Chat Audit — Issue 5: this was the one table in this file
+    # with no index at all on its most-filtered column, despite backing
+    # the hottest query in the feature — get_conversations() filters by
+    # (user_id, is_archived) and sorts by last_message_at on every
+    # sidebar load. A composite index covering exactly that pattern also
+    # serves plain user_id-only lookups via the leftmost-prefix rule, so
+    # a separate single-column index isn't needed on top of it.
+    __table_args__ = (
+        db.Index("idx_ai_conv_user_archived_lastmsg", "user_id", "is_archived", "last_message_at"),
+    )
 
 
 class AIUsageQuota(db.Model):
