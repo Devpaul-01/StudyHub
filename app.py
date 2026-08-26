@@ -95,6 +95,13 @@ def create_app(config_class=None):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # Sentry — must run after app.config exists (reads SENTRY_DSN /
+    # FLASK_ENV from it), and as early as possible so it can capture
+    # failures during the rest of create_app() itself. Fail-open — see
+    # services/error_tracking.py's own docstring; this call never raises.
+    from services.error_tracking import init_app as init_sentry
+    init_sentry(app)
+
     # ========================================================================
     # CORS (AUDIT ENG-11)
     # ========================================================================
@@ -259,6 +266,11 @@ def create_app(config_class=None):
         """
         if err.status_code >= 500:
             app.logger.error(f"{type(err).__name__}: {err}", exc_info=True)
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(err)
+            except Exception:
+                pass
         payload = {"status": "error", "message": str(err)}
         if err.details:
             payload["errors"] = err.details
@@ -282,6 +294,11 @@ def create_app(config_class=None):
     @app.errorhandler(500)
     def internal_error(error):
         app.logger.error(f"500 Internal Error: {error}")
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(error)
+        except Exception:
+            pass  # never let Sentry capture itself become the source of a second error
         db.session.rollback()
         return jsonify({
             "status": "error",
@@ -331,6 +348,9 @@ def create_app(config_class=None):
     app.register_blueprint(waitlist_bp)
     app.register_blueprint(google_bp, url_prefix='/google')
     app.register_blueprint(student_bp)
+
+    from routes.admin import admin_bp
+    app.register_blueprint(admin_bp)
     
     # ========================================================================
     # Routes

@@ -207,6 +207,11 @@ def role_required(*allowed_roles: str):
                     raise AuthorizationError("Access denied for this role")
 
                 g.current_user_id = user.id
+                try:
+                    import sentry_sdk
+                    sentry_sdk.set_user({"id": user.id})
+                except Exception:
+                    pass
 
             except jwt.ExpiredSignatureError:
                 return jsonify({"status": "error", "message": "Token expired. Please refresh your session."}), 401

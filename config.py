@@ -100,6 +100,12 @@ class Config:
     # deploy, and is instantly reversible. Not used by any code yet.
     ACCESS_TOKEN_HTTPONLY = os.environ.get("ACCESS_TOKEN_HTTPONLY", "true").lower() == "true"
 
+    # Sentry error tracking — None/unset means disabled (see
+    # services/error_tracking.py). No behavior change to any existing
+    # config tier; DevelopmentConfig/TestingConfig/ProductionConfig all
+    # inherit this unchanged unless you want per-tier sampling later.
+    SENTRY_DSN = os.environ.get("SENTRY_DSN")
+
 
 class DevelopmentConfig(Config):
     DEBUG = True
