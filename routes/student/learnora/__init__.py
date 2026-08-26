@@ -26,7 +26,7 @@ target tree's `learnora/__init__.py  # routes only` entry.
 --------------------------------------------------------------------------
 
 PROVIDERS (in fallback order — highest free TPM first):
-  1. Gemini     (generous free tier) — gemini-2.5-flash (vision!) + gemini-2.5-pro + static model list
+  1. Cerebras   (~60K TPM free)  — gpt-oss-120b (production) + dynamic discovery
   2. Groq       (~30K TPM free)  — llama-4-scout (vision!) + llama-3.3-70b + dynamic discovery
   3. Mistral    (500K TPM free*) — mistral-small-latest / mistral-medium-latest (provider aliases)
   4. OpenRouter (pay-per-use)    — meta-llama/llama-4-scout (vision!) + static model list
@@ -36,6 +36,7 @@ env var docs — unchanged from before, just relocated.
 """
 
 import os
+import io
 import json
 import base64
 import mimetypes
@@ -44,6 +45,7 @@ import datetime
 import logging
 
 from werkzeug.utils import secure_filename
+from werkzeug.datastructures import FileStorage
 
 from flask import (
     request, render_template, jsonify, Response,
@@ -60,6 +62,15 @@ from routes.student.helpers import (
 # Document 1 §2.4: FileHandler moved to its own file within this package.
 from routes.student.learnora.file_handler import FileHandler
 
+# Learnora Chat Audit — Issue 10: same content-validation functions
+# upload_post_attachment() (below in this file) already uses, reused
+# here for chat attachments. Imported at module level for the chat()
+# route's use; upload_post_attachment() keeps its own existing local
+# import unchanged.
+from services.upload_validation_service import (
+    validate_and_normalize_image, validate_document_mime,
+)
+
 # ── Moved to services/ai_provider_service.py (Document 1 §2.4) ────────────
 # Re-exported here at the same names for backward compatibility with any
 # existing `from learnora import ...` callers elsewhere in the codebase.
@@ -71,7 +82,7 @@ from services.ai_provider_service import (
     _call_provider_sync,
     clean_ai_response,
     generate_conversation_title,
-    GEMINI_MODELS,
+    CEREBRAS_MODELS,
     GROQ_MODELS,
     MISTRAL_MODELS,
     OPENROUTER_MODELS,
@@ -97,6 +108,19 @@ learnora_bp = Blueprint('learnora', __name__, url_prefix='/learnora')
 # harmless (basicConfig is a no-op if handlers already exist).
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
+
+# Learnora Chat Audit — Issue 7: single source of truth for the default
+# daily AI-message quota, so the "no quota row yet" fallback in
+# get_stats() can't drift from the value actually used when a quota row
+# is first created in chat() (previously two different hardcoded
+# numbers — 10 and 50 — for what should be the same thing).
+DEFAULT_DAILY_MESSAGE_LIMIT = 50
+
+# Learnora Chat Audit — Issue 8: matches the frontend's own cap
+# (learnora.events.js's addPendingFiles() rejects a 6th file
+# client-side); enforced here too so a direct API call can't attach an
+# unbounded number of files.
+MAX_CHAT_ATTACHMENTS = 5
 
 
 def upload_user_files(files, user_id):
@@ -198,7 +222,17 @@ def chat(current_user):
         conversation_id = request.form.get("conversation_id")
 
         if not conversation_id:
-            return jsonify({"error": "conversation_id is required"}), 400
+            return jsonify({"status": "error", "message": "conversation_id is required"}), 400
+
+        # Learnora Chat Audit — Issue 11: validate as an int before it
+        # reaches a query, matching routes that take conversation_id from
+        # the URL (Flask's <int:...> converter validates those
+        # automatically). A non-numeric value here previously fell
+        # through to the DB driver and surfaced as an unhandled 500.
+        try:
+            conversation_id = int(conversation_id)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "conversation_id must be a valid integer"}), 400
 
         conversation = AIConversation.query.filter_by(
             id=conversation_id,
@@ -206,19 +240,19 @@ def chat(current_user):
         ).first()
 
         if not conversation:
-            return jsonify({"error": "Conversation not found"}), 404
+            return jsonify({"status": "error", "message": "Conversation not found"}), 404
 
         if conversation.is_archived:
-            return jsonify({"error": "This conversation has been archived"}), 410
+            return jsonify({"status": "error", "message": "This conversation has been archived"}), 410
 
         # ── Hard message cap ─────────────────────────────────
         if conversation.total_messages >= 500:
-            return jsonify({"error": "Message limit reached (500 messages per conversation)"}), 429
+            return jsonify({"status": "error", "message": "Message limit reached (500 messages per conversation)"}), 429
 
         # ── Daily quota ──────────────────────────────────────
         quota = AIUsageQuota.query.filter_by(user_id=current_user.id).first()
         if not quota:
-            quota = AIUsageQuota(user_id=current_user.id, daily_messages_limit=50)
+            quota = AIUsageQuota(user_id=current_user.id, daily_messages_limit=DEFAULT_DAILY_MESSAGE_LIMIT)
             db.session.add(quota)
             db.session.commit()
 
@@ -230,14 +264,30 @@ def chat(current_user):
 
         if quota.daily_messages_used >= quota.daily_messages_limit:
             return jsonify({
-                "error": f"Daily limit reached ({quota.daily_messages_limit} messages). Try again tomorrow."
+                "status": "error",
+                "message": f"Daily limit reached ({quota.daily_messages_limit} messages). Try again tomorrow."
             }), 429
 
         # ── Parse request fields ─────────────────────────────
-        user_message = request.form.get("message", "").strip()
+        # Learnora Chat Audit — Issue 12: same 2000-char cap already used
+        # for initial_message in create_conversation() — this field
+        # previously had no length limit at all.
+        user_message = request.form.get("message", "").strip()[:2000]
         mode = request.form.get("mode", "fast_response")
         post_id = request.form.get("post_id")
         is_continue = request.form.get("is_continue", "false").lower() == "true"
+
+        # Learnora Chat Audit — Issue 13: last_incomplete_message was
+        # previously written on every truncated response but never read
+        # back anywhere — "Continue" just sent a bare "continue" user
+        # turn. Captured here (off the conversation object already
+        # fetched above, no extra query) and passed into build_messages()
+        # below so the model gets an explicit continuation instruction
+        # instead of having to infer intent from conversation history
+        # alone. Only used when there's actually stored text to continue
+        # from, so a stray is_continue=true with nothing to continue is
+        # a harmless no-op.
+        continuation_text = conversation.last_incomplete_message if is_continue else None
 
         # If no message text was sent, this may be a request to generate the
         # AI's first reply to a message that was already seeded when the
@@ -257,27 +307,110 @@ def chat(current_user):
                 seeded_reuse = bool(user_message)
 
         if not user_message:
-            return jsonify({"error": "Message cannot be empty"}), 400
+            return jsonify({"status": "error", "message": "Message cannot be empty"}), 400
 
         logger.info(
             f"💬 Chat request: user={current_user.id}, conv={conversation_id}, "
-            f"mode={mode}, is_continue={is_continue}, "
-            f"provider_stats={provider_manager.get_stats()}"
+            f"mode={mode}, is_continue={is_continue}"
         )
 
         # ── Start Cloudinary upload in background ────────────
         files = request.files
+
+        # Learnora Chat Audit — Issue 8: the frontend caps attachments at
+        # 5 (learnora.events.js's addPendingFiles), but nothing
+        # server-side enforced that — a direct API call could attach an
+        # unbounded number of files.
+        if len(files) > MAX_CHAT_ATTACHMENTS:
+            return jsonify({
+                "status": "error",
+                "message": f"Too many attachments ({len(files)}). Maximum is {MAX_CHAT_ATTACHMENTS} files per message."
+            }), 400
+
+        # Learnora Chat Audit — Issue 3: previously the background
+        # Cloudinary-upload thread and the main-thread FileHandler both
+        # read the SAME request.files FileStorage objects concurrently —
+        # each doing its own seek()/read() with no locking, a real race
+        # condition that could corrupt either consumer's read. Each
+        # uploaded file's bytes are now read into memory exactly once,
+        # up front on the main thread (request.files streams aren't
+        # guaranteed usable outside this request context anyway once we
+        # branch into a background thread), and each consumer below gets
+        # its own independent FileStorage snapshot wrapping a fresh
+        # BytesIO copy of those bytes — no shared mutable stream, no
+        # cross-thread contention.
+        #
+        # Learnora Chat Audit — Issue 10: chat attachments were
+        # previously trusted by filename extension alone, unlike
+        # upload_post_attachment() (below in this same file), which
+        # validates actual file content. Content — not just the claimed
+        # extension — now gets the same treatment here: images are
+        # re-encoded from decoded pixel data (rejects an
+        # extension-spoofed non-image by construction, e.g. an SVG/JS
+        # polyglot saved as .jpg), and documents are checked against
+        # their real magic-number signature. Code files (.py/.js/...)
+        # have no reliable magic number to check — same as text/plain in
+        # upload_validation_service.py's own signature table — so they
+        # remain extension-based, matching that module's own documented
+        # limitation rather than inventing a check that doesn't exist.
+        _CHAT_DOC_MIME_MAP = {
+            "pdf":  "application/pdf",
+            "doc":  "application/msword",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "txt":  "text/plain",
+            "csv":  "text/csv",
+        }
+
+        upload_snapshot = {}
+        handler_snapshot = {}
+        handler = FileHandler()
+        for file_key in files:
+            f = files[file_key]
+            f.seek(0)
+            fname_lower = (f.filename or "").lower()
+            ftype = handler.detect_type(fname_lower)
+
+            if ftype == "image":
+                try:
+                    normalized = validate_and_normalize_image(f)
+                except ValidationError as e:
+                    return jsonify({"status": "error", "message": f"{f.filename}: {e}"}), 400
+                raw_bytes = normalized.getvalue()
+            elif ftype == "document":
+                expected_mime = _CHAT_DOC_MIME_MAP.get(fname_lower.rsplit(".", 1)[-1])
+                f.seek(0)
+                raw_bytes = f.read()
+                if expected_mime:
+                    f.seek(0)
+                    try:
+                        validate_document_mime(f, {expected_mime})
+                    except ValidationError as e:
+                        return jsonify({"status": "error", "message": f"{f.filename}: {e}"}), 400
+            else:
+                f.seek(0)
+                raw_bytes = f.read()
+
+            upload_snapshot[file_key] = FileStorage(
+                stream=io.BytesIO(raw_bytes),
+                filename=f.filename,
+                content_type=f.content_type,
+            )
+            handler_snapshot[file_key] = FileStorage(
+                stream=io.BytesIO(raw_bytes),
+                filename=f.filename,
+                content_type=f.content_type,
+            )
+
         _upload_result = {}
 
         def _do_cloudinary_upload():
-            _upload_result["data"] = upload_user_files(files, current_user.id)
+            _upload_result["data"] = upload_user_files(upload_snapshot, current_user.id)
 
         upload_thread = threading.Thread(target=_do_cloudinary_upload, daemon=True)
         upload_thread.start()
 
         # ── Process files for AI context (local, no network) ─
-        handler = FileHandler()
-        file_result = handler.process_files(files)
+        file_result = handler.process_files(handler_snapshot)
         logger.info(f"📊 File processing: {file_result['info']}")
 
         # ── Optional post context ────────────────────────────
@@ -285,9 +418,15 @@ def chat(current_user):
         if post_id:
             post = Post.query.get(post_id)
             if post:
+                # Learnora Chat Audit — Issue 12: cap referenced post
+                # content the same way file-attachment previews already
+                # are (5000 chars) — this was previously included in
+                # full with no limit, unlike every other piece of
+                # content folded into the prompt.
+                post_body = post.text_content or ""
                 post_content = {
                     "title": post.title,
-                    "content": post.text_content or ""
+                    "content": post_body[:5000]
                 }
 
         # ── Pick a working provider ──────────────────────────
@@ -295,7 +434,8 @@ def chat(current_user):
 
         if not provider:
             return jsonify({
-                "error": "All AI providers are currently unavailable. Please try again later.",
+                "status": "error",
+                "message": "All AI providers are currently unavailable. Please try again later.",
                 "stats": provider_manager.get_stats()
             }), 503
 
@@ -315,7 +455,8 @@ def chat(current_user):
             user_message,
             file_result["texts"],
             mode,
-            post_content
+            post_content,
+            continuation_text
         )
 
         # ── Join upload thread, then persist user message ─────
@@ -429,6 +570,19 @@ def chat(current_user):
                                         error_message = None
                                         break
                                     else:
+                                        # Learnora Chat Audit — Issue 4: retries
+                                        # must be incremented here too — this is
+                                        # a failed attempt (no fallback provider
+                                        # available, or the retry budget is
+                                        # already spent). Previously this branch
+                                        # left retries unchanged while also
+                                        # setting error_in_stream=True, which
+                                        # skips the loop's only other exit check
+                                        # below — the while loop would then
+                                        # re-enter and keep retrying the same
+                                        # already-failing provider with no bound
+                                        # and no backoff.
+                                        retries += 1
                                         response_complete = False
                                         break
                                 else:
@@ -500,6 +654,8 @@ def chat(current_user):
 
                     if not response_complete:
                         conv.last_incomplete_message = cleaned_response
+                    else:
+                        conv.last_incomplete_message = None
 
                     if error_occurred:
                         conv.error_count += 1
@@ -509,13 +665,14 @@ def chat(current_user):
             except Exception as e:
                 logger.error(f"❌ Error saving assistant response: {str(e)}", exc_info=True)
 
-            yield f"data: {json.dumps({
+            done_payload = {
                 'type': 'done',
                 'tokens': handler.total_tokens,
                 'complete': response_complete,
                 'can_continue': not response_complete and not error_occurred,
                 'provider': provider['name']
-            })}\n\n"
+            }
+            yield f"data: {json.dumps(done_payload)}\n\n"
 
         return Response(
             stream_with_context(generate()),
@@ -528,7 +685,7 @@ def chat(current_user):
 
     except Exception as e:
         logger.error(f"❌ Chat error: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # -----------------------------------------------------------
@@ -858,11 +1015,19 @@ def reset_conversation_title(current_user):
         conversation_id (int, required): Target conversation
     """
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         conversation_id = data.get("conversation_id")
 
         if not conversation_id:
             return jsonify({"status": "error", "message": "conversation_id is required"}), 400
+
+        # Learnora Chat Audit — Issue 11: same fix as chat() — validate
+        # as an int before it reaches a query instead of letting a
+        # malformed value fall through to an unhandled DB-level error.
+        try:
+            conversation_id = int(conversation_id)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "conversation_id must be a valid integer"}), 400
 
         conversation = AIConversation.query.filter_by(
             id=conversation_id,
@@ -1057,20 +1222,35 @@ def get_stats(current_user):
     try:
         quota = AIUsageQuota.query.filter_by(user_id=current_user.id).first()
 
-        daily_limit = quota.daily_messages_limit if quota else 10
+        # Learnora Chat Audit — Issue 7: use the same shared constant as
+        # chat()'s quota-creation fallback, instead of a second,
+        # disagreeing hardcoded number (was 10 here vs. 50 there).
+        daily_limit = quota.daily_messages_limit if quota else DEFAULT_DAILY_MESSAGE_LIMIT
         daily_used = quota.daily_messages_used if quota else 0
+
+        # Learnora Chat Audit — Issue 9: provider_manager.get_stats()
+        # returns real provider names, per-key cooldown/blacklist
+        # status, model lists, and Redis-vs-memory state — meaningful
+        # internal operational detail that was previously returned to
+        # any authenticated student. Regular users only ever needed
+        # their own quota (confirmed: the frontend never reads
+        # provider_stats). Admin/system accounts still get the full
+        # diagnostic payload for actual operational use.
+        response_data = {
+            "user_quota": {
+                "daily_used": daily_used,
+                "daily_limit": daily_limit,
+                "remaining": max(0, daily_limit - daily_used),
+                "reset_date": quota.last_reset_date.isoformat() if quota and quota.last_reset_date else None
+            }
+        }
+
+        if current_user.role in ("admin", "system"):
+            response_data["provider_stats"] = provider_manager.get_stats()
 
         return jsonify({
             "status": "success",
-            "data": {
-                "provider_stats": provider_manager.get_stats(),
-                "user_quota": {
-                    "daily_used": daily_used,
-                    "daily_limit": daily_limit,
-                    "remaining": max(0, daily_limit - daily_used),
-                    "reset_date": quota.last_reset_date.isoformat() if quota and quota.last_reset_date else None
-                }
-            }
+            "data": response_data
         })
     except Exception as e:
         logger.error(f"Error getting stats: {str(e)}", exc_info=True)
