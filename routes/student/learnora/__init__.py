@@ -82,13 +82,7 @@ from services.ai_provider_service import (
     _call_provider_sync,
     clean_ai_response,
     generate_conversation_title,
-    CEREBRAS_MODELS,
-    GROQ_MODELS,
-    MISTRAL_MODELS,
-    OPENROUTER_MODELS,
-    GROQ_VISION_MODELS,
-    OPENROUTER_VISION_MODELS,
-    PROVIDER_ORDER,
+    PROVIDER_ORDER
 )
 # Phase 5b (Document 4 §1): AI_EXPENSIVE on the routes that call an AI
 # provider (chat, new-conversation seeding/title-gen, reset-title) — these

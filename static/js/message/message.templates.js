@@ -26,7 +26,7 @@ export function conversationItemTemplate(conversation) {
   const timeAgo = lastMessage ? formatConversationTime(lastMessage.sent_at) : '';
 
   return `
-    <div class="flex items-center gap-3 px-4 py-3 hover:bg-[var(--bg-hover)] active:bg-[var(--bg-surface)]
+    <div class="flex items-center gap-3 px-4 py-3 bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] active:bg-[var(--bg-surface)]
                 transition-colors cursor-pointer conversation-item"
          data-action="open-conversation"
          data-partner-id="${partner.id}">

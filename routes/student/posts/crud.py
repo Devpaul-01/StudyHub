@@ -131,24 +131,42 @@ def configure_logging(app):
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_feed(current_user):
+    import time
+    start_time = time.time()
     request_id = request.headers.get("X-Request-Id") or f"feed_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
-
+    
+    # Get current app for logging
+    from flask import current_app
+    
+    current_app.logger.info(f"[{request_id}] Starting get_feed for user: {current_user.id}")
+    
     try:
         # ── Step 1: Parse request parameters ──────────────────────────────────
+        current_app.logger.info(f"[{request_id}] Parsing request parameters")
         filter_type = request.args.get("filter", "all")
         cursor_str  = request.args.get("cursor")
         limit       = min(request.args.get("limit", 10, type=int), 20)
         post_type   = request.args.get("post_type", "").strip()
+        
+        current_app.logger.info(f"[{request_id}] Parameters - filter: {filter_type}, cursor: {cursor_str}, limit: {limit}, post_type: {post_type}")
 
         # ── Step 2: Decode cursor ──────────────────────────────────────────────
+        current_app.logger.info(f"[{request_id}] Decoding cursor: {cursor_str}")
         cursor_date = decode_cursor(cursor_str) if cursor_str else None
+        current_app.logger.info(f"[{request_id}] Decoded cursor date: {cursor_date}")
 
         # ── Step 3: Get user's department ──────────────────────────────────────
+        current_app.logger.info(f"[{request_id}] Fetching user profile for user: {current_user.id}")
         profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
         user_dept = profile.department if profile else None
+        current_app.logger.info(f"[{request_id}] User department: {user_dept}")
 
         # ── Step 4: Build base query ───────────────────────────────────────────
+        current_app.logger.info(f"[{request_id}] Building query with filter_type: {filter_type}")
+        query = None
+        
         if filter_type == "connections":
+            current_app.logger.info(f"[{request_id}] Processing connections filter")
             conns = Connection.query.filter(
                 or_(
                     Connection.requester_id == current_user.id,
@@ -156,13 +174,16 @@ def get_feed(current_user):
                 ),
                 Connection.status == "accepted"
             ).all()
+            current_app.logger.info(f"[{request_id}] Found {len(conns)} connections")
 
             conn_ids = [
                 c.receiver_id if c.requester_id == current_user.id else c.requester_id
                 for c in conns
             ]
+            current_app.logger.info(f"[{request_id}] Connection IDs: {conn_ids}")
 
             if not conn_ids:
+                current_app.logger.info(f"[{request_id}] No connections found, returning empty response")
                 return jsonify({
                     "status": "success",
                     "data": {
@@ -174,46 +195,76 @@ def get_feed(current_user):
                     }
                 })
             query = Post.query.filter(Post.student_id.in_(conn_ids))
+            current_app.logger.info(f"[{request_id}] Query built with {len(conn_ids)} connection IDs")
 
         elif filter_type == "department":
+            current_app.logger.info(f"[{request_id}] Processing department filter: {user_dept}")
             query = Post.query.filter(Post.department == user_dept)
+            current_app.logger.info(f"[{request_id}] Department query built")
 
         elif filter_type == "trending":
             week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+            current_app.logger.info(f"[{request_id}] Processing trending filter, since: {week_ago}")
             query = Post.query.filter(Post.posted_at >= week_ago)
+            current_app.logger.info(f"[{request_id}] Trending query built")
 
         elif filter_type == "unsolved":
+            current_app.logger.info(f"[{request_id}] Processing unsolved filter")
             query = Post.query.filter(
                 Post.post_type.in_(["question", "problem"]),
                 Post.is_solved == False
             )
+            current_app.logger.info(f"[{request_id}] Unsolved query built")
         else:
+            current_app.logger.info(f"[{request_id}] Using default filter (all)")
             query = Post.query
+            current_app.logger.info(f"[{request_id}] Default query built")
 
         # ── Step 5: Apply post_type filter ─────────────────────────────────────
         valid_types = ["question", "discussion", "announcement", "resource", "problem"]
         if post_type and post_type in valid_types:
+            current_app.logger.info(f"[{request_id}] Applying post_type filter: {post_type}")
             query = query.filter(Post.post_type == post_type)
+            current_app.logger.info(f"[{request_id}] Post_type filter applied")
+        elif post_type:
+            current_app.logger.warning(f"[{request_id}] Invalid post_type provided: {post_type}")
 
         # ── Step 6: Apply ordering ─────────────────────────────────────────────
+        current_app.logger.info(f"[{request_id}] Applying ordering for filter: {filter_type}")
         if filter_type == "trending":
             query = query.order_by(
                 desc(Post.positive_reactions_count * 2 + Post.comments_count * 1.5 + Post.views_count / 10),
                 Post.posted_at.desc()
             )
+            current_app.logger.info(f"[{request_id}] Trending ordering applied")
         else:
             query = query.order_by(Post.posted_at.desc())
+            current_app.logger.info(f"[{request_id}] Default ordering applied")
 
         if cursor_date:
+            current_app.logger.info(f"[{request_id}] Applying cursor filter: {cursor_date}")
             query = query.filter(Post.posted_at < cursor_date)
+            current_app.logger.info(f"[{request_id}] Cursor filter applied")
 
         # ── Step 7: Execute query ──────────────────────────────────────────────
-        posts_raw = query.limit(limit + 1).all()
+        current_app.logger.info(f"[{request_id}] Executing query with limit: {limit + 1}")
+        try:
+            posts_raw = query.limit(limit + 1).all()
+            current_app.logger.info(f"[{request_id}] Query returned {len(posts_raw)} posts")
+        except Exception as query_error:
+            current_app.logger.error(f"[{request_id}] Query execution failed: {str(query_error)}")
+            current_app.logger.error(f"[{request_id}] Query: {query}")
+            raise
+        
         has_more = len(posts_raw) > limit
         posts_page = posts_raw[:limit]
+        current_app.logger.info(f"[{request_id}] Processing {len(posts_page)} posts, has_more: {has_more}")
+        
         next_cursor = encode_cursor(posts_page[-1].posted_at) if has_more and posts_page else None
+        current_app.logger.info(f"[{request_id}] Next cursor: {next_cursor}")
 
         if not posts_page:
+            current_app.logger.info(f"[{request_id}] No posts found, returning empty response")
             return jsonify({
                 "status": "success",
                 "data": {
@@ -228,13 +279,19 @@ def get_feed(current_user):
         # ════════════════════════════════════════════════════════════════════
         # BATCH LOAD EVERYTHING
         # ════════════════════════════════════════════════════════════════════
+        current_app.logger.info(f"[{request_id}] Starting batch loading")
         post_ids = [p.id for p in posts_page]
         author_ids = list({p.student_id for p in posts_page})
+        current_app.logger.info(f"[{request_id}] Post IDs: {post_ids}")
+        current_app.logger.info(f"[{request_id}] Author IDs: {author_ids}")
 
         # 1. Authors
+        current_app.logger.info(f"[{request_id}] Loading authors")
         authors_map = {u.id: u for u in User.query.filter(User.id.in_(author_ids)).all()}
+        current_app.logger.info(f"[{request_id}] Loaded {len(authors_map)} authors")
 
         # 2. Current-user reactions
+        current_app.logger.info(f"[{request_id}] Loading user reactions")
         reactions_map = {
             r.post_id: r
             for r in PostReaction.query.filter(
@@ -242,8 +299,10 @@ def get_feed(current_user):
                 PostReaction.student_id == current_user.id
             ).all()
         }
+        current_app.logger.info(f"[{request_id}] Loaded {len(reactions_map)} reactions")
 
         # 3. Current-user follows
+        current_app.logger.info(f"[{request_id}] Loading user follows")
         follows_map = {
             f.post_id: f
             for f in PostFollow.query.filter(
@@ -251,9 +310,11 @@ def get_feed(current_user):
                 PostFollow.student_id == current_user.id
             ).all()
         }
+        current_app.logger.info(f"[{request_id}] Loaded {len(follows_map)} follows")
 
         # 4. Connections
         other_author_ids = [aid for aid in author_ids if aid != current_user.id]
+        current_app.logger.info(f"[{request_id}] Loading connections for authors: {other_author_ids}")
         connections_map = {}
         if other_author_ids:
             conns = Connection.query.filter(
@@ -267,32 +328,43 @@ def get_feed(current_user):
             for c in conns:
                 other = c.receiver_id if c.requester_id == current_user.id else c.requester_id
                 connections_map[other] = c.status
+            current_app.logger.info(f"[{request_id}] Loaded {len(connections_map)} connections")
+        else:
+            current_app.logger.info(f"[{request_id}] No other authors to load connections")
 
         # 5. Threads
         thread_enabled_ids = [p.id for p in posts_page if p.thread_enabled]
+        current_app.logger.info(f"[{request_id}] Processing {len(thread_enabled_ids)} thread-enabled posts")
         threads_map = {}
         thread_join_map = {}
         thread_member_set = set()
 
         if thread_enabled_ids:
+            current_app.logger.info(f"[{request_id}] Loading threads for posts: {thread_enabled_ids}")
             threads = Thread.query.filter(Thread.post_id.in_(thread_enabled_ids)).all()
             threads_map = {t.post_id: t for t in threads}
+            current_app.logger.info(f"[{request_id}] Loaded {len(threads_map)} threads")
 
             thread_ids = [t.id for t in threads]
             if thread_ids:
+                current_app.logger.info(f"[{request_id}] Loading thread join requests for threads: {thread_ids}")
                 join_reqs = ThreadJoinRequest.query.filter(
                     ThreadJoinRequest.thread_id.in_(thread_ids),
                     ThreadJoinRequest.requester_id == current_user.id
                 ).all()
                 thread_join_map = {jr.thread_id: jr.status for jr in join_reqs}
+                current_app.logger.info(f"[{request_id}] Loaded {len(thread_join_map)} join requests")
 
+                current_app.logger.info(f"[{request_id}] Loading thread members")
                 members = ThreadMember.query.filter(
                     ThreadMember.thread_id.in_(thread_ids),
                     ThreadMember.student_id == current_user.id
                 ).all()
                 thread_member_set = {m.thread_id for m in members}
+                current_app.logger.info(f"[{request_id}] Loaded {len(thread_member_set)} memberships")
 
         # 6. Top-2 comments per post
+        current_app.logger.info(f"[{request_id}] Loading top comments for posts: {post_ids}")
         rank_col = func.row_number().over(
             partition_by=Comment.post_id,
             order_by=[Comment.is_solution.desc(), Comment.likes_count.desc()]
@@ -314,19 +386,24 @@ def get_feed(current_user):
             .filter(ranked_subq.c.rn <= 2)
             .all()
         )
+        current_app.logger.info(f"[{request_id}] Loaded {len(top_comments_all)} top comments")
 
         comments_by_post = defaultdict(list)
         for c in top_comments_all:
             comments_by_post[c.post_id].append(c)
+        current_app.logger.info(f"[{request_id}] Grouped comments by {len(comments_by_post)} posts")
 
         # Batch-load comment authors
         comment_author_ids = list({c.student_id for c in top_comments_all})
+        current_app.logger.info(f"[{request_id}] Loading comment authors: {comment_author_ids}")
         comment_authors_map = {
             u.id: u for u in User.query.filter(User.id.in_(comment_author_ids)).all()
         } if comment_author_ids else {}
+        current_app.logger.info(f"[{request_id}] Loaded {len(comment_authors_map)} comment authors")
 
         # Batch-load comment likes
         all_comment_ids = [c.id for c in top_comments_all]
+        current_app.logger.info(f"[{request_id}] Loading comment likes for {len(all_comment_ids)} comments")
         comment_liked_set = set()
         if all_comment_ids:
             liked_rows = CommentLike.query.filter(
@@ -334,15 +411,20 @@ def get_feed(current_user):
                 CommentLike.comment_id.in_(all_comment_ids)
             ).all()
             comment_liked_set = {lk.comment_id for lk in liked_rows}
+            current_app.logger.info(f"[{request_id}] Loaded {len(comment_liked_set)} comment likes")
 
         # ════════════════════════════════════════════════════════════════════
         # ASSEMBLE PAYLOADS
         # ════════════════════════════════════════════════════════════════════
+        current_app.logger.info(f"[{request_id}] Assembling post payloads")
         posts_data = []
         for post in posts_page:
             author = authors_map.get(post.student_id)
             if not author:
+                current_app.logger.warning(f"[{request_id}] Author not found for post {post.id}, skipping")
                 continue
+
+            current_app.logger.info(f"[{request_id}] Processing post {post.id} by author {author.id}")
 
             user_reacted = reactions_map.get(post.id)
             user_followed = follows_map.get(post.id)
@@ -414,6 +496,9 @@ def get_feed(current_user):
                 }
             })
 
+        response_time = round((time.time() - start_time) * 1000, 2)
+        current_app.logger.info(f"[{request_id}] Successfully assembled {len(posts_data)} posts in {response_time}ms")
+        
         return jsonify({
             "status": "success",
             "data": {
@@ -423,12 +508,21 @@ def get_feed(current_user):
                 "has_more": has_more,
                 "debug": {
                     "request_id": request_id,
-                    "response_time_ms": round((time.time() - start_time) * 1000, 2)
+                    "response_time_ms": response_time
                 }
             }
         })
 
     except Exception as e:
+        current_app.logger.error(f"[{request_id}] ERROR in get_feed: {str(e)}")
+        current_app.logger.error(f"[{request_id}] Exception type: {type(e).__name__}")
+        current_app.logger.error(f"[{request_id}] Exception details: {e.__dict__ if hasattr(e, '__dict__') else 'No details'}")
+        import traceback
+        current_app.logger.error(f"[{request_id}] Traceback: {traceback.format_exc()}")
+        current_app.logger.error(f"[{request_id}] Request args: {request.args}")
+        current_app.logger.error(f"[{request_id}] Request headers: {dict(request.headers)}")
+        current_app.logger.error(f"[{request_id}] Current user: {current_user.id if current_user else 'None'}")
+        
         return error_response("Failed to load feed")
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 2: Like-only toggle  (replaces the multi-reaction endpoint)

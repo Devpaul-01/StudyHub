@@ -46,6 +46,36 @@ class Config:
     SQLALCHEMY_DATABASE_URI = DATABASE_URL
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # FIX: SSL EOF errors ("SSL error: unexpected eof while reading") on
+    # login/OAuth. Root cause: DATABASE_NEW_URL points at Supabase's
+    # PgBouncer transaction-mode pooler (port 6543), which aggressively
+    # drops/recycles backend connections between transactions. Without
+    # these options, SQLAlchemy's own pool had no way to know a pooled
+    # connection had already gone dead server-side, so it handed a stale
+    # connection to the next request and the query blew up mid-SSL-read
+    # instead of transparently reconnecting.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        # Ping each connection with a cheap SELECT before using it; if
+        # PgBouncer already closed it, SQLAlchemy discards it and opens a
+        # new one instead of the request failing.
+        "pool_pre_ping": True,
+        # Recycle connections before Supabase/PgBouncer's own idle
+        # timeout can kill them out from under us. Keep this well under
+        # PgBouncer's server_idle_timeout on the Supabase side.
+        "pool_recycle": 280,
+        # Transaction-mode pooling doesn't support server-side prepared
+        # statement caching the same way a direct connection does -
+        # psycopg2 issuing its own PREPARE/EXECUTE with statement_cache
+        # left on can itself surface as broken-connection errors against
+        # PgBouncer. Disabling it is the documented approach for using
+        # psycopg2 through PgBouncer in transaction mode.
+        "connect_args": {
+            "sslmode": "require",
+            "connect_timeout": 10,
+            "options": "-c statement_timeout=15000",
+        },
+    }
+
     # Flask-Mail Configuration (Gmail with App Password)
     MAIL_SERVER = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
     MAIL_PORT = int(os.environ.get('MAIL_PORT', 587))

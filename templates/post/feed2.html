@@ -2300,23 +2300,23 @@ html { scroll-behavior: smooth; }
 -->
 
 <div id="messages" class="hidden">
-  <div class="relative flex h-screen max-h-screen overflow-hidden bg-white">
+  <div class="relative flex h-screen max-h-screen overflow-hidden bg-[var(--bg-card)]">
 
 
     <!-- ================================================================
          PANEL 1 — CONVERSATION LIST
          ================================================================ -->
     <div id="conversation-list-view"
-         class="flex flex-col w-full h-full bg-white">
+         class="flex flex-col w-full h-full bg-[var(--bg-card)]">
 
       <!-- Header -->
       <div class="flex items-center justify-between px-5 pt-5 pb-3
-                  border-b border-gray-100 flex-shrink-0">
+                  border-b border-[var(--border)] flex-shrink-0">
         <div class="flex items-center gap-3">
-          <h1 class="text-xl font-bold text-gray-900 tracking-tight">Messages</h1>
+          <h1 class="text-xl font-bold text-[var(--text-primary)] tracking-tight">Messages</h1>
           <span id="message-badge"
                 class="hidden inline-flex items-center justify-center min-w-[1.5rem] h-6
-                       px-1.5 bg-indigo-600 text-white text-xs font-bold rounded-full">
+                       px-1.5 bg-[var(--accent)] text-white text-xs font-bold rounded-full">
             0
           </span>
         </div>
@@ -2324,8 +2324,8 @@ html { scroll-behavior: smooth; }
         <!-- Close overlay — lets user return to app without picking a chat -->
         <button onclick="_closeMessagesOverlay()"
                 aria-label="Close messages"
-                class="p-2 rounded-full text-gray-500 hover:text-gray-800
-                       hover:bg-gray-100 active:bg-gray-200 transition-colors">
+                class="p-2 rounded-full text-[var(--text-meta)] hover:text-[var(--text-primary)]
+                       hover:bg-[var(--bg-surface)] active:bg-[var(--bg-hover)] transition-colors">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
                stroke="currentColor" stroke-width="2.5">
             <path d="M18 6L6 18M6 6l12 12"/>
@@ -2336,16 +2336,16 @@ html { scroll-behavior: smooth; }
       <!-- Search -->
       <div class="px-4 py-2 flex-shrink-0">
         <div class="relative">
-          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)] pointer-events-none"
                fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
           </svg>
           <input type="search"
                  id="conversation-search"
                  placeholder="Search conversations…"
-                 class="w-full pl-9 pr-4 py-2.5 bg-gray-100 rounded-2xl text-sm text-gray-800
-                        placeholder-gray-400 outline-none focus:ring-2 focus:ring-indigo-200
-                        transition-all border border-transparent focus:border-indigo-200">
+                 class="w-full pl-9 pr-4 py-2.5 bg-[var(--bg-surface)] rounded-2xl text-sm text-[var(--text-primary)]
+                        placeholder-[var(--text-tertiary)] outline-none focus:ring-2 focus:ring-[var(--accent)]/30
+                        transition-all border border-transparent focus:border-[var(--accent)]">
         </div>
       </div>
 
@@ -2361,11 +2361,11 @@ html { scroll-behavior: smooth; }
          PANEL 2 — ACTIVE CONVERSATION
          ================================================================ -->
     <div id="active-conversation-view"
-         class="absolute inset-0 flex flex-col bg-gray-50 hidden">
+         class="absolute inset-0 flex flex-col bg-[var(--bg-surface)] hidden">
 
       <!-- Conversation header — populated by render.renderConversationHeader() -->
-      <div class="conversation-header flex items-center gap-2 px-3 py-3 bg-white
-                  border-b border-gray-100 shadow-sm flex-shrink-0"></div>
+      <div class="conversation-header flex items-center gap-2 px-3 py-3 bg-[var(--bg-card)]
+                  border-b border-[var(--border)] shadow-sm flex-shrink-0"></div>
 
       <!-- Messages list — populated by render.renderMessageList() -->
       <div id="messages-list"
@@ -2381,7 +2381,7 @@ html { scroll-behavior: smooth; }
         Both live inside #message-input-footer at all times so IDs are never lost.
       -->
       <div id="message-input-footer"
-           class="bg-white border-t border-gray-100 flex-shrink-0">
+           class="bg-[var(--bg-card)] border-t border-[var(--border)] flex-shrink-0">
 
         <!-- Blocked notice (empty until blocked) -->
         <div id="message-blocked-notice" class="hidden"></div>
@@ -2391,8 +2391,8 @@ html { scroll-behavior: smooth; }
 
           <!-- Attach button -->
           <button data-action="attach-file"
-                  class="flex-shrink-0 p-2 rounded-xl text-gray-500 hover:text-indigo-600
-                         hover:bg-indigo-50 transition-colors self-end mb-1">
+                  class="flex-shrink-0 p-2 rounded-xl text-[var(--text-meta)] hover:text-[var(--accent)]
+                         hover:bg-[var(--accent)]/10 transition-colors self-end mb-1">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round"
                     d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94
@@ -2406,7 +2406,7 @@ html { scroll-behavior: smooth; }
             Attachments appear above the textarea inside the same rounded bubble.
           -->
           <div id="message-input-wrapper"
-               class="flex-1 flex flex-col bg-gray-100 rounded-2xl px-3.5 pt-2 pb-2
+               class="flex-1 flex flex-col bg-[var(--bg-surface)] rounded-2xl px-3.5 pt-2 pb-2
                       min-h-[44px] max-h-[230px] overflow-hidden">
 
             <!-- Pending attachments strip — hidden until files are staged -->
@@ -2422,8 +2422,8 @@ html { scroll-behavior: smooth; }
                       placeholder="Type a message…"
                       maxlength="5000"
                       data-action="handle-message-input"
-                      class="flex-1 bg-transparent resize-none text-sm text-gray-900
-                             placeholder-gray-400 outline-none leading-relaxed
+                      class="flex-1 bg-transparent resize-none text-sm text-[var(--text-primary)]
+                             placeholder-[var(--text-tertiary)] outline-none leading-relaxed
                              max-h-[120px] overflow-y-auto"
                       oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'">
             </textarea>
@@ -2432,8 +2432,8 @@ html { scroll-behavior: smooth; }
           <!-- Send button -->
           <button id="msg-send-btn"
                   data-action="send-message"
-                  class="flex-shrink-0 w-11 h-11 rounded-full bg-indigo-600 text-white
-                         flex items-center justify-center shadow-md hover:bg-indigo-700
+                  class="flex-shrink-0 w-11 h-11 rounded-full bg-[var(--accent)] text-white
+                         flex items-center justify-center shadow-md hover:bg-[var(--accent-hover)]
                          active:scale-95 transition-all opacity-50 cursor-not-allowed self-end"
                   disabled>
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -2458,19 +2458,19 @@ html { scroll-behavior: smooth; }
          aria-modal="true" role="dialog">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"
            data-action="close-message-options"></div>
-      <div class="msg-options-sheet relative w-full max-w-lg bg-white rounded-t-3xl
+      <div class="msg-options-sheet relative w-full max-w-lg bg-[var(--bg-card)] rounded-t-3xl
                   shadow-2xl transform translate-y-full transition-transform duration-300 ease-out pb-safe">
         <div class="flex justify-center pt-3 pb-1">
-          <div class="w-10 h-1 rounded-full bg-gray-300"></div>
+          <div class="w-10 h-1 rounded-full bg-[var(--border-dark)]"></div>
         </div>
         <div id="msg-options-reaction-row"
-             class="flex items-center justify-around px-6 py-3 border-b border-gray-100"></div>
+             class="flex items-center justify-around px-6 py-3 border-b border-[var(--border)]"></div>
         <ul class="py-2">
           <li>
             <button id="msg-opt-copy" data-action="copy-message"
-                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-gray-800
-                           hover:bg-gray-50 active:bg-gray-100 transition-colors">
-              <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--text-primary)]
+                           hover:bg-[var(--bg-hover)] active:bg-[var(--bg-surface)] transition-colors">
+              <svg class="w-5 h-5 text-[var(--text-meta)]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184"/>
               </svg>
@@ -2479,9 +2479,9 @@ html { scroll-behavior: smooth; }
           </li>
           <li>
             <button id="msg-opt-delete-me" data-action="delete-message-for-me"
-                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-gray-800
-                           hover:bg-gray-50 active:bg-gray-100 transition-colors">
-              <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--text-primary)]
+                           hover:bg-[var(--bg-hover)] active:bg-[var(--bg-surface)] transition-colors">
+              <svg class="w-5 h-5 text-[var(--text-meta)]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
               </svg>
@@ -2490,8 +2490,8 @@ html { scroll-behavior: smooth; }
           </li>
           <li>
             <button id="msg-opt-delete-everyone" data-action="delete-message-for-everyone"
-                    class="hidden w-full flex items-center gap-4 px-6 py-3.5 text-sm text-red-600
-                           hover:bg-red-50 active:bg-red-100 transition-colors">
+                    class="hidden w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--danger)]
+                           hover:bg-[var(--danger)]/10 active:bg-[var(--danger)]/20 transition-colors">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
@@ -2501,8 +2501,8 @@ html { scroll-behavior: smooth; }
           </li>
           <li>
             <button data-action="report-message-open"
-                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-red-600
-                           hover:bg-red-50 active:bg-red-100 transition-colors">
+                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--danger)]
+                           hover:bg-[var(--danger)]/10 active:bg-[var(--danger)]/20 transition-colors">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
@@ -2513,8 +2513,8 @@ html { scroll-behavior: smooth; }
         </ul>
         <div class="px-4 pb-3">
           <button data-action="close-message-options"
-                  class="w-full py-3.5 rounded-2xl bg-gray-100 text-sm font-semibold
-                         text-gray-700 hover:bg-gray-200 active:bg-gray-300 transition-colors">
+                  class="w-full py-3.5 rounded-2xl bg-[var(--bg-surface)] text-sm font-semibold
+                         text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] active:bg-[var(--border-dark)] transition-colors">
             Cancel
           </button>
         </div>
@@ -2528,17 +2528,17 @@ html { scroll-behavior: smooth; }
          aria-modal="true" role="dialog">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"
            data-action="close-conversation-options"></div>
-      <div class="msg-conv-options-sheet relative w-full max-w-lg bg-white rounded-t-3xl
+      <div class="msg-conv-options-sheet relative w-full max-w-lg bg-[var(--bg-card)] rounded-t-3xl
                   shadow-2xl transform translate-y-full transition-transform duration-300 ease-out pb-safe">
         <div class="flex justify-center pt-3 pb-2">
-          <div class="w-10 h-1 rounded-full bg-gray-300"></div>
+          <div class="w-10 h-1 rounded-full bg-[var(--border-dark)]"></div>
         </div>
         <ul class="py-2">
           <li>
             <button data-action="clear-chat"
-                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-gray-800
-                           hover:bg-gray-50 active:bg-gray-100 transition-colors">
-              <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--text-primary)]
+                           hover:bg-[var(--bg-hover)] active:bg-[var(--bg-surface)] transition-colors">
+              <svg class="w-5 h-5 text-[var(--text-meta)]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="M12 9.75 14.25 12m0 0 2.25 2.25M14.25 12l2.25-2.25M14.25 12 12 14.25
                          m-2.58 4.92-6.374-6.375a1.125 1.125 0 0 1 0-1.59L9.42 4.83
@@ -2550,8 +2550,8 @@ html { scroll-behavior: smooth; }
           </li>
           <li>
             <button id="msg-conv-opt-block" data-action="block-user"
-                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-red-600
-                           hover:bg-red-50 active:bg-red-100 transition-colors">
+                    class="w-full flex items-center gap-4 px-6 py-3.5 text-sm text-[var(--danger)]
+                           hover:bg-[var(--danger)]/10 active:bg-[var(--danger)]/20 transition-colors">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
@@ -2562,8 +2562,8 @@ html { scroll-behavior: smooth; }
         </ul>
         <div class="px-4 pb-3">
           <button data-action="close-conversation-options"
-                  class="w-full py-3.5 rounded-2xl bg-gray-100 text-sm font-semibold
-                         text-gray-700 hover:bg-gray-200 active:bg-gray-300 transition-colors">
+                  class="w-full py-3.5 rounded-2xl bg-[var(--bg-surface)] text-sm font-semibold
+                         text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] active:bg-[var(--border-dark)] transition-colors">
             Cancel
           </button>
         </div>
@@ -2576,9 +2576,9 @@ html { scroll-behavior: smooth; }
          class="hidden fixed inset-0 z-50 flex items-end justify-center"
          aria-modal="true" role="dialog">
       <div class="absolute inset-0" data-action="close-reaction-picker"></div>
-      <div class="relative w-full max-w-sm mx-auto mb-20 bg-white rounded-3xl shadow-xl
-                  px-4 py-3 border border-gray-100">
-        <p class="text-xs font-semibold text-gray-400 text-center mb-2 tracking-wider uppercase">React</p>
+      <div class="relative w-full max-w-sm mx-auto mb-20 bg-[var(--bg-card)] rounded-3xl shadow-xl
+                  px-4 py-3 border border-[var(--border)]">
+        <p class="text-xs font-semibold text-[var(--text-tertiary)] text-center mb-2 tracking-wider uppercase">React</p>
         <div id="msg-reaction-picker-content" class="flex flex-wrap justify-center gap-1">
           <!-- Populated by modals.openReactionPicker() -->
         </div>
@@ -2620,8 +2620,8 @@ html { scroll-behavior: smooth; }
          aria-modal="true" role="dialog">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"
            data-action="close-partner-info"></div>
-      <div class="relative w-full max-w-lg bg-white rounded-t-3xl shadow-2xl pb-safe overflow-hidden">
-        <div class="relative bg-gradient-to-b from-indigo-600 to-indigo-700 pt-12 pb-8 px-6
+      <div class="relative w-full max-w-lg bg-[var(--bg-card)] rounded-t-3xl shadow-2xl pb-safe overflow-hidden">
+        <div class="relative bg-gradient-to-b from-[var(--accent)] to-[var(--accent-hover)] pt-12 pb-8 px-6
                     text-white text-center">
           <button data-action="close-partner-info"
                   class="absolute top-4 right-4 p-1.5 text-white/70 hover:text-white
@@ -2633,12 +2633,12 @@ html { scroll-behavior: smooth; }
           <img data-action='view-avatar' id="msg-info-partner-avatar" src="/static/default-avatar.png"
                class="w-20 h-20 rounded-full object-cover border-4 border-white/30 mx-auto mb-3 shadow-lg">
           <h2 id="msg-info-partner-name" class="text-xl font-bold mb-1"></h2>
-          <p id="msg-info-partner-status" class="text-indigo-200 text-sm"></p>
+          <p id="msg-info-partner-status" class="text-[var(--text-secondary)] text-sm"></p>
         </div>
         <div class="px-6 py-4">
           <button data-action="close-partner-info"
-                  class="w-full py-3 rounded-2xl bg-gray-100 text-sm font-semibold
-                         text-gray-700 hover:bg-gray-200 transition-colors">
+                  class="w-full py-3 rounded-2xl bg-[var(--bg-surface)] text-sm font-semibold
+                         text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors">
             Close
           </button>
         </div>
@@ -2650,17 +2650,17 @@ html { scroll-behavior: smooth; }
          aria-modal="true" role="dialog">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"
            data-action="close-confirm-modal"></div>
-      <div class="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6">
-        <h3 id="msg-confirm-title" class="text-base font-bold text-gray-900 mb-2"></h3>
-        <p id="msg-confirm-message" class="text-sm text-gray-500 mb-6"></p>
+      <div class="relative w-full max-w-sm bg-[var(--bg-card)] rounded-3xl shadow-2xl p-6">
+        <h3 id="msg-confirm-title" class="text-base font-bold text-[var(--text-primary)] mb-2"></h3>
+        <p id="msg-confirm-message" class="text-sm text-[var(--text-meta)] mb-6"></p>
         <div class="flex gap-3">
           <button data-action="close-confirm-modal"
-                  class="flex-1 py-2.5 rounded-xl bg-gray-100 text-sm font-semibold
-                         text-gray-700 hover:bg-gray-200 active:bg-gray-300 transition-colors">
+                  class="flex-1 py-2.5 rounded-xl bg-[var(--bg-surface)] text-sm font-semibold
+                         text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] active:bg-[var(--border-dark)] transition-colors">
             Cancel
           </button>
           <button id="msg-confirm-ok-btn" data-action="confirm-ok"
-                  class="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700
+                  class="flex-1 py-2.5 rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)]
                          text-white text-sm font-semibold active:scale-95 transition-all">
             Confirm
           </button>
@@ -2675,14 +2675,14 @@ html { scroll-behavior: smooth; }
          aria-modal="true" role="dialog">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"
            data-action="close-report-modal"></div>
-      <div class="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6">
-        <h3 class="text-base font-bold text-gray-900 mb-4">Report message</h3>
+      <div class="relative w-full max-w-sm bg-[var(--bg-card)] rounded-3xl shadow-2xl p-6">
+        <h3 class="text-base font-bold text-[var(--text-primary)] mb-4">Report message</h3>
         <div class="mb-4">
-          <label class="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+          <label class="block text-sm font-medium text-[var(--text-secondary)] mb-1">Reason</label>
           <select id="report-reason"
-                  class="w-full px-3 py-2.5 bg-gray-100 rounded-xl text-sm text-gray-800
-                         outline-none focus:ring-2 focus:ring-indigo-200 border border-transparent
-                         focus:border-indigo-200">
+                  class="w-full px-3 py-2.5 bg-[var(--bg-surface)] rounded-xl text-sm text-[var(--text-primary)]
+                         outline-none focus:ring-2 focus:ring-[var(--accent)]/30 border border-transparent
+                         focus:border-[var(--accent)]">
             <option value="">Select a reason…</option>
             <option value="spam">Spam</option>
             <option value="harassment">Harassment</option>
@@ -2692,21 +2692,21 @@ html { scroll-behavior: smooth; }
           </select>
         </div>
         <div class="mb-6">
-          <label class="block text-sm font-medium text-gray-700 mb-1">Details (optional)</label>
+          <label class="block text-sm font-medium text-[var(--text-secondary)] mb-1">Details (optional)</label>
           <textarea id="report-description" rows="3"
-                    class="w-full px-3 py-2.5 bg-gray-100 rounded-xl text-sm text-gray-800
-                           outline-none focus:ring-2 focus:ring-indigo-200 border border-transparent
-                           focus:border-indigo-200 resize-none"
+                    class="w-full px-3 py-2.5 bg-[var(--bg-surface)] rounded-xl text-sm text-[var(--text-primary)]
+                           outline-none focus:ring-2 focus:ring-[var(--accent)]/30 border border-transparent
+                           focus:border-[var(--accent)] resize-none"
                     placeholder="Add more context…"></textarea>
         </div>
         <div class="flex gap-3">
           <button data-action="close-report-modal"
-                  class="flex-1 py-2.5 rounded-xl bg-gray-100 text-sm font-semibold
-                         text-gray-700 hover:bg-gray-200 transition-colors">
+                  class="flex-1 py-2.5 rounded-xl bg-[var(--bg-surface)] text-sm font-semibold
+                         text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors">
             Cancel
           </button>
           <button data-action="submit-report"
-                  class="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700
+                  class="flex-1 py-2.5 rounded-xl bg-[var(--danger)] hover:bg-[var(--danger-hover)]
                          text-white text-sm font-semibold active:scale-95 transition-all">
             Submit
           </button>
@@ -5727,7 +5727,7 @@ function closeMobileSidebar() {
 function logout(event) {
     if (event) event.preventDefault();
     if (confirm('Are you sure you want to logout?')) {
-        api.post("/logout");
+        api.get("/logout");
         
     }
 }
