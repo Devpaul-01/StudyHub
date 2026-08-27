@@ -2473,10 +2473,12 @@ body {
 @media (min-width: 1025px) {
   .sidebar {
     transform: translateX(0);
+    top: var(--header-height); /* reasserted so no later rule can pull nav items up under the header */
   }
 
   .content-area {
-    transform: translateX(var(--sidebar-width));
+    margin-left: var(--sidebar-width); /* was transform: translateX() — that only shifts pixels, it doesn't reflow the box, which is why the content kept its original full width and left an empty gap on the right */
+    transform: none;
   }
 
   .main-layout.sidebar-collapsed .sidebar {
@@ -2484,7 +2486,7 @@ body {
   }
 
   .main-layout.sidebar-collapsed .content-area {
-    transform: translateX(0);
+    margin-left: 0;
   }
 }
 
@@ -5057,7 +5059,7 @@ body {
 
 .header,
 #header-bar {
-  z-index: 9999; /* was var(--z-fixed) = 1030, posts with animations could overlap */
+  z-index: var(--z-fixed); /* was 9999 — that sat above the sidebar's z-index and let the header paint over its nav items on desktop */
 }
 
 #tag-posts-modal {
