@@ -282,13 +282,15 @@ def get_analytics_overview(current_user):
             PostView.viewed_at >= week_ago
         ).scalar() or 0
 
-        this_week_helpful = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(
-            Post.student_id == current_user.id,
-            PostReaction.reaction_type == "helpful",
-            PostReaction.reacted_at >= week_ago
-        ).scalar() or 0
+        # AUDIT §4.2 FIX: this used to query PostReaction.reaction_type ==
+        # "helpful", but no live code path ever creates a PostReaction with
+        # that reaction_type — react_to_post hardcodes reaction_type="like"
+        # (the multi-reaction system was intentionally replaced by a single
+        # like-toggle; see that route's own docstring). This query always
+        # evaluated to 0; replaced with the literal value to stop running a
+        # real query against an always-empty filter. Response shape
+        # (hero_stats.helpful_count) is unchanged — still honestly 0.
+        this_week_helpful = 0
 
         this_week_rep = db.session.query(
             func.sum(ReputationHistory.points_change)
@@ -860,14 +862,12 @@ def get_weekly_summary(current_user):
             Post.posted_at >= week_ago
         ).count()
 
-        # People helped
-        helpful_this_week = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(
-            Post.student_id == current_user.id,
-            PostReaction.reaction_type == "helpful",
-            PostReaction.reacted_at >= week_ago
-        ).scalar() or 0
+        # AUDIT §4.2 FIX: same always-empty reaction_type="helpful" filter
+        # as get_analytics_overview's this_week_helpful above — see that
+        # site's comment for the full explanation. Replaced with the
+        # literal 0 it always evaluated to; response shape
+        # (summary.people_helped) is unchanged.
+        helpful_this_week = 0
 
         # New connections
         new_connections = Connection.query.filter(

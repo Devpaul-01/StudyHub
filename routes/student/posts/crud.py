@@ -43,7 +43,6 @@ from routes.student.helpers import (
 
 from services.post_service import (
     extract_public_id,
-    update_post_reaction_count,
     detect_and_create_mentions,
     check_spam,
     update_user_activity,
@@ -88,40 +87,6 @@ def decode_cursor(cursor: str):
 import logging
 import json
 
-# ════════════════════════════════════════════════════════════════════
-# LOGGING SETUP — put this once in your app factory / app.py
-# ════════════════════════════════════════════════════════════════════
-STANDARD_ATTRS = set(vars(logging.LogRecord('', 0, '', 0, '', (), None)).keys()) | {
-    'message', 'asctime'
-}
-
-
-class ExtraFormatter(logging.Formatter):
-    """Formatter that appends any `extra={...}` fields as JSON so they
-    actually show up in the log output instead of being silently dropped."""
-    def format(self, record):
-        base = super().format(record)
-        extras = {
-            k: v for k, v in record.__dict__.items()
-            if k not in STANDARD_ATTRS
-        }
-        if extras:
-            try:
-                extras_str = json.dumps(extras, default=str)
-            except Exception:
-                extras_str = str(extras)
-            return f"{base} | {extras_str}"
-        return base
-
-
-def configure_logging(app):
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(ExtraFormatter("%(asctime)s %(levelname)s %(message)s"))
-
-    app.logger.handlers = [handler]
-    app.logger.setLevel(logging.DEBUG)   # <-- was logging.INFO, now shows everything
-    app.logger.propagate = False
 
 
 # ════════════════════════════════════════════════════════════════════
