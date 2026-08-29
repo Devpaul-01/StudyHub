@@ -71,7 +71,25 @@ class ReconciliationReport:
 # ============================================================================
 
 # Display-only Post counters — a wrong number here is cosmetic.
-_POST_DISPLAY_COUNTERS = ["comments_count", "bookmark_count", "views_count", "helpful_reactions_count"]
+#
+# AUDIT §4.2 FIX: "helpful_reactions_count" removed from this list.
+# PostReaction.reaction_type == "helpful" is never actually written by any
+# live code path (react_to_post hardcodes reaction_type="like"; the
+# multi-reaction system that would have created "helpful" rows was
+# intentionally replaced by a single like-toggle — see that route's own
+# docstring). Reconciling against an always-empty source of truth meant
+# this job was silently zeroing out helpful_reactions_count on every run,
+# which is itself the bug the audit identified (§4.2) — removing the read
+# site here is a mechanical extension of the same product decision, not
+# a separate change.
+#
+# AUDIT §12.1 FIX: "positive_reactions_count" added. Every like/unlike
+# (react_to_post) mutates this counter directly with no reconciliation
+# coverage of any kind, unlike its sibling display counters — a missed
+# decrement or a double-increment race would never be caught. See
+# _post_positive_reactions_actual() below, which counts PostReaction rows
+# with reaction_type="like", matching what react_to_post actually writes.
+_POST_DISPLAY_COUNTERS = ["comments_count", "bookmark_count", "views_count", "positive_reactions_count"]
 
 # Thread.member_count gates Thread.max_members capacity checks elsewhere in
 # the codebase — alert-only, never auto-corrected (Document 4 §3.3 point 2's
@@ -121,10 +139,17 @@ def _post_views_actual():
     return {post_id: count for post_id, count in rows}
 
 
-def _post_helpful_reactions_actual():
+def _post_positive_reactions_actual():
+    """
+    AUDIT §12.1: source-of-truth for Post.positive_reactions_count — counts
+    PostReaction rows with reaction_type="like", matching what
+    react_to_post (routes/student/posts/crud.py) actually writes on every
+    like/unlike. Replaces the old _post_helpful_reactions_actual (removed
+    per §4.2 — reaction_type="helpful" is never written by any live path).
+    """
     rows = (
         db.session.query(PostReaction.post_id, db.func.count(PostReaction.id))
-        .filter(PostReaction.reaction_type == "helpful")
+        .filter(PostReaction.reaction_type == "like")
         .group_by(PostReaction.post_id)
         .all()
     )
@@ -158,31 +183,31 @@ def _reconcile_post_counters(report):
     comments_actual = _post_comments_actual()
     bookmarks_actual = _post_bookmarks_actual()
     views_actual = _post_views_actual()
-    helpful_actual = _post_helpful_reactions_actual()
+    positive_reactions_actual = _post_positive_reactions_actual()
 
     actuals_by_column = {
         "comments_count": comments_actual,
         "bookmark_count": bookmarks_actual,
         "views_count": views_actual,
-        "helpful_reactions_count": helpful_actual,
+        "positive_reactions_count": positive_reactions_actual,
     }
 
     posts = Post.query.with_entities(
         Post.id, Post.comments_count, Post.bookmark_count,
-        Post.views_count, Post.helpful_reactions_count,
+        Post.views_count, Post.positive_reactions_count,
     ).all()
 
     stored_by_column = {
         "comments_count": {},
         "bookmark_count": {},
         "views_count": {},
-        "helpful_reactions_count": {},
+        "positive_reactions_count": {},
     }
-    for post_id, comments_count, bookmark_count, views_count, helpful_reactions_count in posts:
+    for post_id, comments_count, bookmark_count, views_count, positive_reactions_count in posts:
         stored_by_column["comments_count"][post_id] = comments_count or 0
         stored_by_column["bookmark_count"][post_id] = bookmark_count or 0
         stored_by_column["views_count"][post_id] = views_count or 0
-        stored_by_column["helpful_reactions_count"][post_id] = helpful_reactions_count or 0
+        stored_by_column["positive_reactions_count"][post_id] = positive_reactions_count or 0
 
     for column in _POST_DISPLAY_COUNTERS:
         actual_map = actuals_by_column[column]
