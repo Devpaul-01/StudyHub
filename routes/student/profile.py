@@ -260,12 +260,13 @@ def get_my_stats(current_user):
             Post, PostReaction.post_id == Post.id
         ).filter(Post.student_id == current_user.id).scalar() or 0
 
-        helpful_received = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(
-            Post.student_id == current_user.id,
-            PostReaction.reaction_type == "helpful",
-        ).scalar() or 0
+        # AUDIT §4.2 FIX: reaction_type="helpful" is never written by any
+        # live code path (react_to_post hardcodes reaction_type="like" —
+        # the multi-reaction system was intentionally replaced by a single
+        # like-toggle; see that route's own docstring). This always
+        # evaluated to 0; replaced with the literal value. Response shape
+        # (engagement.helpful_received) is unchanged.
+        helpful_received = 0
 
         return jsonify({
             "status": "success",
@@ -690,12 +691,11 @@ def get_own_profile(current_user):
             Post, PostReaction.post_id == Post.id
         ).filter(Post.student_id == current_user.id).scalar() or 0
 
-        helpful_count = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(
-            Post.student_id == current_user.id,
-            PostReaction.reaction_type == "helpful",
-        ).scalar() or 0
+        # AUDIT §4.2 FIX: reaction_type="helpful" is never written by any
+        # live code path — see the identical fix/comment in get_my_stats
+        # above for the full explanation. Response shape
+        # (stats.helpful_count) is unchanged.
+        helpful_count = 0
 
         user_badges = (
             UserBadge.query
@@ -946,12 +946,11 @@ def view_profile(current_user, username):
             Post, PostReaction.post_id == Post.id
         ).filter(Post.student_id == user.id).scalar() or 0
 
-        helpful_count = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(
-            Post.student_id == user.id,
-            PostReaction.reaction_type == "helpful",
-        ).scalar() or 0
+        # AUDIT §4.2 FIX: reaction_type="helpful" is never written by any
+        # live code path — see the identical fix/comment in get_my_stats
+        # above for the full explanation. Response shape
+        # (stats.helpful_count) is unchanged.
+        helpful_count = 0
 
         # ── Badges ───────────────────────────────────────────────────────────
         user_badges = (

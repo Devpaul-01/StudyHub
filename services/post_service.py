@@ -10,10 +10,17 @@ the service layer.
 
 Moved verbatim (no behavior change) from posts.py:
     - extract_public_id
-    - update_post_reaction_count
     - detect_and_create_mentions
     - check_spam
     - update_user_activity
+
+AUDIT §4.2 FIX: update_post_reaction_count removed entirely (was dead
+code — zero call sites anywhere in the codebase; react_to_post hardcodes
+reaction_type="like" via a single like-toggle that intentionally replaced
+the multi-reaction system this function belonged to; see that route's own
+docstring). It also contained a latent bug — `post.helpful_count` doesn't
+exist as an attribute on the Post model — confirming it was never
+actually exercised in practice.
     - check_helpful_milestones (moved in the Phase 1 remediation pass, now
       that services/badge_service.py exists — it previously stayed in
       posts.py because moving it here would have made this service import
@@ -64,14 +71,6 @@ def extract_public_id(url):
     public_id = re.split(r'/upload/v\d+/', public_id)[-1]
 
     return public_id
-
-
-def update_post_reaction_count(post, reaction_type, delta):
-    """Update denormalized reaction counts on post"""
-    if reaction_type in ["like", "love", "helpful", "insightful", "fire", "wow", "celebrate"]:
-        post.positive_reactions_count = max(0, post.positive_reactions_count + delta)
-    if reaction_type == "helpful":
-        post.helpful_count += 1
 
 
 def detect_and_create_mentions(text_content, created_by_id, content_type, content_id):

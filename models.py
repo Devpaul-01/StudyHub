@@ -394,12 +394,23 @@ class StudySessions(db.Model):
     Study session requests (invite/accept workflow), with an unseen-inbox
     flag for the receiver.
 
-    ADDED: referenced via a local `from models import StudySessions` in
-    routes/crud.py (unseen_study_sessions_count) and routes/health.py
-    (partner study-session history) but was missing from this file —
-    both call sites wrap the import/query in try/except so the app did
-    not crash, but silently always returned an empty/zero result.
-    Fields below match exactly what those two call sites read/write:
+    AUDIT §12.2 FIX: this model is now confirmed fully dead — it was never
+    populated by any write path to begin with (see the original note
+    below), and as of this fix its two former readers
+    (connections/crud.py::unseen_study_sessions_count and the
+    partner-history block in connections/health.py) have both been
+    repointed at StudySessionCalendar, the model session-creation routes
+    actually write to. Left in place rather than dropped (no migration
+    performed) — table removal is a separate, larger decision than the
+    read-site fix this pass covers.
+
+    ORIGINAL NOTE (pre-§12.2, kept for history): referenced via a local
+    `from models import StudySessions` in routes/crud.py
+    (unseen_study_sessions_count) and routes/health.py (partner
+    study-session history) but was missing from this file — both call
+    sites wrapped the import/query in try/except so the app did not
+    crash, but silently always returned an empty/zero result. Fields
+    below match exactly what those two call sites used to read/write:
     requester_id, receiver_id, is_seen, status, subject, type, duration,
     schedule_date, notes, requested_at.
     """
@@ -856,13 +867,34 @@ class Comment(db.Model):
 
 
 class CommentHelpfulMark(db.Model):
-    """Track which users marked comments as helpful."""
+    """Track which users marked comments as helpful.
+
+    AUDIT §4.1 FIX (reputation-farming closure): `is_active` added.
+    Previously, unmarking a comment as helpful deleted this row entirely
+    but never reversed the +3 reputation award made when it was created —
+    with no idempotency gate on the award itself, a marker could
+    mark -> unmark -> mark -> unmark indefinitely and the comment author
+    would receive +3 reputation on every single "mark" step, unbounded.
+
+    Fix (Option B from the audit — idempotency at the mark level, no
+    reversal): this row is now soft-deleted (is_active=False) instead of
+    hard-deleted on unmark, and PERMANENTLY RETAINED as the idempotency
+    record for this exact (comment_id, user_id) pair. Re-marking after an
+    unmark reactivates the existing row (is_active=True) instead of
+    creating a new one — the pre-existing UniqueConstraint below already
+    made a second insert for the same pair impossible, which is exactly
+    what makes soft-delete-and-reactivate the natural fit here rather than
+    insert-a-new-row-per-cycle. Reputation is awarded only on the row's
+    FIRST creation, never on reactivation — see
+    routes/student/posts/comments.py::mark_comment_helpful.
+    """
     __tablename__ = "comment_helpful_marks"
 
     id         = db.Column(db.Integer, primary_key=True)
     comment_id = db.Column(db.Integer, db.ForeignKey("comments.id"), nullable=False, index=True)
     user_id    = db.Column(db.Integer, db.ForeignKey("users.id"),    nullable=False, index=True)
     marked_at  = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    is_active  = db.Column(db.Boolean, nullable=False, default=True)
 
     __table_args__ = (
         db.UniqueConstraint('comment_id', 'user_id', name='unique_helpful_mark'),
