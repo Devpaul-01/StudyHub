@@ -45,10 +45,16 @@ HORIZONTAL SCALING (see 01-DESIGN-horizontal-scaling.md §6):
   - message_ws_manager.online_users reads (deciding a message's initial
     status) switched to presence_service.is_user_online for the same
     reason.
-  - _ai_action_buckets / _auto_reply_buckets are FLAGGED but intentionally
-    NOT changed this batch — see the design doc §2 for why (same class of
-    fix as the rate limiter above, deferred as a small, self-contained
-    follow-up rather than folded in unrequested).
+  - AUDIT §14.3 FIX: _ai_action_buckets has been converted to real,
+    Redis-backed rate limiting (_ai_action_rate_limiter, same
+    RedisFixedWindowLimiter class as _thread_msg_rate_limiter above) —
+    it was previously declared but never actually read or written
+    anywhere, meaning thread_ai_action had NO rate limit at all prior to
+    this fix. _auto_reply_buckets remains the one still-deferred item —
+    see its own declaration below for why it wasn't folded into this
+    same fix (it's a genuine, working, process-local sliding-window
+    limiter that would need its own migration, not dead code with no
+    behavior to build from scratch).
   - Broadcasting (broadcast_to_thread, notify_user) needed ZERO changes —
     both already just call self.socketio.emit(..., room=X), which becomes
     cross-instance-correct once message_queue is set in
@@ -149,8 +155,23 @@ AI_PERSONALITIES = {
 _TRIGGER_MAP = {p["trigger"]: p for p in AI_PERSONALITIES.values()}
 LEARNORA_TRIGGERS = list(_TRIGGER_MAP.keys())
 
-# Rate-limit buckets
-_ai_action_buckets: dict = {}
+# AUDIT §14.3 FIX (implemented per explicit approval — originally
+# classified CAN WAIT UNTIL AFTER TESTING/deferred, promoted into scope):
+# _ai_action_buckets removed. It was declared but never actually read or
+# written anywhere in this file — the thread_ai_action handler applied NO
+# rate limit at all prior to this fix, unlike every other AI-dispatch path
+# in this module (send_thread_message's manual @mention trigger and
+# reply-to-AI auto-continue both have real limits). Replaced with a
+# genuine Redis-backed fixed-window limiter (_ai_action_rate_limiter,
+# below, alongside _thread_msg_rate_limiter) rather than porting
+# _auto_reply_buckets' in-memory sliding-window logic — the module
+# docstring's own "FLAGGED but intentionally NOT changed this batch" note
+# groups these two together, but they are not actually the same shape of
+# fix: _auto_reply_buckets is a real, working, process-local sliding-window
+# limiter that needed migrating to Redis for cross-instance correctness;
+# _ai_action_buckets was inert dead code with no behavior to migrate. This
+# builds a new control from scratch rather than reproducing the
+# process-local variant's exact algorithm.
 _auto_reply_buckets: dict = {}
 
 # Background-jobs phase hardening (BACKGROUND_JOBS_IMPLEMENTATION.md
@@ -184,6 +205,29 @@ _RATE_LIMIT_WINDOW = int(os.environ.get("THREAD_MSG_RATE_WINDOW", "60"))  # seco
 # count above 1. The RateLimiter import above is kept (still used by the
 # untouched websocket_events.py) but no longer used in THIS file.
 _thread_msg_rate_limiter = RedisFixedWindowLimiter(key_prefix="sh:1:ws:msgrate")
+
+# AUDIT §14.3 FIX: per-user rate limit for thread_ai_action (env-overridable,
+# same convention as _RATE_LIMIT_MAX/_RATE_LIMIT_WINDOW above). Deliberately
+# a SEPARATE limit from _RATE_LIMIT_MAX (thread messages) and the
+# auto-reply-to-AI limit below — this gates the five explicit AI action
+# buttons (summarize/translate/explain/to_code/fact_check), a materially
+# different action from sending a chat message, so it gets its own budget
+# rather than sharing/competing with the message-send limit.
+#
+# Default chosen conservatively: 10 actions per 5-minute window per user.
+# Each action is a real AI-provider round trip (same cost profile as
+# send_thread_message's @mention trigger), so this is deliberately tighter
+# than the 30-per-60s message-send limit while still generous enough for
+# normal use across all five action types. [DEFAULT -- TUNE LATER once
+# real usage volume is observed, same tuning posture as
+# _learnora_executor's max_workers above.]
+_AI_ACTION_RATE_LIMIT_MAX    = int(os.environ.get("THREAD_AI_ACTION_RATE_MAX",    "10"))
+_AI_ACTION_RATE_LIMIT_WINDOW = int(os.environ.get("THREAD_AI_ACTION_RATE_WINDOW", "300"))  # seconds
+
+# Distinct Redis key namespace (sh:1:ws:aiaction, not sh:1:ws:msgrate) so
+# this limiter's buckets never collide with _thread_msg_rate_limiter's —
+# same class, same fixed-window algorithm, independent budget.
+_ai_action_rate_limiter = RedisFixedWindowLimiter(key_prefix="sh:1:ws:aiaction")
 
 
 # ============================================================================
@@ -249,6 +293,27 @@ def _is_rate_limited(user_id: int) -> bool:
         key=f"thread_msg_{user_id}",
         limit=_RATE_LIMIT_MAX,
         window=_RATE_LIMIT_WINDOW,
+    )
+    return not allowed
+
+
+def _is_ai_action_rate_limited(user_id: int) -> bool:
+    """
+    AUDIT §14.3 FIX: fixed-window rate limiter for thread_ai_action.
+    Returns True (blocked) if the user has triggered >= _AI_ACTION_RATE_LIMIT_MAX
+    AI actions (summarize/translate/explain/to_code/fact_check, combined) in
+    the current _AI_ACTION_RATE_LIMIT_WINDOW-second window.
+
+    Same RedisFixedWindowLimiter backing as _is_rate_limited above —
+    correct regardless of which application instance handles a given
+    user's action clicks. Fails OPEN on Redis error (see
+    RedisFixedWindowLimiter's docstring), matching this app's established
+    rate-limiting precedent (rate_limit_service.py, _is_rate_limited above).
+    """
+    allowed, _remaining = _ai_action_rate_limiter.check_rate_limit(
+        key=f"thread_ai_action_{user_id}",
+        limit=_AI_ACTION_RATE_LIMIT_MAX,
+        window=_AI_ACTION_RATE_LIMIT_WINDOW,
     )
     return not allowed
 
@@ -1930,6 +1995,23 @@ class ThreadWebSocketManager:
             message_id = data.get("message_id")
             action = data.get("action", "")
 
+            # AUDIT §14.3 FIX: rate limit checked immediately after auth,
+            # before any DB query — mirrors send_thread_message's placement
+            # discipline (a rate-limited request never touches the
+            # database). This handler previously had NO rate limit at all,
+            # unlike every other AI-dispatch path in this module.
+            if _is_ai_action_rate_limited(user_id):
+                current_app.logger.warning(
+                    f"[AI_ACTION_RATE_LIMITED] "
+                    f"user_id={user_id} thread_id={thread_id} action={action!r} "
+                    f"limit={_AI_ACTION_RATE_LIMIT_MAX}/{_AI_ACTION_RATE_LIMIT_WINDOW}s"
+                )
+                self._emit_error(
+                    f"Slow down — max {_AI_ACTION_RATE_LIMIT_MAX} AI actions "
+                    f"per {_AI_ACTION_RATE_LIMIT_WINDOW // 60} minutes"
+                )
+                return
+
             if action not in ("summarize", "translate", "explain", "to_code", "fact_check"):
                 self._emit_error("Invalid action")
                 return
@@ -2177,7 +2259,7 @@ def _call_learnora_action(app, thread_id, message_id, action, target_lang, trigg
                 {"role": "user", "content": f"{ACTION_PROMPTS[action]}\n\n---\n\n{target_msg.text_content}"}
             ]
 
-            from learnora import provider_manager, _call_provider_sync
+            from routes.student.learnora import provider_manager, _call_provider_sync
             provider = provider_manager.get_working_provider(needs_vision=False)
             if not provider:
                 return

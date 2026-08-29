@@ -967,7 +967,8 @@ class MessageWebSocketManager:
                         other_id = conn.receiver_id if conn.requester_id == current_user_id else conn.requester_id
                         user_ids.append(other_id)
                 
-                statuses = {uid: uid in self.online_users for uid in user_ids}
+                online_ids = presence_service.get_online_user_ids(user_ids)
+                statuses = {uid: uid in online_ids for uid in user_ids}
                 emit('online_statuses', {'statuses': statuses})
                 
             except Exception as e:
