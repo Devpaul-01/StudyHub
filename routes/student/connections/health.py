@@ -28,7 +28,7 @@ from routes.student.helpers import (
     block_connection, unblock_connection,
 )
 
-from services.online_status_service import get_user_online_status
+from services.online_status_service import get_user_online_status, get_online_status_batch
 from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
     calculate_compatibility_score,
@@ -38,6 +38,7 @@ from services.connection_service import (
     get_recent_activity,
     get_mutual_connection_count,
     get_connection_health,
+    get_connection_health_batch,
     get_user_onboarding_preview,
 )
 # Phase 5b (Document 4 §1): PUBLIC_READ for detail/online/notes reads;
@@ -283,14 +284,34 @@ def get_connection_details(current_user, connection_id):
         # 11. STUDY SESSION HISTORY
         # ============================================================================
 
+        # AUDIT §12.2 FIX (option A): previously queried StudySessions,
+        # which no live code path ever writes to (see StudySessions'
+        # own docstring in models.py) — this block always silently
+        # returned empty results via its try/except wrapper. Repointed at
+        # StudySessionCalendar, the model every session-creation route
+        # (request_study_session, schedule_session_with_template) actually
+        # writes to. Field mapping, since the two models don't share an
+        # identical shape:
+        #   - schedule_date -> confirmed_time (StudySessionCalendar has no
+        #     plain schedule_date; confirmed_time is the actual scheduled
+        #     datetime once set, None while still only PENDING/proposed)
+        #   - status "accepted" -> "confirmed" (StudySessionCalendarStatus's
+        #     actual value for an accepted session — StudySessions used a
+        #     different status vocabulary)
+        #   - type -> no equivalent concept on StudySessionCalendar; kept
+        #     as None rather than inventing a fake mapping
+        #   - notes -> the current viewer's OWN notes (requester_notes if
+        #     they're the requester, else receiver_notes), matching the
+        #     is_requester-conditional pattern already used by
+        #     get_connection_notes elsewhere in this same file
         try:
-            from models import StudySessions
-            study_sessions = StudySessions.query.filter(
+            from models import StudySessionCalendar, StudySessionCalendarStatus
+            study_sessions = StudySessionCalendar.query.filter(
                 or_(
-                    and_(StudySessions.requester_id == current_user.id, StudySessions.receiver_id == partner_id),
-                    and_(StudySessions.requester_id == partner_id, StudySessions.receiver_id == current_user.id)
+                    and_(StudySessionCalendar.requester_id == current_user.id, StudySessionCalendar.receiver_id == partner_id),
+                    and_(StudySessionCalendar.requester_id == partner_id, StudySessionCalendar.receiver_id == current_user.id)
                 )
-            ).order_by(StudySessions.schedule_date.desc()).limit(20).all()
+            ).order_by(StudySessionCalendar.created_at.desc()).limit(20).all()
 
             sessions_data = []
             completed = 0
@@ -299,30 +320,33 @@ def get_connection_details(current_user, connection_id):
 
             for session in study_sessions:
                 is_completed = False
-                if session.status == "accepted" and session.schedule_date:
-                    if session.schedule_date < now:
+                if session.status == StudySessionCalendarStatus.CONFIRMED.value and session.confirmed_time:
+                    if session.confirmed_time < now:
                         completed += 1
                         is_completed = True
                     else:
                         upcoming += 1
 
+                session_is_requester = session.requester_id == current_user.id
+                session_notes = session.requester_notes if session_is_requester else session.receiver_notes
+
                 sessions_data.append({
                     "id": session.id,
                     "subject": session.subject,
-                    "type": session.type,
-                    "duration": session.duration,
-                    "schedule_date": session.schedule_date.isoformat() if session.schedule_date else None,
+                    "type": None,
+                    "duration": session.duration_minutes,
+                    "schedule_date": session.confirmed_time.isoformat() if session.confirmed_time else None,
                     "status": session.status,
-                    "notes": session.notes,
+                    "notes": session_notes,
                     "is_completed": is_completed,
-                    "is_requester": session.requester_id == current_user.id,
-                    "requested_at": session.requested_at.isoformat()
+                    "is_requester": session_is_requester,
+                    "requested_at": session.created_at.isoformat()
                 })
 
-            total_sessions = StudySessions.query.filter(
+            total_sessions = StudySessionCalendar.query.filter(
                 or_(
-                    and_(StudySessions.requester_id == current_user.id, StudySessions.receiver_id == partner_id),
-                    and_(StudySessions.requester_id == partner_id, StudySessions.receiver_id == current_user.id)
+                    and_(StudySessionCalendar.requester_id == current_user.id, StudySessionCalendar.receiver_id == partner_id),
+                    and_(StudySessionCalendar.requester_id == partner_id, StudySessionCalendar.receiver_id == current_user.id)
                 )
             ).count()
 
@@ -441,6 +465,20 @@ def get_online_connections(current_user):
                 "message": "No connections are currently online"
             })
         
+        # AUDIT §4.5 FIX: batch-load online status and connection health
+        # once before the loop instead of one call per user — the two
+        # calls below previously ran get_user_online_status/
+        # get_connection_health once per online connection (up to the
+        # route's own 200-connection cap), each doing its own query(ies).
+        # get_online_status_batch/get_connection_health_batch return the
+        # identical per-item shape as their single-item counterparts, so
+        # this is a mechanical substitution — see connection_service.py's
+        # own docstring, which names this exact endpoint as one that
+        # should call the batch form.
+        online_user_ids = [u.id for u in online_users]
+        online_status_map = get_online_status_batch(online_user_ids)
+        health_map = get_connection_health_batch(current_user.id, online_user_ids)
+
         # Build response data (same structure as /connections/list)
         connections_data = []
         
@@ -448,8 +486,8 @@ def get_online_connections(current_user):
             profile = StudentProfile.query.filter_by(user_id=user_obj.id).first()
             onboarding = get_user_onboarding_preview(user_obj.id)
             connection = connection_map.get(user_obj.id)
-            health_data = get_connection_health(current_user.id, user_obj.id)
-            online_status = get_user_online_status(user_obj.id)
+            health_data = health_map.get(user_obj.id)
+            online_status = online_status_map.get(user_obj.id)
             
             # Calculate minutes since last active
             minutes_ago = (datetime.datetime.utcnow() - user_obj.last_active).total_seconds() / 60
@@ -467,7 +505,7 @@ def get_online_connections(current_user):
                     "reputation": user_obj.reputation,
                     "reputation_level": user_obj.reputation_level,
                     "is_online": True,  # All users in this list are online
-                    "last_active": online_status["last_active"],
+                    "last_active": online_status["last_active"] if online_status else None,
                     "last_active_minutes": int(minutes_ago)
                 },
                 "onboarding_details": onboarding or {},
@@ -639,6 +677,12 @@ def get_online_connections_by_department(current_user):
                 "message": f"No online connections from {user_dept}"
             })
         
+        # AUDIT §4.5 FIX: same batch substitution as get_online_connections
+        # above — see that function's comment for the full rationale.
+        online_dept_user_ids = [u.id for u in online_dept_users]
+        online_status_map = get_online_status_batch(online_dept_user_ids)
+        health_map = get_connection_health_batch(current_user.id, online_dept_user_ids)
+
         # Build response data
         connections_data = []
         
@@ -646,8 +690,8 @@ def get_online_connections_by_department(current_user):
             profile = StudentProfile.query.filter_by(user_id=user_obj.id).first()
             onboarding = get_user_onboarding_preview(user_obj.id)
             connection = connection_map.get(user_obj.id)
-            health_data = get_connection_health(current_user.id, user_obj.id)
-            online_status = get_user_online_status(user_obj.id)
+            health_data = health_map.get(user_obj.id)
+            online_status = online_status_map.get(user_obj.id)
             
             minutes_ago = (datetime.datetime.utcnow() - user_obj.last_active).total_seconds() / 60
             
@@ -664,7 +708,7 @@ def get_online_connections_by_department(current_user):
                     "reputation": user_obj.reputation,
                     "reputation_level": user_obj.reputation_level,
                     "is_online": True,
-                    "last_active": online_status["last_active"],
+                    "last_active": online_status["last_active"] if online_status else None,
                     "last_active_minutes": int(minutes_ago)
                 },
                 "onboarding_details": onboarding or {},
