@@ -28,8 +28,8 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
 @admin_bp.route("/health", methods=["GET"])
-@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 @admin_required
+@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 def admin_health(current_user):
     from extensions import db, redis_client
     from sqlalchemy import text
@@ -64,8 +64,8 @@ def admin_health(current_user):
 
 
 @admin_bp.route("/scheduler", methods=["GET"])
-@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 @admin_required
+@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 def admin_scheduler_status(current_user):
     from scheduler import scheduler
 
@@ -89,8 +89,8 @@ def admin_scheduler_status(current_user):
 
 
 @admin_bp.route("/ai-providers", methods=["GET"])
-@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 @admin_required
+@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 def admin_ai_provider_status(current_user):
     from services.ai_provider_service import provider_manager
 
@@ -101,8 +101,8 @@ def admin_ai_provider_status(current_user):
 
 
 @admin_bp.route("/reconciliation/run", methods=["POST"])
-@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 @admin_required
+@limiter.limit(RateLimitTier.ADMIN, key_func=user_or_ip_key)
 def admin_trigger_reconciliation(current_user):
     from services.reconciliation_service import reconcile_denormalized_counts
 
