@@ -32,7 +32,8 @@ from routes.student.helpers import (
 from config import get_config
 from errors import AppError
 
-from waitlist import waitlist_bp
+
+
 import logging
 from routes.student import student_bp
 from routes.student.auth import google_bp
@@ -345,7 +346,8 @@ def create_app(config_class=None):
     # ========================================================================
     # Register Blueprints
     # ========================================================================
-    app.register_blueprint(waitlist_bp)
+    
+    
     app.register_blueprint(google_bp, url_prefix='/google')
     app.register_blueprint(student_bp)
 
