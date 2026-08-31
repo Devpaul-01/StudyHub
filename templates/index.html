@@ -1462,50 +1462,6 @@
 </section>
 
 <style>
-  /* ─── CAMPUS STATS ─── */
-  .stats-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-top: 3rem; }
-  .stat-cell { text-align: center; border-left: 1px solid var(--border); padding-left: 1.5rem; }
-  .stat-cell:first-child { border-left: none; padding-left: 0; }
-  .stat-cell .sc-num { font-family: 'Outfit', sans-serif; font-size: clamp(1.8rem, 3.5vw, 2.4rem); font-weight: 800; color: var(--text); }
-  .stat-cell .sc-lbl { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.4rem; }
-  @media (max-width: 800px) {
-    .stats-strip { grid-template-columns: repeat(2, 1fr); gap: 2rem 1.5rem; }
-    .stat-cell { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 1.25rem; }
-    .stat-cell:nth-child(-n+2) { border-top: none; padding-top: 0; }
-  }
-</style>
-
-<div class="divider"></div>
-
-<!-- ═══════════════════ CAMPUS STATS ═══════════════════ -->
-<!-- NOTE: figures below are placeholders — replace with real platform totals before launch -->
-<section class="section-pad-sm">
-  <div class="container">
-    <div class="section-center reveal" style="margin-bottom: 1rem;">
-      <div class="eyebrow">Your Campus, By The Numbers</div>
-      <h2 class="section-heading">A real, active community</h2>
-      <p class="section-sub" style="margin: 0.5rem auto 0; font-size:0.88rem;">Numbers update as the platform grows — figures shown are live totals.</p>
-    </div>
-    <div class="stats-strip reveal">
-      <div class="stat-cell"><div class="sc-num" data-countup="1240">0</div><div class="sc-lbl">Study groups formed</div></div>
-      <div class="stat-cell"><div class="sc-num" data-countup="8900">0</div><div class="sc-lbl">Questions solved</div></div>
-      <div class="stat-cell"><div class="sc-num" data-countup="15600">0</div><div class="sc-lbl">Connections made</div></div>
-      <div class="stat-cell"><div class="sc-num" data-countup="6200">0</div><div class="sc-lbl">Hours studied together</div></div>
-    </div>
-  </div>
-</section>
-
-<style>
-  /* ─── SOCIAL PROOF ─── */
-  .proof-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-top: 3rem; }
-  .proof-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 1.6rem; }
-  .proof-stars { color: var(--amber); font-size: 0.85rem; margin-bottom: 0.9rem; letter-spacing: 0.1em; }
-  .proof-text { font-size: 0.88rem; color: var(--text-soft); line-height: 1.75; margin-bottom: 1.2rem; }
-  .proof-author { display: flex; align-items: center; gap: 0.7rem; }
-  .proof-ava { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.95rem; }
-  .proof-name { font-size: 0.84rem; font-weight: 700; }
-  .proof-role { font-size: 0.74rem; color: var(--text-muted); }
-
   /* ─── FAQ ─── */
   .faq-list { max-width: 720px; margin: 3rem auto 0; display: flex; flex-direction: column; gap: 0.75rem; }
   .faq-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
@@ -1561,65 +1517,6 @@
   /* ─── ANCHOR OFFSET ─── */
   section[id] { scroll-margin-top: 64px; }
 </style>
-
-<div class="divider"></div>
-
-<!-- ═══════════════════ SOCIAL PROOF ═══════════════════ -->
-<!-- NOTE: testimonials below are placeholders pending real student quotes -->
-<section class="section-pad">
-  <div class="container">
-    <div class="section-center reveal">
-      <div class="eyebrow">Student Stories</div>
-      <h2 class="section-heading">Real students. Real results.</h2>
-    </div>
-    <div class="proof-grid">
-      <div class="proof-card reveal">
-        <div class="proof-stars">★★★★★</div>
-        <p class="proof-text">"The matching actually surprised me — it paired me with someone in my department who was strong exactly where I was weak. We've traded help in Stats and Algorithms ever since, and we've logged over 30 hours studying together."</p>
-        <div class="proof-author">
-          <div class="proof-ava" style="background:var(--primary-soft);">🧑🏽‍🎓</div>
-          <div>
-            <div class="proof-name">Marcus T.</div>
-            <div class="proof-role">Economics, Year 1</div>
-          </div>
-        </div>
-      </div>
-      <div class="proof-card reveal reveal-delay-1">
-        <div class="proof-stars">★★★★★</div>
-        <p class="proof-text">"I posted my Organic Chemistry assignment at midnight, and three people from my department had submitted solutions by 7am. The daily help streak is honestly why I keep coming back."</p>
-        <div class="proof-author">
-          <div class="proof-ava" style="background:var(--green-soft);">👩🏼‍🔬</div>
-          <div>
-            <div class="proof-name">Priya K.</div>
-            <div class="proof-role">Chemistry, Year 3</div>
-          </div>
-        </div>
-      </div>
-      <div class="proof-card reveal reveal-delay-2">
-        <div class="proof-stars">★★★★★</div>
-        <p class="proof-text">"Seeing my activity heatmap was a wake-up call — I was barely active outside exam week. Now I check my rank every few days. I'm two spots behind a classmate, and I can actually see myself closing the gap."</p>
-        <div class="proof-author">
-          <div class="proof-ava" style="background:var(--amber-soft);">🧑🏿‍📐</div>
-          <div>
-            <div class="proof-name">Ahmed S.</div>
-            <div class="proof-role">Engineering, Year 4</div>
-          </div>
-        </div>
-      </div>
-      <div class="proof-card reveal reveal-delay-3">
-        <div class="proof-stars">★★★★★</div>
-        <p class="proof-text">"Learnora's Deep Think mode is the first study tool that explains things the way I actually think — it broke down recursion better than my professor did, right when I needed it at 1am."</p>
-        <div class="proof-author">
-          <div class="proof-ava" style="background:var(--violet-soft);">👩🏾‍🎓</div>
-          <div>
-            <div class="proof-name">Amara O.</div>
-            <div class="proof-role">Computer Science, Year 2</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
 
 <div class="divider"></div>
 
@@ -1798,7 +1695,7 @@
     }
   })();
 
-  /* ─── COUNT-UP (Campus Stats + Insight card) ─── */
+  /* ─── COUNT-UP (Insight card) ─── */
   const countObserver = new IntersectionObserver(entries => {
     entries.forEach(e => {
       if(!e.isIntersecting) return;
