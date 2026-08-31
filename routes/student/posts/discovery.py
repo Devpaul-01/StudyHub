@@ -42,7 +42,9 @@ from routes.student.helpers import (
 
 from services.post_service import (
     extract_public_id,
-    update_post_reaction_count,
+    
+    
+    
     detect_and_create_mentions,
     check_spam,
     update_user_activity,
