@@ -79,8 +79,37 @@ def _run_worker_thread(app):
     from extensions import redis_client
     from services.job_queue import email_queue, maintenance_queue
 
+    class _ThreadSafeSimpleWorker(SimpleWorker):
+        """
+        SimpleWorker, minus its own signal handling.
+
+        work() calls self._install_signal_handlers() as its first
+        action (rq/worker/base.py), which calls signal.signal() —
+        and signal.signal() only works in the main thread of the
+        main interpreter. This runs as a background thread (see
+        this function's docstring above), so that call always
+        raises ValueError before a single job is ever dequeued.
+
+        There's no constructor flag or attribute in RQ that
+        suppresses this (checked BaseWorker/Worker/SimpleWorker);
+        the documented way to opt out is to override the method
+        itself, as e.g. RQ's own HerokuWorker and the community
+        gevent worker subclass do for the same reason — signal
+        handling that doesn't fit their execution model.
+
+        The process's actual SIGINT/SIGTERM handling already lives
+        in the main thread via _install_signal_handlers() below
+        (module-level, not to be confused with this method) and
+        _shutdown_event; this thread doesn't need its own.
+        """
+
+        def _install_signal_handlers(self):
+            pass
+
     with app.app_context():
-        worker = SimpleWorker([email_queue, maintenance_queue], connection=redis_client)
+        worker = _ThreadSafeSimpleWorker(
+            [email_queue, maintenance_queue], connection=redis_client
+        )
         logger.info(
             "[START_ALL_WORKER_THREAD_STARTED] queues=%s",
             [q.name for q in [email_queue, maintenance_queue]],
