@@ -1037,6 +1037,7 @@ class ThreadJoinRequest(db.Model):
     message     = db.Column(db.Text)
     status      = db.Column(db.Enum(ThreadJoinRequestStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=ThreadJoinRequestStatus.PENDING.value, index=True)
     reviewed_at = db.Column(db.DateTime)
+    requested_at = db.Column(db.DateTime)
     reviewed_by = db.Column(db.Integer, db.ForeignKey("users.id"))
 
     __table_args__ = (
