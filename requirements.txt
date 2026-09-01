@@ -28,6 +28,7 @@ PyJWT
 redis
 apscheduler
 bleach
+eventlet
 requests
 Pillow
 pandas
