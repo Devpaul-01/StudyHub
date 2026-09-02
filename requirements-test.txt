@@ -1,0 +1,29 @@
+# Test-only / test-adjacent dependencies for the unit suite.
+#
+# These are pinned to the exact versions this suite was written and
+# verified against (see UNIT_TEST_IMPLEMENTATION_PLAN.md §10 for the
+# rationale behind each library's inclusion). Merge with the project's
+# existing requirements.txt for application dependencies (Flask,
+# Flask-SQLAlchemy, etc.) — install both files in CI.
+
+pytest==8.3.3
+pytest-mock==3.14.0
+pytest-cov==5.0.0
+freezegun==1.5.1
+fakeredis==2.24.1
+
+# lupa provides Lua scripting support inside fakeredis (redis-py's EVAL
+# command). services/distributed_lock.py's release() uses a Lua script
+# for its atomic compare-and-delete — without lupa, fakeredis raises
+# "unknown command `eval`" the moment DistributedLock.release() runs
+# under a fakeredis-backed test. Confirmed necessary empirically while
+# implementing tests/unit/services/test_distributed_lock.py.
+lupa==2.8
+
+# bleach is imported by services/thread_message_service.py itself
+# (_sanitize) — needed to import that module at all, not just to test
+# it. Confirmed via ModuleNotFoundError when first importing the module
+# without it; add to the project's real requirements.txt too if it
+# isn't already there, since this is a genuine runtime dependency of
+# thread_message_service.py, not test-only.
+bleach==6.4.0
