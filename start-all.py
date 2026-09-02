@@ -181,7 +181,8 @@ def main():
             debug=app.config.get("DEBUG", False),
             host=host,
             port=port,
-            use_reloader=False,
+            allow_unsafe_werkzeug=True,
+            use_reloader=False
         )
     finally:
         logger.info("[START_ALL_SHUTDOWN_COMPLETE]")
