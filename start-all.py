@@ -3,14 +3,13 @@ start-all.py
 
 Combined entry point that runs the API server, an in-process RQ
 worker, and the APScheduler-based scheduler together — for
-environments where running three separate deployables (per
-BACKGROUND_JOBS_IMPLEMENTATION.md §11's normal recommendation) isn't
-practical (e.g. a single small VM, a local all-in-one dev/staging box).
+environments where running three separate deployables isn't practical
+(e.g. a single small VM, a local all-in-one dev/staging box).
 
 This does NOT replace running app.py and worker.py separately in
-production — §11's guidance stands: independent process scaling is the
-correct default. This file exists for the specific case where you want
-one process tree to bring up everything at once.
+production — independent process scaling is the correct default. This
+file exists for the specific case where you want one process tree to
+bring up everything at once.
 
 Architecture:
     - The API (Flask + SocketIO) runs on the MAIN thread/process,
@@ -59,10 +58,10 @@ logger = logging.getLogger(__name__)
 
 # This combined-process mode is exactly the case worker.py's own
 # startup guard exists to prevent when running the TWO separate
-# processes it's designed for (see worker.py's module docstring) — but
-# here, by design, the scheduler and the worker are meant to coexist in
-# one process tree. Set this BEFORE importing app/worker modules, since
-# config.py reads it at Config-class-definition time (import time).
+# processes it's designed for — but here, by design, the scheduler and
+# the worker are meant to coexist in one process tree. Set this BEFORE
+# importing app/worker modules, since config.py reads it at
+# Config-class-definition time (import time).
 os.environ.setdefault("SCHEDULER_ENABLED", "true")
 
 _shutdown_event = threading.Event()
@@ -181,7 +180,8 @@ def main():
             debug=app.config.get("DEBUG", False),
             host=host,
             port=port,
-            use_reloader=False,
+            allow_unsafe_werkzeug=True,
+            use_reloader=False
         )
     finally:
         logger.info("[START_ALL_SHUTDOWN_COMPLETE]")

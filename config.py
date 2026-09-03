@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env from the same directory as this file
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
 
@@ -46,7 +45,7 @@ class Config:
     SQLALCHEMY_DATABASE_URI = DATABASE_URL
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # FIX: SSL EOF errors ("SSL error: unexpected eof while reading") on
+    # Fixes SSL EOF errors ("SSL error: unexpected eof while reading") on
     # login/OAuth. Root cause: DATABASE_NEW_URL points at Supabase's
     # PgBouncer transaction-mode pooler (port 6543), which aggressively
     # drops/recycles backend connections between transactions. Without
@@ -114,26 +113,21 @@ class Config:
 
     SCHEDULER_ENABLED = os.environ.get('SCHEDULER_ENABLED', 'true').lower() == 'true'
 
-    # NEW in this phase - infrastructure the rest of the refactor plan
-    # (rate limiting, Redis, CSRF/cookie work) will read from. Every one
-    # of these degrades gracefully when unset, so introducing them here
-    # now, ahead of the code that will actually use them, is zero-risk:
-    # nothing reads these yet.
+    # Infrastructure for rate limiting, Redis, and CSRF/cookie work. Every
+    # one of these degrades gracefully when unset.
     REDIS_URL = os.environ.get("REDIS_URL")  # None if unset
     RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://")
     RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
     CORS_ALLOWED_ORIGINS = [
         origin.strip() for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
     ]
-    # Feature flag for the H-1 cookie redesign (Security & Authorization
-    # phase) - defaults False so the flip is a config change, not a code
-    # deploy, and is instantly reversible. Not used by any code yet.
+    # Feature flag for the H-1 cookie redesign — defaults False so the flip
+    # is a config change, not a code deploy, and is instantly reversible.
+    # Not used by any code yet.
     ACCESS_TOKEN_HTTPONLY = os.environ.get("ACCESS_TOKEN_HTTPONLY", "true").lower() == "true"
 
     # Sentry error tracking — None/unset means disabled (see
-    # services/error_tracking.py). No behavior change to any existing
-    # config tier; DevelopmentConfig/TestingConfig/ProductionConfig all
-    # inherit this unchanged unless you want per-tier sampling later.
+    # services/error_tracking.py).
     SENTRY_DSN = os.environ.get("SENTRY_DSN")
 
 
@@ -150,8 +144,7 @@ class TestingConfig(Config):
 class ProductionConfig(Config):
     DEBUG = False
     # Reuse REDIS_URL for rate-limit storage when it's set, so provisioning
-    # one Redis instance is enough (Document 4 §2.5's "one Redis, logically
-    # namespaced by key prefix" — Flask-Limiter prefixes its own keys).
+    # one Redis instance is enough (Flask-Limiter prefixes its own keys).
     # Falls back to memory:// (single-process only) if REDIS_URL is unset,
     # same as every other Redis-optional piece in this codebase.
     RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI") or os.environ.get("REDIS_URL") or "memory://"

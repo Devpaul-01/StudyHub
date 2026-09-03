@@ -17,41 +17,25 @@ from flask_mail import Message
 from extensions import mail
 from models import User
 
-# ============================================================================
-# Phase 5b (Document 4 §1) consolidation:
-#
-# limiter used to be independently constructed here as its own Limiter()
-# instance, separate from any app-wide rate-limit configuration (storage
-# backend, tiers, fail-open behavior). It's now a re-export of the single
-# app-wide instance from services/rate_limit_service.py, so every existing
-# `from utils import limiter` call site keeps working unchanged, but there
-# is exactly one Limiter for the whole app (one Redis-backed store, one set
-# of tiers, one 429 handler) instead of two independently-configured ones.
-# ============================================================================
+# limiter is a re-export of the single app-wide instance from
+# services/rate_limit_service.py (it used to be independently constructed
+# here as its own Limiter(), separate from any app-wide rate-limit
+# configuration). Every existing `from utils import limiter` call site
+# keeps working unchanged, but there is exactly one Limiter for the whole
+# app (one Redis-backed store, one set of tiers, one 429 handler) instead
+# of two independently-configured ones.
 from services.rate_limit_service import limiter  # noqa: F401
 
 
-
-
-# ============================================================================
-# Document 1 §6.4 / Document 2 §3.4 consolidation (PHASE-1 CORRECTNESS FIX):
-#
-# get_user_online_status and can_message used to be fully, independently
-# reimplemented in this file — a second, silently-driftable copy of exactly
-# the logic Document 1 §6.4 and Document 2 §3.4 name as needing ONE
-# implementation apiece (services/online_status_service.py and
-# services/connection_service.py). The service modules already existed, but
-# this file was never actually converted into a shim onto them, so both
-# copies were live and could disagree. They're now thin re-exports instead
-# of duplicated bodies, so every existing `from utils import
-# get_user_online_status` / `from utils import can_message` call site keeps
-# working completely unchanged, but there is exactly one implementation.
-# ============================================================================
-
+# get_user_online_status and can_message are thin re-exports of
+# services/online_status_service.py and services/connection_service.py
+# (they used to be independently reimplemented here as a second,
+# silently-driftable copy of the same logic). Every existing
+# `from utils import get_user_online_status` / `from utils import
+# can_message` call site keeps working unchanged, but there is exactly
+# one implementation.
 from services.online_status_service import get_user_online_status  # noqa: F401
 from services.connection_service import can_message  # noqa: F401
-
-# Initialize limiter
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +84,8 @@ def send_password_reset(email, link):
     """
     Send password reset email.
 
-    Background-jobs phase (BACKGROUND_JOBS_IMPLEMENTATION.md §6.2/§20):
-    HTML-building is unchanged; only the final send mechanism moved off
-    an in-request, blocking mail.send() call onto a durable RQ job.
+    HTML-building is synchronous; only the final send goes through a
+    durable RQ job rather than a blocking mail.send() call.
     """
     html = f"""
     <html>
@@ -128,10 +111,8 @@ def send_password_reset(email, link):
 
 def send_verification_email(email, link):
     """
-    Send email verification link.
-
-    Background-jobs phase: same treatment as send_password_reset above
-    -- HTML unchanged, send mechanism now a durable RQ job.
+    Send email verification link. Same treatment as send_password_reset
+    above — HTML unchanged, send mechanism is a durable RQ job.
     """
     html = f"""
     <html>
@@ -160,15 +141,7 @@ def send_email_now(to_email, subject, html_content, async_send=True):
     """
     Send email, either via a durable background job (default, matches
     prior "don't block the request" intent) or synchronously
-    (test-only path, unchanged).
-
-    Background-jobs phase (BACKGROUND_JOBS_IMPLEMENTATION.md §6.2/§20):
-    the async_send=True branch previously spawned an untracked daemon
-    thread (send_async_email) with no retry and no persistence -- a
-    failure was silently gone forever, logged only. It now enqueues
-    onto the same durable send_email_job every other email path uses.
-    send_async_email itself is removed as dead code now that nothing
-    calls it.
+    (test-only path).
 
     Returns:
         bool: True if enqueued/sent, False if failed to enqueue/send.
@@ -198,7 +171,6 @@ def send_email_now(to_email, subject, html_content, async_send=True):
             print("="*70 + "\n")
             return True
         else:
-            # Synchronous send (for testing only) -- unchanged.
             msg = Message(
                 subject=subject,
                 recipients=[to_email],
@@ -226,13 +198,11 @@ def send_waitlist_welcome_email(to_email, referral_code, position, tier_info):
         app_url = get_app_url()
         referral_link = f"{app_url}?ref={referral_code}"
         
-        # Extract benefits (get first 3, or pad if less)
         benefits = tier_info["benefits"]
         benefit1 = benefits[0] if len(benefits) > 0 else "Early Access"
         benefit2 = benefits[1] if len(benefits) > 1 else "Premium Features"
         benefit3 = benefits[2] if len(benefits) > 2 else "Community Access"
         
-        # Launch date
         launch_date = "January 2025"
         
         subject = f"🎉 You're #{position} on the StudyHub Waitlist!"
@@ -329,7 +299,6 @@ def send_waitlist_welcome_email(to_email, referral_code, position, tier_info):
 </html>
         """
         
-        # Use async send in production (default)
         result = send_email_now(to_email, subject, html, async_send=True)
         
         if result:
@@ -428,7 +397,6 @@ def send_referral_milestone_email(to_email, referral_count, new_position, referr
 </html>
         """
         
-        # Use async send in production (default)
         result = send_email_now(to_email, subject, html, async_send=True)
         
         if result:
@@ -441,5 +409,3 @@ def send_referral_milestone_email(to_email, referral_count, new_position, referr
     except Exception as e:
         logger.error(f"Exception in send_referral_milestone_email: {e}", exc_info=True)
         return False
-
-          

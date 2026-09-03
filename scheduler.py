@@ -8,9 +8,7 @@ Uses APScheduler's BackgroundScheduler.
      This app runs socketio with async_mode='threading' (see
      services/websocket_messages.py::init_app) — BackgroundScheduler's
      ThreadPoolExecutor runs on ordinary OS threads under this mode, which
-     is safe and intentional. (Corrected from a prior "eventlet" docstring
-     that no longer matched the actual async_mode in use — Document 1 §5's
-     file-by-file note flagged this exact staleness.)
+     is safe and intentional.
 
      use_reloader=False is already set in socketio.run(), so the scheduler
      will never double-start within one process. atexit handles clean
@@ -39,10 +37,9 @@ HORIZONTAL SCALING (see 01-DESIGN-horizontal-scaling.md §7):
      is far cheaper than two processes both writing duplicate
      leaderboard-snapshot rows.
 
-     Cron schedules, timezones, job_defaults, and the "Keep -w 1" operational
-     constraint that USED to be required to avoid this exact problem (see
-     app.py's Production Entry Point comment) are otherwise UNCHANGED by
-     this refactor except that the "-w 1" constraint is now obsolete —
+     Cron schedules, timezones, and job_defaults are otherwise UNCHANGED
+     by this refactor except that the "-w 1" constraint historically
+     required to avoid this exact problem is now obsolete —
      SCHEDULER_ENABLED=true is now safe on every instance simultaneously.
 
 Install dependency:
@@ -55,25 +52,25 @@ Jobs registered here:
     • activity_feed_cleanup        – daily 03:00 UTC
     • stale_ai_conversation_alert  – every Sunday 00:25 UTC
 
-BACKGROUND JOBS PHASE (BACKGROUND_JOBS_IMPLEMENTATION.md §5):
+BACKGROUND JOBS PHASE:
     The two newest jobs above (activity_feed_cleanup,
     stale_ai_conversation_alert) differ structurally from the three
     original jobs in one specific way: their locked scheduler tick
     ENQUEUES the work onto services/job_queue.py's maintenance_queue
     (run later by worker.py) rather than executing it inline, the way
     the three original jobs still do. This split follows a concrete
-    rule, not an arbitrary choice: the three original jobs each already
-    have their own idempotency guard independent of the distributed
-    lock (take_snapshot()'s one-per-day DB check; reconcile's natural
+    rule: the three original jobs each already have their own
+    idempotency guard independent of the distributed lock
+    (take_snapshot()'s one-per-day DB check; reconcile's natural
     recompute-and-compare) AND bounded runtime regardless of table size
     — so running them inline, inside the lock, adds nothing. The two
     new jobs' cost scales with table size (activity_feed_cleanup) or
-    have no independent idempotency guard of their own — so per §5's
-    rule, the scheduler tick's job is only to acquire the lock and
-    enqueue; the RQ job itself is the idempotent, retryable unit. See
+    have no independent idempotency guard of their own — so the
+    scheduler tick's job is only to acquire the lock and enqueue; the
+    RQ job itself is the idempotent, retryable unit. See
     services/jobs/maintenance_jobs.py for the actual job bodies.
 
-SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
+SNAPSHOT LOGIC CONSOLIDATION:
     The actual snapshot computation used to be duplicated here (as
     _take_snapshot) and, separately, in leaderboard.py's manual
     POST /leaderboard/snapshot admin endpoint — with two slightly
@@ -85,12 +82,11 @@ SNAPSHOT LOGIC CONSOLIDATION (Document 1 §6.3):
 
     HORIZONTAL SCALING NOTE: that DB-level "one-per-day" guard alone is
     NOT sufficient at more than one process — it has a real TOCTOU race
-    (no unique constraint backs it; see design doc §5 for the exact gap
-    read directly out of leaderboard_service.py). The distributed lock
-    below is what actually closes it; the DB guard remains valuable
-    defense-in-depth for the case where the lock itself was contended.
+    (no unique constraint backs it). The distributed lock below is what
+    actually closes it; the DB guard remains valuable defense-in-depth
+    for the case where the lock itself was contended.
 
-COUNTER RECONCILIATION (Document 4 §3.3 point 2, Phase 5a):
+COUNTER RECONCILIATION:
     services/reconciliation_service.py::reconcile_denormalized_counts() is
     a safety-net job, not a primary consistency mechanism, so it runs at
     the same low weekly frequency as the snapshot jobs rather than more
@@ -111,7 +107,6 @@ from services.distributed_lock import DistributedLock
 
 logger = logging.getLogger(__name__)
 
-# Module-level scheduler instance (single shared instance across the app)
 scheduler = BackgroundScheduler(
     job_defaults={
         "coalesce":           True,   # merge missed runs into one
@@ -142,26 +137,24 @@ def _run_locked(job_id: str, work_fn) -> None:
     one-line calls into this, rather than three near-duplicate
     try/finally blocks that could drift out of sync with each other.
 
-    Logs exactly what the design doc's §23 observability requirement asks
-    for: lock acquired, lock skipped (and by implication which instance
+    Logs lock acquired / lock skipped (and by implication which instance
     is the current owner, via distributed_lock.py's own logging), and
     does NOT log anything for the common no-op "nothing to do" case beyond
     what work_fn() itself already logs — no added heartbeat-style noise.
 
-    Also tracks CONSECUTIVE skips of the same job_id (SENTRY_IMPLEMENTATION_PLAN.md
-    §5): a single skip is normal (another instance legitimately won the
-    lock this tick), but if Redis is down for an extended period every
-    tick skips silently forever with no signal beyond a warning log line
-    each time. After _CONSECUTIVE_SKIP_ALERT_THRESHOLD consecutive skips,
-    this escalates to logger.error + a Sentry message, then keeps
-    counting without re-alerting until the job successfully runs again
-    and resets the counter (avoids alert spam from a Redis-down window
-    that lasts hours). Uses cache_service.get/set directly (fail-open,
-    matching every other Redis consumer in this codebase) — a Redis
-    hiccup on THIS bookkeeping must never itself break the scheduler skip
-    path.
+    Also tracks CONSECUTIVE skips of the same job_id: a single skip is
+    normal (another instance legitimately won the lock this tick), but if
+    Redis is down for an extended period every tick skips silently
+    forever with no signal beyond a warning log line each time. After
+    _CONSECUTIVE_SKIP_ALERT_THRESHOLD consecutive skips, this escalates to
+    logger.error + a Sentry message, then keeps counting without
+    re-alerting until the job successfully runs again and resets the
+    counter (avoids alert spam from a Redis-down window that lasts
+    hours). Uses cache_service.get/set directly (fail-open, matching
+    every other Redis consumer in this codebase) — a Redis hiccup on THIS
+    bookkeeping must never itself break the scheduler skip path.
     """
-    from services import cache_service  # local import, matches this module's existing style
+    from services import cache_service
 
     lock_key = f"sh:1:sched:lock:{job_id}"
     skip_counter_key = f"sh:1:sched:skipcount:{job_id}"
@@ -172,9 +165,8 @@ def _run_locked(job_id: str, work_fn) -> None:
                 "[SCHED_JOB_SKIPPED_LOCK_HELD] job_id=%s — another instance "
                 "owns this tick's execution", job_id,
             )
-            # Fail-open read/write, matching cache_service.py's own
-            # convention — a Redis hiccup on THIS bookkeeping must never
-            # itself break the scheduler skip path.
+            # Fail-open read/write — a Redis hiccup on THIS bookkeeping
+            # must never itself break the scheduler skip path.
             skip_count = (cache_service.get(skip_counter_key) or 0) + 1
             cache_service.set(skip_counter_key, skip_count, ttl_seconds=86400)
             if skip_count >= _CONSECUTIVE_SKIP_ALERT_THRESHOLD:
@@ -194,7 +186,6 @@ def _run_locked(job_id: str, work_fn) -> None:
                 except Exception:
                     pass
             return
-        # Lock acquired — reset the skip counter and run.
         cache_service.set(skip_counter_key, 0, ttl_seconds=86400)
         work_fn()
 
@@ -246,7 +237,7 @@ def _job_reconcile_counters(app):
     UPDATE-if-different — see reconciliation_service.py), so the lock
     here isn't closing a correctness gap the way it is for the snapshot
     jobs; it avoids two instances redundantly running the same full-table
-    scan concurrently. See design doc §7.2.
+    scan concurrently.
     """
     def _work():
         logger.info("[Scheduler] ▶ Running denormalized counter reconciliation job")
@@ -369,10 +360,9 @@ def init_scheduler(app) -> None:
         logger.warning("[Scheduler] Already running — init_scheduler called twice in this process, skipping")
         return
 
-    # Register event listener
     scheduler.add_listener(_job_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
 
-    # ── Weekly job: every Sunday at 00:05 UTC ─────────────────────────────────
+    # Weekly job: every Sunday at 00:05 UTC
     scheduler.add_job(
         func=_job_weekly,
         args=[app],
@@ -382,7 +372,7 @@ def init_scheduler(app) -> None:
         replace_existing=True,
     )
 
-    # ── Monthly job: 1st of month at 00:10 UTC ────────────────────────────────
+    # Monthly job: 1st of month at 00:10 UTC
     scheduler.add_job(
         func=_job_monthly,
         args=[app],
@@ -392,10 +382,9 @@ def init_scheduler(app) -> None:
         replace_existing=True,
     )
 
-    # ── Counter reconciliation: every Sunday at 00:20 UTC ─────────────────────
-    # Safety-net job (Document 4 §3.3 point 2) — runs weekly, offset 15
-    # minutes after the other Sunday job so they don't contend for DB load
-    # in the same window.
+    # Counter reconciliation: every Sunday at 00:20 UTC. Offset 15 minutes
+    # after the other Sunday job so they don't contend for DB load in the
+    # same window.
     scheduler.add_job(
         func=_job_reconcile_counters,
         args=[app],
@@ -405,9 +394,8 @@ def init_scheduler(app) -> None:
         replace_existing=True,
     )
 
-    # ── Activity feed cleanup: daily at 03:00 UTC ─────────────────────────────
-    # Background-jobs phase addition. Enqueues onto maintenance_queue
-    # rather than running inline — see this module's docstring.
+    # Activity feed cleanup: daily at 03:00 UTC. Enqueues onto
+    # maintenance_queue rather than running inline — see module docstring.
     scheduler.add_job(
         func=_job_activity_feed_cleanup,
         args=[app],
@@ -417,11 +405,10 @@ def init_scheduler(app) -> None:
         replace_existing=True,
     )
 
-    # ── Stale AI conversation alert: every Sunday at 00:25 UTC ────────────────
-    # Background-jobs phase addition. Placed 5 minutes after
-    # counter_reconciliation's 00:20 slot, for the same "don't contend
-    # for DB load in the same window" reasoning already used to space
-    # the original three jobs apart. Enqueues, does not run inline.
+    # Stale AI conversation alert: every Sunday at 00:25 UTC. Placed 5
+    # minutes after counter_reconciliation's 00:20 slot for the same
+    # "don't contend for DB load in the same window" reasoning. Enqueues,
+    # does not run inline.
     scheduler.add_job(
         func=_job_stale_conversation_alert,
         args=[app],
@@ -433,10 +420,8 @@ def init_scheduler(app) -> None:
 
     scheduler.start()
 
-    # Graceful shutdown when the Python process exits (Gunicorn SIGTERM, etc.)
     atexit.register(lambda: _shutdown_scheduler())
 
-    # Log next run times for confirmation
     for job in scheduler.get_jobs():
         logger.info(
             "[Scheduler] ✅ Registered '%s' — next run: %s",

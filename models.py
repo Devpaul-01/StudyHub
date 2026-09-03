@@ -19,7 +19,7 @@ from sqlalchemy.dialects import postgresql
 from extensions import db
 
 # ============================================================================
-# JSONB MIGRATION  (Document 4 §3.4)
+# JSONB MIGRATION
 #
 # Post.tags / User.skills move from plain db.JSON to a dialect-conditional
 # JSONB: postgresql.JSONB in production, ordinary db.JSON everywhere else
@@ -34,14 +34,13 @@ from extensions import db
 # autogenerate (or equivalent manual DDL) still has to run against a real
 # database for any of this to take effect there. JSON -> JSONB in
 # particular is a full column rewrite on Postgres and needs a maintenance
-# window per Document 4 §3.4 / Document 5 §3 item 9, not a routine
-# autogenerate-and-apply.
+# window, not a routine autogenerate-and-apply.
 # ============================================================================
 
 JSONB_VARIANT = db.JSON().with_variant(postgresql.JSONB, "postgresql")
 
 # ============================================================================
-# STATUS ENUMS  (Document 3 §5)
+# STATUS ENUMS
 #
 # db.Enum(..., native_enum=False) at the SQLAlchemy level rather than a raw
 # CheckConstraint string — this gets Python-side validation for free
@@ -55,25 +54,17 @@ JSONB_VARIANT = db.JSON().with_variant(postgresql.JSONB, "postgresql")
 # new status value is added — exactly the kind of migration friction that
 # discourages evolving a status set later. A CHECK-constraint-backed enum
 # is altered with an ordinary `ALTER TABLE ... DROP/ADD CONSTRAINT`.
-#
-# Per your instruction, the columns below are updated directly (no
-# separate migration file) — running `db.create_all()` / an Alembic
-# autogenerate against this file will pick up the new CHECK constraints
-# on next migration, same as any other model change.
 # ============================================================================
 
 class MessageDeliveryStatus(str, Enum):
     """
-    AUDIT DUP-1 fix: consolidates what used to be two byte-for-byte
-    identical enums (MessageStatus for Message.status, ThreadMessageStatus
-    for ThreadMessage.status) into one shared enum. Confirmed safe to
-    merge: grepped every supplied file and both old names were referenced
-    ONLY here in models.py, each at exactly one column definition — no
-    route/service/websocket file imports either enum class directly (they
-    all set .status via plain string literals, e.g. "sent"/"delivered"/
-    "read"), so this is a values-preserving rename, not a behavior change.
-    The values themselves are unchanged, so no data migration is implied
-    beyond a column's Python-side enum-class reference.
+    Consolidates what used to be two byte-for-byte identical enums
+    (MessageStatus for Message.status, ThreadMessageStatus for
+    ThreadMessage.status) into one shared enum. Confirmed safe to merge:
+    neither old name was referenced outside this definition — every
+    route/service/websocket file sets .status via plain string literals
+    ("sent"/"delivered"/"read"), so this is a values-preserving rename,
+    not a behavior change.
     """
     SENT      = "sent"
     DELIVERED = "delivered"
@@ -109,10 +100,9 @@ class StudySessionCalendarStatus(str, Enum):
     CANCELLED  = "cancelled"
     COMPLETED  = "completed"
 
-# AUDIT DUP-1 fix: ThreadMessageStatus removed — was byte-for-byte
-# identical to the old MessageStatus (now MessageDeliveryStatus above).
-# Both ThreadMessage.status and Message.status now reference the single
-# shared enum below (see their respective db.Column definitions).
+# ThreadMessageStatus removed — was byte-for-byte identical to the old
+# MessageStatus (now MessageDeliveryStatus above). Both ThreadMessage.status
+# and Message.status now reference the single shared enum.
 
 # ============================================================================
 # CORE USER MODELS
@@ -296,7 +286,7 @@ class LiveStudySession(db.Model):
     topics_covered  = db.Column(db.JSON, default=list)
     problems_solved = db.Column(db.Integer, default=0)
 
-    # ── MIGRATION-001: missing columns ────────────────────────────────────────
+    # MIGRATION-001: missing columns
     total_duration_seconds     = db.Column(db.Integer, nullable=False, default=0)
     session_goal               = db.Column(db.Text, nullable=True)
     target_count               = db.Column(db.Integer, nullable=False, default=0)
@@ -376,7 +366,7 @@ class StudySessionCalendar(db.Model):
     reminder_15min_sent  = db.Column(db.Boolean, default=False)
     reminder_1hour_sent  = db.Column(db.Boolean, default=False)
 
-    # ── MIGRATION-001: missing columns ────────────────────────────────────────
+    # MIGRATION-001: missing columns
     cancelled_at  = db.Column(db.DateTime, nullable=True)
     cancelled_by  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     cancel_reason = db.Column(db.Text, nullable=True)
@@ -394,25 +384,14 @@ class StudySessions(db.Model):
     Study session requests (invite/accept workflow), with an unseen-inbox
     flag for the receiver.
 
-    AUDIT §12.2 FIX: this model is now confirmed fully dead — it was never
-    populated by any write path to begin with (see the original note
-    below), and as of this fix its two former readers
+    This model is confirmed fully dead — it was never populated by any
+    write path. Its two former readers
     (connections/crud.py::unseen_study_sessions_count and the
     partner-history block in connections/health.py) have both been
     repointed at StudySessionCalendar, the model session-creation routes
     actually write to. Left in place rather than dropped (no migration
     performed) — table removal is a separate, larger decision than the
     read-site fix this pass covers.
-
-    ORIGINAL NOTE (pre-§12.2, kept for history): referenced via a local
-    `from models import StudySessions` in routes/crud.py
-    (unseen_study_sessions_count) and routes/health.py (partner
-    study-session history) but was missing from this file — both call
-    sites wrapped the import/query in try/except so the app did not
-    crash, but silently always returned an empty/zero result. Fields
-    below match exactly what those two call sites used to read/write:
-    requester_id, receiver_id, is_seen, status, subject, type, duration,
-    schedule_date, notes, requested_at.
     """
     __tablename__ = "study_sessions"
 
@@ -470,20 +449,16 @@ class Assignment(db.Model):
 
     user = db.relationship("User", backref="assignments")
 
-    # AUDIT DUP-2 fix: calculate_priority() removed — dead code, fully
-    # superseded by services/homework_service.py::calculate_priority_score(),
-    # confirmed the sole call site used across every route (see
-    # homework_system.py's get_my_assignments/create_assignment/
-    # update_assignment/assignment_quick_actions/get_homework_feed, all of
-    # which call the service function and explicitly assign the result
-    # back where persistence is intended). This method wasn't just unused —
-    # per the audit, it was "a live landmine": calling it again (an easy
-    # mistake, since it reads as the obvious method to reach for on the
-    # model itself) would silently reintroduce the exact bug the service
-    # extraction fixed (mutating and persisting priority_score as a side
-    # effect of what looks like a read). Confirmed zero remaining call
-    # sites (`.calculate_priority(`) anywhere in the codebase before
-    # removal.
+    # calculate_priority() removed — dead code, fully superseded by
+    # services/homework_service.py::calculate_priority_score(), the sole
+    # call site used across every route (get_my_assignments/
+    # create_assignment/update_assignment/assignment_quick_actions/
+    # get_homework_feed all call the service function and explicitly
+    # assign the result back where persistence is intended). This wasn't
+    # just unused — calling it again (an easy mistake, since it reads as
+    # the obvious method to reach for on the model itself) would silently
+    # reintroduce the bug the service extraction fixed: mutating and
+    # persisting priority_score as a side effect of what looks like a read.
 
     def __repr__(self):
         return f"<Assignment {self.id}: {self.title} - {self.status}>"
@@ -520,7 +495,7 @@ class HomeworkSubmission(db.Model):
     is_marked_helpful = db.Column(db.Boolean, default=False)
     study_session_id  = db.Column(db.Integer, db.ForeignKey("live_study_sessions.id"))
 
-    # ── MIGRATION-001: missing columns ────────────────────────────────────────
+    # MIGRATION-001: missing columns
     feedback_rating = db.Column(db.Integer, nullable=True)
 
     requester  = db.relationship("User", foreign_keys=[requester_id])
@@ -542,15 +517,14 @@ class User(UserMixin, db.Model):
     pin               = db.Column(db.String(200), nullable=False)
     fcm_token         = db.Column(db.String(500), nullable=True)
 
-    # Auth-flow-audit fix (Finding #2): tracks which provider created this
-    # account. google_id is Google's stable, unique per-account "sub" claim
-    # (NOT the email — emails can be re-registered elsewhere/change).
-    # NULL google_id = password-created account. This is the anchor that
-    # lets google_callback() tell "an account already exists for this
-    # email, created via Google, safe to log in" apart from "an account
-    # already exists for this email, created via password, do NOT log in
-    # just because Google authenticated the same address" — closing the
-    # OAuth account-hijack gap the audit flagged.
+    # google_id is Google's stable, unique per-account "sub" claim (NOT the
+    # email — emails can be re-registered elsewhere/change). NULL google_id
+    # = password-created account. This is the anchor that lets
+    # google_callback() tell "an account already exists for this email,
+    # created via Google, safe to log in" apart from "an account already
+    # exists for this email, created via password, do NOT log in just
+    # because Google authenticated the same address" — closing an OAuth
+    # account-hijack gap.
     google_id = db.Column(db.String(255), unique=True, nullable=True, index=True)
 
     name = db.Column(db.String(100), nullable=False)
@@ -569,8 +543,8 @@ class User(UserMixin, db.Model):
     total_posts   = db.Column(db.Integer, default=0)
     total_helpful = db.Column(db.Integer, default=0)
 
-    # Document 4 §3.4: JSONB on Postgres (dialect-conditional), plain JSON
-    # on SQLite. GIN index added below in __table_args__.
+    # JSONB on Postgres (dialect-conditional), plain JSON on SQLite. GIN
+    # index added below in __table_args__.
     skills         = db.Column(MutableList.as_mutable(JSONB_VARIANT), default=list)
     learning_goals = db.Column(MutableList.as_mutable(db.JSON), default=list)
     study_schedule = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
@@ -625,8 +599,8 @@ class User(UserMixin, db.Model):
     bookmark_relations = db.relationship("Bookmark", backref="user", lazy="dynamic", cascade="all, delete-orphan")
 
     __table_args__ = (
-        # Document 4 §3.4: GIN index on skills for containment queries
-        # (Postgres-specific — see the identical note on Post.__table_args__).
+        # GIN index on skills for containment queries (Postgres-specific —
+        # see the identical note on Post.__table_args__).
         db.Index("idx_users_skills_gin", "skills", postgresql_using="gin"),
     )
 
@@ -654,14 +628,12 @@ class User(UserMixin, db.Model):
         """
         Calculate and update reputation level.
 
-        H-8 fix: previously reimplemented the reputation-tier boundaries
-        independently of badges.py/leaderboard.py/reputation.py (all three
-        of which are now consolidated into services.reputation_levels).
-        This used strict "<" comparisons where the other three used an
-        inclusive min/max range table, and they disagreed at exactly
-        reputation == 1000 (this method said "Master"; the shared table says
-        "Expert", since Expert's range is 501-1000 inclusive). Delegating to
-        the shared table removes that discrepancy for good.
+        Delegates to services.reputation_levels (the shared table also
+        used by badges.py/leaderboard.py/reputation.py) rather than
+        reimplementing the tier boundaries here — a previous local
+        implementation used strict "<" comparisons where the shared table
+        uses an inclusive min/max range, and they disagreed at exactly
+        reputation == 1000.
 
         Imported locally (not at module level) to avoid a circular import —
         services/*.py imports models.py, so models.py can't import
@@ -754,12 +726,11 @@ class Post(db.Model):
 
     resources  = db.Column(MutableList.as_mutable(db.JSON))
     department = db.Column(db.String(100), index=True)
-    # Document 4 §3.4: JSONB on Postgres (dialect-conditional — see
-    # JSONB_VARIANT at module scope), plain JSON on SQLite. GIN index
-    # (below, in __table_args__) is the actual performance payoff — tag
-    # containment queries go from a sequential scan to an index scan on
-    # Postgres. GIN indexes are Postgres-specific; this is a no-op on
-    # SQLite (see __table_args__ note).
+    # JSONB on Postgres (dialect-conditional — see JSONB_VARIANT at module
+    # scope), plain JSON on SQLite. The GIN index below in __table_args__
+    # is the actual performance payoff — tag containment queries go from
+    # a sequential scan to an index scan on Postgres; it's a no-op on
+    # SQLite.
     tags       = db.Column(MutableList.as_mutable(JSONB_VARIANT), default=list)
 
     positive_reactions_count = db.Column(db.Integer, default=0)
@@ -783,22 +754,19 @@ class Post(db.Model):
     threads   = db.relationship("Thread",        backref="post", lazy="dynamic", cascade="all, delete-orphan")
     reactions = db.relationship("PostReaction",  backref="post", lazy="dynamic", cascade="all, delete-orphan")
     bookmarks = db.relationship("Bookmark",      backref="post", lazy="dynamic", cascade="all, delete-orphan")
-    # H-3 fix: these were previously undeclared, so an ORM-level
-    # db.session.delete(post) never cascaded to them and they were left as
-    # orphaned rows referencing a deleted post_id. (routes/student/posts.py's
-    # delete_post() also explicitly bulk-deletes these for the same reason —
-    # that explicit cleanup remains in place as a safety net for any bulk
+    # These were previously undeclared, so an ORM-level db.session.delete(post)
+    # never cascaded to them and they were left as orphaned rows referencing
+    # a deleted post_id. (routes/student/posts.py's delete_post() also
+    # explicitly bulk-deletes these as a safety net for any bulk
     # `.query.filter(...).delete()` code path that bypasses the ORM cascade
     # below entirely.)
     views     = db.relationship("PostView",      backref="post", lazy="dynamic", cascade="all, delete-orphan")
     follows   = db.relationship("PostFollow",     backref="post", lazy="dynamic", cascade="all, delete-orphan")
 
     __table_args__ = (
-        # Document 4 §3.4: GIN index on tags for containment queries.
-        # postgresql_using="gin" makes this Postgres-specific by
-        # construction — Alembic/SQLAlchemy will skip it (or it must be
-        # excluded from a SQLite create_all path) on other dialects,
-        # since GIN is not a SQLite index type.
+        # GIN index on tags for containment queries. postgresql_using="gin"
+        # makes this Postgres-specific by construction — GIN is not a
+        # SQLite index type.
         db.Index("idx_posts_tags_gin", "tags", postgresql_using="gin"),
     )
 
@@ -827,11 +795,11 @@ class Comment(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     post_id    = db.Column(db.Integer, db.ForeignKey("posts.id"), nullable=False, index=True)
     student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    # Document 4 §3.2: CASCADE — deleting a top-level comment should remove
-    # its replies. This matches the existing ORM-level
-    # cascade="all, delete-orphan" on Comment.replies below; adding
-    # ondelete="CASCADE" here enforces the same behavior at the DB level
-    # too, as defense-in-depth for any bulk delete that bypasses the ORM.
+    # CASCADE — deleting a top-level comment should remove its replies.
+    # Matches the existing ORM-level cascade="all, delete-orphan" on
+    # Comment.replies below; ondelete="CASCADE" here enforces the same
+    # behavior at the DB level too, as defense-in-depth for any bulk
+    # delete that bypasses the ORM.
     parent_id  = db.Column(db.Integer, db.ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
 
     text_content = db.Column(db.Text, nullable=False)
@@ -869,15 +837,14 @@ class Comment(db.Model):
 class CommentHelpfulMark(db.Model):
     """Track which users marked comments as helpful.
 
-    AUDIT §4.1 FIX (reputation-farming closure): `is_active` added.
-    Previously, unmarking a comment as helpful deleted this row entirely
-    but never reversed the +3 reputation award made when it was created —
-    with no idempotency gate on the award itself, a marker could
-    mark -> unmark -> mark -> unmark indefinitely and the comment author
-    would receive +3 reputation on every single "mark" step, unbounded.
+    `is_active` closes a reputation-farming gap: unmarking a comment as
+    helpful used to delete this row entirely but never reversed the +3
+    reputation award made when it was created — with no idempotency gate
+    on the award itself, a marker could mark -> unmark -> mark -> unmark
+    indefinitely and the comment author would receive +3 reputation on
+    every single "mark" step, unbounded.
 
-    Fix (Option B from the audit — idempotency at the mark level, no
-    reversal): this row is now soft-deleted (is_active=False) instead of
+    Fix: this row is now soft-deleted (is_active=False) instead of
     hard-deleted on unmark, and PERMANENTLY RETAINED as the idempotency
     record for this exact (comment_id, user_id) pair. Re-marking after an
     unmark reactivates the existing row (is_active=True) instead of
@@ -1054,13 +1021,14 @@ class ThreadMessage(db.Model):
 
     id        = db.Column(db.Integer, primary_key=True)
     thread_id = db.Column(db.Integer, db.ForeignKey("threads.id"), nullable=False, index=True)
-    sender_id = db.Column(db.Integer, nullable=False, index=True)  # ← Removed db.ForeignKey
+    sender_id = db.Column(db.Integer, nullable=False, index=True)  # no db.ForeignKey — see history note
 
     text_content = db.Column(db.Text, nullable=False, default="")
 
-    # Attachment (single file per message)
-    # NOTE: old `attachment` column (String 255) is superseded by attachment_url (String 500)
-    attachment      = db.Column(db.String(255), nullable=True)   # legacy — kept for migration safety
+    # Attachment (single file per message). Legacy `attachment` column
+    # (String 255) is superseded by attachment_url (String 500) but kept
+    # for migration safety.
+    attachment      = db.Column(db.String(255), nullable=True)
     attachment_url  = db.Column(db.String(500), nullable=True)
     attachment_name = db.Column(db.String(255), nullable=True)
     attachment_type = db.Column(db.String(50),  nullable=True)   # "image" | "video" | "document"
@@ -1087,16 +1055,12 @@ class ThreadMessage(db.Model):
     is_edited  = db.Column(db.Boolean, default=False)
     is_deleted = db.Column(db.Boolean, default=False)
 
-    # ── NEW: Delivery / read status ───────────────────────────────────────
     # Values: 'sent' | 'delivered' | 'read'
-    # Alembic will generate: ALTER TABLE thread_messages ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sent'
     status = db.Column(db.Enum(MessageDeliveryStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=MessageDeliveryStatus.SENT.value)
 
-    # Timestamps
     sent_at   = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)
     edited_at = db.Column(db.DateTime, nullable=True)
 
-    # Relationships
     reactions = db.relationship(
         "ThreadMessageReaction",
         backref="message",
@@ -1117,8 +1081,9 @@ class ThreadMessage(db.Model):
         db.Index("idx_tm_thread_pinned", "thread_id", "is_pinned", "is_deleted"),
         # Partial index: only index non-read messages (avoids bloat from fully-read history)
         db.Index("idx_tm_status", "status", postgresql_where=db.text("status != 'read'")),
-        # Composite partial index for per-thread unread-count queries (MIGRATION-03)
-        # Speeds up the COUNT queries in get_my_threads; only indexes non-deleted rows.
+        # Composite partial index for per-thread unread-count queries;
+        # speeds up the COUNT queries in get_my_threads, indexing only
+        # non-deleted rows.
         db.Index("idx_tm_thread_unread", "thread_id", "sender_id", "is_deleted", "sent_at",
                  postgresql_where=db.text("is_deleted = FALSE")),
         # Partial index: only index messages with a non-null AI personality
@@ -1130,14 +1095,12 @@ class ThreadMessage(db.Model):
         return f"<ThreadMessage {self.id} in Thread {self.thread_id}>"
 
 
-# ============================================================================
-# [ADD] ThreadMessageReaction — mirrors MessageReaction from the DM system.
-# One reaction per user per message (UniqueConstraint).
-# Sending the same emoji again toggles it off (handled in WS manager).
-# ============================================================================
-
 class ThreadMessageReaction(db.Model):
-    """Emoji reactions on thread messages."""
+    """
+    Emoji reactions on thread messages. One reaction per user per message
+    (UniqueConstraint). Sending the same emoji again toggles it off
+    (handled in the WS manager).
+    """
     __tablename__ = "thread_message_reactions"
 
     id         = db.Column(db.Integer, primary_key=True)
@@ -1161,12 +1124,6 @@ class ThreadMessageReaction(db.Model):
     def __repr__(self):
         return f"<ThreadMessageReaction {self.emoji} by User {self.user_id} on Msg {self.message_id}>"
 
-
-# ============================================================================
-# NEW: ThreadMessageReadReceipt
-# Per-user read receipts — powers delivered/read double ticks.
-# Alembic will generate CREATE TABLE thread_message_read_receipts …
-# ============================================================================
 
 class ThreadMessageReadReceipt(db.Model):
     """Per-user read receipts for thread messages. Powers delivered/read ticks."""
@@ -1192,16 +1149,13 @@ class ThreadMessageReadReceipt(db.Model):
         return f"<ThreadMessageReadReceipt: User {self.user_id} read Msg {self.message_id}>"
 
 
-# ============================================================================
-# ThreadMessageAttachment — MIGRATION-01
-# Dedicated child table for multiple attachments per thread message.
-# The legacy single-attachment columns on ThreadMessage are preserved as
-# nullable for backward compatibility; they will be dropped in a later release
-# once all reads go through this table (Phase 3 of migration-01).
-# ============================================================================
-
 class ThreadMessageAttachment(db.Model):
-    """Multiple attachments per thread message. Replaces single-attachment columns on ThreadMessage."""
+    """
+    Multiple attachments per thread message. Replaces the legacy
+    single-attachment columns on ThreadMessage, which remain nullable for
+    backward compatibility and will be dropped in a later release once
+    all reads go through this table.
+    """
     __tablename__ = "thread_message_attachments"
 
     id              = db.Column(db.Integer, primary_key=True)
@@ -1244,12 +1198,6 @@ class ThreadMessageAttachment(db.Model):
         }
 
 
-# ============================================================================
-# NEW: ThreadMeetingNote
-# AI-generated structured meeting notes for a thread conversation.
-# Alembic will generate CREATE TABLE thread_meeting_notes …
-# ============================================================================
-
 class ThreadMeetingNote(db.Model):
     """AI-generated structured meeting notes for a thread conversation."""
     __tablename__ = "thread_meeting_notes"
@@ -1272,9 +1220,6 @@ class ThreadMeetingNote(db.Model):
         return f"<ThreadMeetingNote {self.id}: Thread {self.thread_id}>"
 
 
-# ============================================================================
-# ============================================================================
-
 class Connection(db.Model):
     """Friend/connection system."""
     __tablename__ = "connections"
@@ -1289,19 +1234,18 @@ class Connection(db.Model):
     requester_notes  = db.Column(db.Text)
     receiver_notes   = db.Column(db.Text)
 
-    # ✅ ADD THIS FIELD
     requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     is_seen = db.Column(db.Boolean, default=False)
 
-    # C-3 fix: explicit "who blocked whom" column. Previously block_user()
-    # swapped requester_id/receiver_id on an existing row so that
-    # "receiver_id" would always mean "the blocker" — that corrupted the
-    # original connection-request history and disagreed with at least two
-    # other independently-written "is this blocked" checks elsewhere in the
-    # codebase. blocked_by_id is the single, unambiguous source of truth for
-    # that question; requester_id/receiver_id are never mutated to express
-    # blocking anymore. NULL unless status == "blocked".
+    # Explicit "who blocked whom" column. block_user() previously swapped
+    # requester_id/receiver_id on an existing row so that "receiver_id"
+    # would always mean "the blocker" — that corrupted the original
+    # connection-request history and disagreed with other independently
+    # written "is this blocked" checks elsewhere. blocked_by_id is the
+    # single, unambiguous source of truth for that question;
+    # requester_id/receiver_id are never mutated to express blocking
+    # anymore. NULL unless status == "blocked".
     blocked_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
 
     __table_args__ = (
@@ -1314,25 +1258,18 @@ class Connection(db.Model):
 
 
 # ----------------------------------------------------------------------------
-# Document 4 §3.1: functional (expression) index on the normalized/unordered
-# connection pair plus status, serving every or_(and_(...), and_(...))
-# bidirectional connection lookup across connections.py/messages.py/search.py.
+# Functional (expression) index on the normalized/unordered connection pair
+# plus status, serving every or_(and_(...), and_(...)) bidirectional
+# connection lookup across connections.py/messages.py/search.py.
 #
-# NOTE — this is a *lookup-speed* index only, and is deliberately NOT unique
-# and NOT the same thing as the reverse-duplicate-prevention index specced in
-# Document 1 §5 / Document 4 §3.1's own "or, more efficiently, a single
-# expression index..." aside. That one is a separate, UNIQUE functional index
-# on just (LEAST(requester_id,receiver_id), GREATEST(requester_id,receiver_id))
-# with no status column, whose job is to make a reverse-direction duplicate
-# connection row impossible to insert. Implementing both here would conflate
-# a constraint with a performance index; only the lookup-speed index
-# requested for this phase is added. The uniqueness guarantee remains a
-# separate, not-yet-implemented item — flag if you want it added too.
+# NOTE — this is a *lookup-speed* index only, and is deliberately NOT
+# unique. The uniqueness guarantee on just the pair (no status) is a
+# separate index, immediately below.
 #
 # LEAST/GREATEST are Postgres functions with no SQLite equivalent. Unlike
-# postgresql_using=... on a plain db.Index() (which only changes the index
-# *type* on Postgres but still emits the same DDL, including the LEAST/
-# GREATEST expressions, on every dialect — this was tested and confirmed to
+# postgresql_using=... on a plain db.Index() (which only changes the
+# index *type* on Postgres but still emits the same DDL, including the
+# LEAST/GREATEST expressions, on every dialect — tested and confirmed to
 # break `db.create_all()` on SQLite), a raw DDL() gated with
 # .execute_if(dialect="postgresql") is skipped entirely on non-Postgres
 # dialects, which is what actually makes this Postgres-only.
@@ -1350,24 +1287,15 @@ event.listen(
 )
 
 # ----------------------------------------------------------------------------
-# AUDIT ENG-2 FIX: the UNIQUE functional index the comment block above
-# already names as "not-yet-implemented — flag if you want it added."
-# Unlike idx_connections_pair_status above (a lookup-speed index only,
-# deliberately non-unique, includes status), this is a pure uniqueness
-# guarantee on JUST the normalized/unordered pair — no status column —
-# so a reverse-direction duplicate Connection row (A,B) + (B,A) becomes
-# impossible to insert at the database level, closing the race where two
-# users sending each other a connection request at close to the same
-# instant could both pass send_connection_request's plain SELECT-based
-# "no existing connection" check and both INSERT.
+# UNIQUE functional index on JUST the normalized/unordered pair — no status
+# column — so a reverse-direction duplicate Connection row (A,B) + (B,A)
+# becomes impossible to insert at the database level, closing the race
+# where two users sending each other a connection request at close to the
+# same instant could both pass send_connection_request's plain
+# SELECT-based "no existing connection" check and both INSERT.
 #
 # Same DDL + execute_if(dialect="postgresql") pattern as
-# idx_connections_pair_status immediately above, for the identical
-# reason: LEAST/GREATEST have no SQLite equivalent, so this must be
-# skipped entirely (not just index-type-changed) on non-Postgres
-# dialects, which only a raw DDL() gated with .execute_if(...) achieves —
-# see that block's own comment for the full explanation of why
-# postgresql_using=... on a plain db.Index() does not accomplish this.
+# idx_connections_pair_status above, for the identical reason.
 #
 # send_connection_request (routes/student/connections/crud.py) catches
 # the resulting IntegrityError and responds with the same "already
@@ -1426,14 +1354,11 @@ class Message(db.Model):
     __tablename__ = "messages"
 
     id          = db.Column(db.Integer, primary_key=True)
-    # Document 4 §3.2: deliberately left as RESTRICT (Postgres/SQLAlchemy's
-    # default when no ondelete= is given) rather than CASCADE — cascading a
-    # user deletion into these would silently delete the *other* user's
-    # message history too, which is not the intended behavior. Confirmed
-    # with the user (2026-08-04). If account deletion is ever built as a
-    # feature, the right model is a soft-delete/anonymization flow on User,
-    # not a hard DELETE — that's a separate product decision, not addressed
-    # here.
+    # Deliberately left as RESTRICT (the default when no ondelete= is
+    # given) rather than CASCADE — cascading a user deletion into these
+    # would silently delete the *other* user's message history too. If
+    # account deletion is ever built as a feature, the right model is a
+    # soft-delete/anonymization flow on User, not a hard DELETE.
     sender_id   = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     resources   = db.Column(MutableList.as_mutable(db.JSON), default=list)
     receiver_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
@@ -1599,8 +1524,8 @@ class CommentLike(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('comment_id', 'student_id', name='unique_comment_like'),
-        # Document 4 §3.1: serves batch "did I like any of these comments"
-        # reverse lookups (WHERE student_id = X AND comment_id IN (...)).
+        # Serves batch "did I like any of these comments" reverse lookups
+        # (WHERE student_id = X AND comment_id IN (...)).
         db.Index("idx_comment_likes_student_comment", "student_id", "comment_id"),
     )
 
@@ -1620,8 +1545,8 @@ class PostReaction(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('post_id', 'student_id', name='unique_post_reaction'),
-        # Document 4 §3.1: serves batch "did I react to any of these posts"
-        # reverse lookups (WHERE student_id = X AND post_id IN (...)).
+        # Serves batch "did I react to any of these posts" reverse lookups
+        # (WHERE student_id = X AND post_id IN (...)).
         db.Index("idx_post_reactions_student_post", "student_id", "post_id"),
     )
 
@@ -1694,7 +1619,7 @@ class ReputationHistory(db.Model):
     __tablename__ = "reputation_history"
 
     id             = db.Column(db.Integer, primary_key=True)
-    # Document 4 §3.2: CASCADE — meaningless without the user.
+    # CASCADE — meaningless without the user.
     user_id        = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     action         = db.Column(db.String(100), nullable=False)
     points_change  = db.Column(db.Integer, nullable=False)
@@ -1742,13 +1667,10 @@ class AIConversation(db.Model):
     created_at      = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     last_message_at = db.Column(db.DateTime)
 
-    # Learnora Chat Audit — Issue 5: this was the one table in this file
-    # with no index at all on its most-filtered column, despite backing
-    # the hottest query in the feature — get_conversations() filters by
-    # (user_id, is_archived) and sorts by last_message_at on every
-    # sidebar load. A composite index covering exactly that pattern also
-    # serves plain user_id-only lookups via the leftmost-prefix rule, so
-    # a separate single-column index isn't needed on top of it.
+    # Composite index covering get_conversations()'s hottest query pattern
+    # — filter by (user_id, is_archived), sort by last_message_at — on
+    # every sidebar load. Also serves plain user_id-only lookups via the
+    # leftmost-prefix rule, so a separate single-column index isn't needed.
     __table_args__ = (
         db.Index("idx_ai_conv_user_archived_lastmsg", "user_id", "is_archived", "last_message_at"),
     )
@@ -1775,7 +1697,7 @@ class UserActivity(db.Model):
     __tablename__ = "user_activity"
 
     id            = db.Column(db.Integer, primary_key=True)
-    # Document 4 §3.2: CASCADE — meaningless without the user.
+    # CASCADE — meaningless without the user.
     user_id       = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     activity_date = db.Column(db.Date, default=datetime.date.today, nullable=False, index=True)
 
@@ -1799,14 +1721,12 @@ class SearchIndex(db.Model):
     """
     Full-text search index for faster queries.
 
-    H-6 note: this table is currently NEVER populated or queried anywhere
-    in the codebase — every search in routes/student/search.py uses
-    unindexed `ILIKE '%term%'` against the live tables instead. Left in
-    place (not dropped) for this pass, since removing it is a destructive
-    schema change that needs a real migration and a product decision on
-    whether full-text search is still planned — flagged in the
-    implementation summary rather than silently deleted or silently wired
-    up as a guess.
+    Currently NEVER populated or queried anywhere in the codebase — every
+    search in routes/student/search.py uses unindexed `ILIKE '%term%'`
+    against the live tables instead. Left in place (not dropped), since
+    removing it is a destructive schema change that needs a real
+    migration and a product decision on whether full-text search is
+    still planned.
     """
     __tablename__ = "search_index"
 
@@ -1832,9 +1752,8 @@ class Notification(db.Model):
     __tablename__ = "notifications"
 
     id                = db.Column(db.Integer, primary_key=True)
-    # Document 4 §3.2: CASCADE — a notification is meaningless without its
-    # user; if a user account is ever hard-deleted, their notifications
-    # should go with it.
+    # CASCADE — a notification is meaningless without its user; if a user
+    # account is ever hard-deleted, their notifications should go with it.
     user_id           = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     title             = db.Column(db.String(200), nullable=False)
     body              = db.Column(db.Text, nullable=False)
@@ -1934,26 +1853,20 @@ class PasswordResetToken(db.Model):
 
 class EmailVerificationToken(db.Model):
     """
-    Auth-flow-audit fix (Finding #3): opaque, single-use, DB-backed email
-    verification tokens — the exact same pattern as PasswordResetToken,
-    replacing the stateless JWT previously issued by
-    utils.generate_verification_token / helpers.verify_token for this flow.
+    Opaque, single-use, DB-backed email verification token — the same
+    pattern as PasswordResetToken, replacing a previously stateless JWT.
 
-    Why this was needed: the old JWT stayed valid (decodable and
-    accepted by the route) for its full 5-hour `exp` window regardless of
-    how many times it had already been used, and a *first* successful
-    verification auto-logged the caller in. A leaked/forwarded
-    verification link was therefore a live session-hijack vector for up
-    to 5 hours. Mirroring PasswordResetToken's mark-used-on-first-use
-    design closes that gap the same way it was already closed for
-    password resets.
+    The old JWT stayed valid (decodable and accepted by the route) for
+    its full 5-hour `exp` window regardless of how many times it had
+    already been used, and a *first* successful verification
+    auto-logged the caller in — so a leaked/forwarded verification link
+    was a live session-hijack vector for up to 5 hours. Mirroring
+    PasswordResetToken's mark-used-on-first-use design closes that gap
+    the same way it was already closed for password resets.
 
     verify_token()/generate_verification_token() (helpers.py / utils.py)
-    remain in place and ARE STILL USED — but only for the password-reset
-    email itself is no longer routed through them (that already used its
-    own opaque token); email verification is the flow being migrated
-    here. Nothing else in the codebase is confirmed to depend on the JWT
-    verification-token shape per the auth files reviewed.
+    remain in place and are still used elsewhere — only the email
+    verification flow was migrated to this opaque-token model.
     """
     __tablename__ = "email_verification_tokens"
 
@@ -1974,16 +1887,15 @@ class EmailVerificationToken(db.Model):
 
 class RefreshToken(db.Model):
     """
-    Auth-flow-audit fix (Finding #6): DB-backed refresh tokens with
-    rotation-on-use and reuse detection, replacing the previous design
-    where the refresh token was a stateless JWT reissued unchanged on
-    every /refresh-token call for its full 7-day life with no way to
-    revoke or detect replay of a stolen token.
+    DB-backed refresh tokens with rotation-on-use and reuse detection,
+    replacing a previous design where the refresh token was a stateless
+    JWT reissued unchanged on every /refresh-token call for its full
+    7-day life with no way to revoke or detect replay of a stolen token.
 
     Access tokens are UNCHANGED — still short-lived (30 min) stateless
     JWTs, since there's no benefit to making those DB-backed (they expire
-    fast enough that revocation isn't the primary defense for them).
-    Only the long-lived refresh token needed this.
+    fast enough that revocation isn't the primary defense for them). Only
+    the long-lived refresh token needed this.
 
     The raw token value is never stored — only its SHA-256 hash
     (`token_hash`), the same reasoning password hashing uses: a DB

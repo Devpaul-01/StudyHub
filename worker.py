@@ -66,25 +66,15 @@ def main() -> int:
     # Reuses the SAME create_app() factory app.py uses — this worker
     # process needs a Flask app context for the exact same reason RQ
     # job bodies in email_jobs.py need current_app.config (MAIL_*
-    # settings) and db.session (in maintenance_jobs.py). Passing
-    # config_class=None lets get_config() resolve FLASK_ENV/APP_ENV
-    # exactly as app.py's own module-level `app, socketio =
-    # create_app()` does — same environment-tiered config, same
-    # SECRET_KEY/DATABASE_URL validation at startup (fail fast if
-    # misconfigured, matching config.py's existing ValueError-on-import
-    # behavior).
+    # settings) and db.session (in maintenance_jobs.py).
     if os.environ.get("SCHEDULER_ENABLED", "true").lower() == "true":
-        # CRITICAL: a worker process must never also run the
-        # APScheduler-based scheduler (scheduler.py). Doing so would
-        # silently create an additional scheduler-lock-race participant
-        # beyond whatever API instances already have it enabled,
-        # multiplying lock contention for zero benefit — the worker
-        # isn't an HTTP-serving instance and has no reason to also
-        # decide when leaderboard snapshots fire. Fail loudly rather
-        # than silently letting this slip through, since it's exactly
-        # the kind of deployment-config mistake
-        # BACKGROUND_JOBS_IMPLEMENTATION.md §24 flags as the single
-        # highest operational risk in this phase.
+        # A worker process must never also run the APScheduler-based
+        # scheduler (scheduler.py) — doing so would silently create an
+        # additional scheduler-lock-race participant beyond whatever API
+        # instances already have it enabled, multiplying lock contention
+        # for zero benefit. Fail loudly rather than silently letting this
+        # slip through — BACKGROUND_JOBS_IMPLEMENTATION.md §24 flags this
+        # as the single highest operational risk in this phase.
         logger.error(
             "[WORKER_STARTUP_ABORTED] SCHEDULER_ENABLED must be 'false' for "
             "the worker process — refusing to start with the scheduler "

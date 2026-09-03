@@ -28,6 +28,7 @@ PyJWT
 redis
 apscheduler
 bleach
+eventlet
 requests
 Pillow
 pandas
@@ -35,7 +36,10 @@ docx2txt
 PyPDF2
 cloudinary
 firebase-admin
-gunicorn
+gunicorn[eventlet]
+sentry-sdk
+psycopg2
+bleach
 
 # New in this phase — background job queue (BACKGROUND_JOBS_IMPLEMENTATION.md §2)
 rq
