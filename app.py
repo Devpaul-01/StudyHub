@@ -31,7 +31,7 @@ from routes.student.helpers import (
 )
 from config import get_config
 from errors import AppError
-
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 import logging
@@ -97,6 +97,8 @@ def create_app(config_class=None):
     app.config.from_object(config_class)
     # In create_app() or config.py
     app.config['PREFERRED_URL_SCHEME'] = 'https'
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 
     # Sentry — must run after app.config exists (reads SENTRY_DSN /
     # FLASK_ENV from it), and as early as possible so it can capture
