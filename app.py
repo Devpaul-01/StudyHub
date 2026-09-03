@@ -95,6 +95,8 @@ def create_app(config_class=None):
     config_class = config_class or get_config()
     app = Flask(__name__)
     app.config.from_object(config_class)
+    # In create_app() or config.py
+    app.config['PREFERRED_URL_SCHEME'] = 'https'
 
     # Sentry — must run after app.config exists (reads SENTRY_DSN /
     # FLASK_ENV from it), and as early as possible so it can capture
