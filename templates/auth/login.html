@@ -64,6 +64,96 @@
         }
         .password-toggle-btn svg { display: block; }
         .password-toggle-btn .hidden { display: none; }
+
+        /* Demo credentials banner */
+        .demo-banner {
+            position: relative;
+            margin-bottom: 1.5rem;
+            padding: 14px 16px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(99,102,241,0.14), rgba(139,92,246,0.10));
+            border: 1px solid rgba(139,92,246,0.35);
+            font-family: 'DM Sans', sans-serif;
+        }
+        .demo-banner-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .demo-banner-head svg {
+            flex-shrink: 0;
+            color: #a78bfa;
+        }
+        .demo-banner-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: #e9e6fb;
+        }
+        .demo-cred-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 7px 10px;
+            border-radius: 8px;
+            background: rgba(15, 12, 41, 0.45);
+            margin-bottom: 6px;
+        }
+        .demo-cred-row:last-of-type { margin-bottom: 10px; }
+        .demo-cred-label {
+            font-size: 0.72rem;
+            color: rgba(243,245,251,0.5);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            min-width: 56px;
+        }
+        .demo-cred-value {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            color: #f3f5fb;
+            flex: 1;
+            text-align: left;
+            padding-left: 4px;
+            letter-spacing: 0.02em;
+        }
+        .demo-copy-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: rgba(243,245,251,0.45);
+            cursor: pointer;
+            transition: color 0.15s, background 0.15s;
+            flex-shrink: 0;
+        }
+        .demo-copy-btn:hover {
+            color: #a78bfa;
+            background: rgba(139,92,246,0.15);
+        }
+        .demo-copy-btn svg { display: block; pointer-events: none; }
+        .demo-autofill-btn {
+            width: 100%;
+            padding: 9px;
+            border-radius: 8px;
+            border: 1px solid rgba(139,92,246,0.4);
+            background: rgba(99,102,241,0.12);
+            color: #c4b5fd;
+            font-family: 'DM Sans', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .demo-autofill-btn:hover {
+            background: rgba(99,102,241,0.22);
+            border-color: rgba(139,92,246,0.6);
+        }
     </style>
 </head>
 <body>
@@ -86,6 +176,39 @@
             <div class="auth-header">
                 <h1 class="auth-title">Welcome back</h1>
                 <p class="auth-subtitle">Pick up where you left off — your people are waiting.</p>
+            </div>
+
+            <!-- Demo credentials -->
+            <div class="demo-banner">
+                <div class="demo-banner-head">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="16" x2="12" y2="12"></line>
+                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
+                    <span class="demo-banner-title">Recruiter / reviewer? Skip signup — use the demo account</span>
+                </div>
+                <div class="demo-cred-row">
+                    <span class="demo-cred-label">User</span>
+                    <span class="demo-cred-value" id="demo-username">demo_reviewer</span>
+                    <button type="button" class="demo-copy-btn" data-copy-target="demo-username" aria-label="Copy username">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="demo-cred-row">
+                    <span class="demo-cred-label">Pass</span>
+                    <span class="demo-cred-value" id="demo-password">••••••••••••</span>
+                    <button type="button" class="demo-copy-btn" data-copy-target="demo-password" data-real-value="" aria-label="Copy password">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                    </button>
+                </div>
+                <button type="button" class="demo-autofill-btn" id="demo-autofill-btn">Autofill demo login</button>
             </div>
 
             <!-- Form -->
@@ -212,6 +335,36 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Auto-focus
     document.getElementById('username_or_email').focus();
+
+    // Demo credentials: copy + autofill
+    // NOTE: swap DEMO_USERNAME / DEMO_PASSWORD for your real sandboxed
+    // demo account. Don't reuse a real user's credentials here — create
+    // one dedicated demo account with a unique password and no write
+    // access to anything you don't want a stranger touching.
+    const DEMO_USERNAME = 'john.doe';
+    const DEMO_PASSWORD = 'password123';
+
+    document.getElementById('demo-password').textContent = '•'.repeat(DEMO_PASSWORD.length);
+
+    document.querySelectorAll('.demo-copy-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const targetId = btn.dataset.copyTarget;
+            const value = targetId === 'demo-password' ? DEMO_PASSWORD : DEMO_USERNAME;
+            try {
+                await navigator.clipboard.writeText(value);
+                const original = btn.innerHTML;
+                btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+                setTimeout(() => { btn.innerHTML = original; }, 1200);
+                if (typeof showToast === 'function') showToast('Copied to clipboard', 'success', 1500);
+            } catch (e) { /* clipboard unavailable, no-op */ }
+        });
+    });
+
+    document.getElementById('demo-autofill-btn').addEventListener('click', () => {
+        document.getElementById('username_or_email').value = DEMO_USERNAME;
+        document.getElementById('password').value = DEMO_PASSWORD;
+        if (typeof showToast === 'function') showToast('Demo credentials filled in', 'info', 1500);
+    });
 
     // Password toggle
     const passwordInput = document.getElementById('password');
