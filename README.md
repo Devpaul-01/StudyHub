@@ -1,6 +1,8 @@
 # StudyHub — Peer Academic Collaboration Platform
 
-**Status:** Actively in development — core systems are functional and I use them daily while building, but the product is not yet feature-complete or deployed.
+**Status:** Actively in development — core systems are functional and I use them daily while building, but the product is not yet feature-complete.
+
+**Live:** [https://studyhub-two-psi.vercel.app/](https://studyhub-two-psi.vercel.app/)
 
 StudyHub is a peer-to-peer academic platform for a university student body, built around one idea: reputation earned by helping other students should be the platform's actual currency, not a vanity number bolted onto a forum. It combines a Q&A/discussion feed, a connections-based social graph, private group chat (Threads), a homework help marketplace, live collaborative study sessions, and a multi-provider AI study assistant ("Learnora") into a single system where almost every feature either produces reputation, consumes it as a signal, or reinforces the behavior that generates it.
 
@@ -128,7 +130,7 @@ I'm building this in the open and it isn't finished — there's no live deployme
 - **Single-process constraints, narrowed but not eliminated.** The scheduler and WebSocket presence/typing state still live in one process's memory, which means running more than one web worker would fragment both. AI provider failover state (cooldowns, blacklist, rotation, discovered models) no longer has this limitation — it moved to Redis specifically so it works correctly across multiple instances, with a kill switch back to the old in-process behavior if needed. A distributed scheduler is the named future direction for the two subsystems that remain single-process.
 - **Two real-time transports exist side-by-side.** A legacy general-purpose WebSocket manager still handles some non-messaging broadcasts, while a newer, purpose-built manager owns all direct-message delivery with stricter read-receipt semantics. This is an intentional interim state from an in-progress migration, not an oversight.
 - **Redis is now load-bearing for one subsystem, groundwork for others.** It's the shared state store for AI provider failover (above); `RATE_LIMIT_STORAGE_URI` is still defined ahead of the code that will use it, as groundwork for a planned rate-limiting phase.
-- **No live URL yet** — the project runs locally / in development while the remaining features are finished.
+- **Live deployment:** [https://studyhub-two-psi.vercel.app/](https://studyhub-two-psi.vercel.app/) — while the remaining features are finished.
 
 ---
 
