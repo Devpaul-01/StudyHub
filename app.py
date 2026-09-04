@@ -5,7 +5,7 @@
 from dotenv import load_dotenv
 import os
 
-# This MUST run before any local module is imported. Several modules
+# FIX: this MUST run before any local module is imported. Several modules
 # (routes/student/auth.py in particular) read os.environ.get(...) at
 # MODULE IMPORT TIME (to build the google_bp blueprint), not inside a
 # function. If load_dotenv() runs after those imports, os.environ is still
@@ -31,7 +31,7 @@ from routes.student.helpers import (
 )
 from config import get_config
 from errors import AppError
-
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 import logging
@@ -46,10 +46,10 @@ os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 # ============================================================================
 # Logging: ExtraFormatter
 # ============================================================================
-# logger.info(..., extra={...}) attaches those fields to the LogRecord, but
-# the default Formatter (and Flask's default logger config) never prints
-# them — they were being silently discarded. This formatter appends any
-# non-standard fields as JSON so extra={...} calls throughout the app
+# FIX: logger.info(..., extra={...}) attaches those fields to the LogRecord,
+# but the default Formatter (and Flask's default logger config) never
+# prints them — they were being silently discarded. This formatter appends
+# any non-standard fields as JSON so extra={...} calls throughout the app
 # (e.g. routes/student/posts/*.py's request_id/author_id/etc. debug logs)
 # actually show up in output instead of only living in a message string.
 _STANDARD_LOG_ATTRS = set(vars(logging.LogRecord('', 0, '', 0, '', (), None)).keys()) | {
@@ -76,9 +76,13 @@ class ExtraFormatter(logging.Formatter):
 # ============================================================================
 # Configuration
 # ============================================================================
-# The Config class that used to be defined inline here now lives in
-# config.py as a small hierarchy (Config / DevelopmentConfig /
-# TestingConfig / ProductionConfig), selected via FLASK_ENV / APP_ENV.
+# Phase 0 refactor: the Config class that used to be defined inline here now
+# lives in config.py as a small hierarchy (Config / DevelopmentConfig /
+# TestingConfig / ProductionConfig), selected via FLASK_ENV / APP_ENV. This
+# is the fix for the previously-flagged "debug=True hardcoded in __main__
+# contradicts Config.DEBUG=False" inconsistency (see the __main__ block
+# below) — DEBUG now comes from whichever config tier is actually selected,
+# not a hardcoded literal.
 migrate = Migrate()
 
 
@@ -91,6 +95,10 @@ def create_app(config_class=None):
     config_class = config_class or get_config()
     app = Flask(__name__)
     app.config.from_object(config_class)
+    # In create_app() or config.py
+    app.config['PREFERRED_URL_SCHEME'] = 'https'
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 
     # Sentry — must run after app.config exists (reads SENTRY_DSN /
     # FLASK_ENV from it), and as early as possible so it can capture
@@ -100,8 +108,13 @@ def create_app(config_class=None):
     init_sentry(app)
 
     # ========================================================================
-    # CORS
+    # CORS (AUDIT ENG-11)
     # ========================================================================
+    # config.py already defined CORS_ALLOWED_ORIGINS but nothing actually
+    # read it — flask-cors wasn't even a dependency. Confirmed with you
+    # directly that no reverse proxy/CDN in front of this app handles CORS,
+    # so it needs to be enforced here at the Flask layer.
+    #
     # supports_credentials=True is REQUIRED, not optional: this app
     # authenticates via cookies (access_token/refresh_token/csrf_token, see
     # helpers.py::set_auth_cookies) rather than an Authorization header, so
@@ -118,22 +131,33 @@ def create_app(config_class=None):
     # app's logic is even reached. CORS_ALLOWED_ORIGINS MUST be set to your
     # real frontend origin(s) (e.g. "https://app.studyhub.com") in any
     # environment where a cross-origin frontend needs to authenticate.
+    #
+    # NEW DEPENDENCY: flask-cors must be added to requirements.txt (or
+    # whatever your dependency file is) — it was not previously a
+    # dependency of this project, per the audit's own finding.
     CORS(
         app,
         origins=app.config.get("CORS_ALLOWED_ORIGINS", ["*"]),
         supports_credentials=True,
     )
 
-    # Does not print the actual MAIL_USERNAME value — low sensitivity (an
-    # email address, not a secret), but this diagnostic runs on every
-    # create_app() call including under Gunicorn in production, so there's
+    # Startup diagnostic (moved here from the old inline Config class body,
+    # where it ran once per config subclass at import time rather than once
+    # per actual app instance — same message, better-scoped side effect).
+    #
+    # AUDIT security-hygiene fix: no longer prints the actual MAIL_USERNAME
+    # value. Low sensitivity as the audit itself notes (an email address,
+    # not a secret), but this diagnostic runs on every create_app() call —
+    # including under Gunicorn in production, not just direct `python
+    # app.py` runs like the removed DATABASE_URL print above — so there's
     # no reason to print the value itself when confirming it's *set* is
-    # all this diagnostic is for.
+    # all this diagnostic is actually for.
     if not app.config.get('MAIL_USERNAME') or not app.config.get('MAIL_PASSWORD'):
         print("⚠️  WARNING: Email credentials not configured!")
     else:
         print("✅ Email configured")
     
+    # Initialize extensions
     db.init_app(app)
     mail.init_app(app)
     migrate.init_app(app, db)
@@ -170,26 +194,35 @@ def create_app(config_class=None):
     # websocket_events.py is not part of any of the above — it's confirmed
     # unused (not imported by this file or anywhere else) and was
     # deliberately left untouched.
+    # WebSocket Initialization (CRITICAL - must be in correct order)
     # ========================================================================
-    # Step 1: base message WebSocket (creates socketio instance). Uses
-    # async_mode='threading' + simple-websocket (Python 3.13 safe). Also
-    # wires message_queue=REDIS_URL into the SocketIO constructor (see
-    # websocket_messages.py::init_app) — this is what makes emit(...,
-    # room=X) calls reach clients connected to OTHER application
-    # instances, not just this one.
+    # Step 1: Initialize base message WebSocket (creates socketio instance).
+    #         Uses async_mode='threading' + simple-websocket (Python 3.13 safe).
+    #         Install dep: pip install simple-websocket
+    #         Also wires message_queue=REDIS_URL into the SocketIO
+    #         constructor (see websocket_messages.py::init_app) — this is
+    #         what makes emit(..., room=X) calls reach clients connected
+    #         to OTHER application instances, not just this one.
     socketio = init_message_websocket(app)
-
-    # Step 2: thread WebSocket handlers on the same socketio instance.
-    # This MUST happen BEFORE the server starts.
+    
+    # Step 2: Initialize thread WebSocket handlers using the same socketio instance.
+    #         This MUST happen BEFORE the server starts.
     thread_ws_manager.init_socketio(app, socketio)
     
     # ========================================================================
     # Logging Configuration
     # ========================================================================
-    # Runs in every environment (not gated behind app.debug/app.testing) so
-    # INFO/DEBUG logs and extra={...} fields (request_id, author_id, etc.
-    # from routes like posts/feed) are visible in local/dev runs too, not
-    # just when Flask's default WARNING+ handler would otherwise apply.
+    # FIX: this used to be gated behind `if not app.debug and not app.testing`,
+    # so in local/dev runs (app.debug=True) NONE of this ever executed —
+    # app.logger fell back to Flask's default handler, which is WARNING+
+    # only and has no formatter that prints extra={...} fields. That's why
+    # INFO/DEBUG logs and extra fields (request_id, author_id, etc. from
+    # routes like posts/feed) were invisible. Logging config now always
+    # runs, in every environment.
+    #
+    # Console handler — always attached, so `flask run` / `python app.py`
+    # show everything live in the terminal, not just what ends up in the
+    # log file.
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
     console_handler.setFormatter(ExtraFormatter(
@@ -198,6 +231,9 @@ def create_app(config_class=None):
     app.logger.handlers = [console_handler]
     app.logger.propagate = False
 
+    # File handler — kept for production/persistent logs, now also uses
+    # ExtraFormatter so extra={...} fields land in the log file too, and
+    # no longer gated behind app.debug/app.testing.
     if not os.path.exists('logs'):
         os.mkdir('logs')
 
@@ -212,9 +248,10 @@ def create_app(config_class=None):
     file_handler.setLevel(logging.DEBUG)
     app.logger.addHandler(file_handler)
 
-    # DEBUG so all log types are shown, not just info+. Dial back to
-    # logging.INFO once you're done chasing the bug — DEBUG is chatty and
-    # not meant to stay on indefinitely in production.
+    # DEBUG so all log types (debug/info/warning/error) are shown, not just
+    # info+. Dial back to logging.INFO once you're done chasing the bug —
+    # DEBUG is chatty (per-post assembly logs, query timings, etc.) and not
+    # meant to stay on indefinitely in production.
     app.logger.setLevel(logging.DEBUG)
     app.logger.info('StudyHub startup')
     
@@ -225,11 +262,12 @@ def create_app(config_class=None):
     @app.errorhandler(AppError)
     def handle_app_error(err):
         """
-        Centralized handler for the typed-exception hierarchy (errors.py).
-        Produces the same {"status": "error", "message": ...} response
+        Centralized handler for the new typed-exception hierarchy (errors.py).
+        Produces the exact same {"status": "error", "message": ...} response
         shape the rest of the app already returns via error_response(), so
-        this just gives services/routes a `raise SomeError(...)` alternative
-        to manually building that dict inline.
+        no API contract changes for any existing caller — this just gives
+        services/routes a `raise SomeError(...)` alternative to manually
+        building that dict inline.
         """
         if err.status_code >= 500:
             app.logger.error(f"{type(err).__name__}: {err}", exc_info=True)
@@ -280,11 +318,12 @@ def create_app(config_class=None):
     def set_security_headers(response):
         """Add security headers to all responses.
 
-        Guards against WebSocket upgrade requests: when async_mode='threading'
-        is used, this hook fires on WebSocket connections too, and setting
-        headers on an already-upgraded connection raises
+        FIX: Guard against WebSocket upgrade requests. When async_mode='threading'
+        is used, the after_request hook fires on WebSocket connections too.
+        Trying to set headers on an already-upgraded connection causes:
             AssertionError: write() before start_response
         """
+        # Skip header injection for WebSocket upgrade connections
         if request.environ.get('wsgi.websocket'):
             return response
 
@@ -292,6 +331,7 @@ def create_app(config_class=None):
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
         
+        # Only set HSTS in production with HTTPS
         if not app.debug and app.config.get('SESSION_COOKIE_SECURE'):
             response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         
@@ -331,12 +371,15 @@ def create_app(config_class=None):
     def health_check():
         """Health check endpoint for monitoring"""
         try:
+            # Check database connection
             db.session.execute(text('SELECT 1'))
             
+            # Check email configuration
             email_status = bool(
                 app.config.get('MAIL_USERNAME') and app.config.get('MAIL_PASSWORD')
             )
 
+            # ── Scheduler status ───────────────────────────────────────────────
             from scheduler import scheduler
             scheduler_jobs = []
             if scheduler.running:
@@ -416,6 +459,7 @@ Disallow: /student/profile/
 # Application Instance
 # ============================================================================
 
+# Create app and socketio using the factory
 app, socketio = create_app()
 
 
@@ -427,6 +471,7 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
     host = "0.0.0.0"
 
+    # ── Scheduler status line for startup banner ───────────────────────────────
     from scheduler import scheduler as _sched
     sched_status = "✅ Running" if _sched.running else "❌ Not started"
     sched_jobs   = len(_sched.get_jobs()) if _sched.running else 0
@@ -439,17 +484,33 @@ if __name__ == "__main__":
         ]
         next_runs = "\n" + "\n".join(lines)
     print("Loaded:", loaded)
-    # Deliberately not printing DATABASE_URL/DATABASE_NEW_URL here — both
-    # can contain an embedded DB password. `loaded` above already confirms
-    # .env loaded without needing to expose any part of the connection
-    # string. Gunicorn (the real production entry point) never executes
-    # this __main__ block, but this is exactly the kind of line that ends
-    # up in a terminal recording, shell history, or CI log otherwise.
+    # AUDIT security-hygiene fix: removed `print("DATABASE_URL:",
+    # os.getenv("DATABASE_URL"))` — this printed the raw connection
+    # string, including any embedded DB password, to stdout on every
+    # `python app.py` direct run. Gunicorn (the actual production entry
+    # point) never executes this __main__ block, so production risk was
+    # already low, but this is exactly the kind of line that ends up in a
+    # terminal recording, shell history, or CI log if a `python app.py`
+    # smoke-test step is ever added — removed rather than redacted, since
+    # `loaded` above already confirms .env loaded without needing to
+    # expose any part of the connection string.
+
+
 
     print("\n" + "="*60)
     print("🚀 StudyHub Starting...")
     print("="*60)
     print(f"📧 Email:            {'✅ Configured' if os.environ.get('MAIL_USERNAME') else '❌ Not configured'}")
+    # In auth.py, after google_bp is defined:
+    # AUDIT security-hygiene fix (extending the same reasoning as the
+    # removed DATABASE_URL print above to this line, which the audit's
+    # single quoted example didn't name explicitly but is the identical
+    # exposure — DATABASE_NEW_URL is the same underlying connection
+    # string config.py's Config class reads via
+    # DATABASE_URL = os.environ.get('DATABASE_NEW_URL'), potentially
+    # including an embedded DB password): no longer prints the raw value.
+    
+    
     print(f"🗄️  Database:         {'✅ Configured' if os.environ.get('DATABASE_NEW_URL') else '❌ Not configured'}")
     print(f"🔑 Secret Key:       {'✅ Set' if os.environ.get('SECRET_KEY') else '❌ Missing'}")
     print(f"🌐 WebSocket:        threading + simple-websocket (Python 3.13 compatible)")
@@ -461,18 +522,26 @@ if __name__ == "__main__":
     print(f"🔗 Network access:    http://localhost:{port}")
     print("="*60 + "\n")
     
+    # Create database tables if they don't exist
     with app.app_context():
         db.create_all()
         print("✅ Database tables created/verified\n")
     
-    # use_reloader=False prevents scheduler double-start and avoids the
-    # threading WebSocket handler being registered twice.
-    #
+    # Run with SocketIO (socketio already has all handlers registered)
+    # NOTE: use_reloader=False is required — prevents scheduler double-start
+    #       and avoids the threading WebSocket handler being registered twice.
+    # Phase 0 fix: debug is now sourced from the environment-tiered config
+    # (config.py) instead of a hardcoded True that contradicted
+    # Config.DEBUG=False in every other context.
     # Newer Flask-SocketIO (threading async_mode) delegates to Werkzeug's
-    # dev server, which now refuses to run at all unless
-    # allow_unsafe_werkzeug=True is passed explicitly. This code path only
-    # runs under `if __name__ == "__main__"` (local/dev), never under
-    # Gunicorn, so it's safe to unblock here rather than in config.py.
+    # dev server under the hood, and Werkzeug now refuses to run at all
+    # unless allow_unsafe_werkzeug=True is passed explicitly — this is
+    # what was raising "RuntimeError: The Werkzeug web server is not
+    # designed to run in production." on every `python app.py` start.
+    # This code path only runs under `if __name__ == "__main__"` — i.e.
+    # local/dev runs — never under Gunicorn (see Production Entry Point
+    # section below), so it's safe to unblock it here rather than in
+    # config.py.
     socketio.run(
         app,
         debug=app.config.get("DEBUG", False),
@@ -486,9 +555,9 @@ if __name__ == "__main__":
 # ============================================================================
 # Production Entry Point (for Gunicorn)
 # ============================================================================
-# In production (Gunicorn), 'app' and 'socketio' are already created at
-# module level, with WebSocket handlers already registered from
-# create_app() running at import time.
+# In production (Gunicorn), the 'app' and 'socketio' variables are already
+# created at module level. The WebSocket handlers are already registered
+# because create_app() ran when the module loaded.
 #
 # Run with threading mode (no special worker class needed):
 #   gunicorn -w N app:app
