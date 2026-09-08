@@ -1,20 +1,21 @@
-name: Unit Tests
 
+name: Unit Tests
+ 
 # Runs the unit test suite only (tests/unit/). No integration tests, no
 # real Postgres, no real Redis, no real network calls — the suite is
 # fully isolated per UNIT_TEST_IMPLEMENTATION_PLAN.md §5, so no service
 # containers are started here.
-
+ 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
+ 
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-
+ 
     env:
       # config.py raises ValueError at IMPORT time if SECRET_KEY or
       # DATABASE_NEW_URL are unset (confirmed directly in config.py, and
@@ -32,24 +33,37 @@ jobs:
       RATE_LIMIT_ENABLED: "false"
       REDIS_URL: "redis://localhost:6399/0"
       FLASK_ENV: testing
-
+ 
     steps:
       - uses: actions/checkout@v4
-
+ 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
-
-      - name: Install application dependencies
+          # Cache key includes both dependency files so a change to
+          # either one busts the cache instead of silently reusing
+          # wheels resolved against the old combined graph.
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+ 
+      # Application and test dependencies are installed together in a
+      # single pip invocation so pip resolves ONE consistent dependency
+      # graph across both files. Installing them in two separate
+      # `pip install` steps (as before) lets the second install
+      # partially reinstall/shadow compiled extensions (e.g. numpy's
+      # .so, pulled in transitively via pandas) already unpacked by the
+      # first, leaving two on-disk copies importable in the same
+      # interpreter — the direct cause of the
+      # "ImportError: cannot load module more than once per process"
+      # collection failure seen in CI.
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
-
+          pip install -r requirements.txt -r requirements-test.txt
+ 
       - name: Run unit test suite
         run: |
           pytest tests/unit \
@@ -57,7 +71,7 @@ jobs:
             --cov=routes.student.helpers \
             --cov-report=term-missing \
             -v
-
+ 
       # Coverage is measured and reported (per UNIT_TEST_IMPLEMENTATION_PLAN.md
       # §13) but is informational only for this pass — not enforced as a
       # hard gate. See §13's own reasoning for why a pre-committed
