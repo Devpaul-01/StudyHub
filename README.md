@@ -71,7 +71,7 @@ Learnora is one AI infrastructure layer surfaced through five product moments (s
 
 **A homework marketplace built on top of the connections graph.** A private `Assignment` becomes visible to a student's accepted connections the moment it's marked shared-for-help. Priority scoring (urgency × difficulty × status) is a pure function computed fresh on every read, never persisted as a side effect of simply viewing the list.
 
-**Live study sessions with real collaborative state.** Two connected students can start an ad hoc session with a server-authoritative Pomodoro timer (elapsed time computed from wall-clock deltas, not trusted from the client), a shared notepad, live progress broadcasting, and an AI tutor scoped to the session's own notepad content.
+**Live study sessions with real collaborative state.** Two connected students can start an ad hoc session with a server-authoritative Pomodoro timer (elapsed time computed from wall-clock deltas, not trusted from the client), a shared notepad, live progress broadcasting, and an AI tutor scoped to the session's own notepad content. The session's real-time activity feed is not yet complete on the backend and is not wired up to the frontend — session state (timer, notepad) works end-to-end, but the activity feed is a known gap.
 
 **Learnora, embedded rather than standalone.** Reachable from a dedicated chat surface, thread `@mentions` (five distinct personas), per-post Q&A, live-session tutoring, and on-demand AI meeting notes — all through the same underlying multi-provider layer.
 
@@ -131,9 +131,6 @@ pip install -r requirements.txt
 # Set required environment variables (see below)
 cp .env.example .env  # if present — otherwise set the variables listed below directly
 
-# Run database migrations
-flask db upgrade
-
 # Start the API (Flask + Socket.IO)
 python app.py
 
@@ -172,6 +169,21 @@ pytest
 
 The unit suite (`pytest.ini`: `testpaths = tests/unit`) runs against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
+Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
+
+### Integration Tests
+
+```bash
+pip install -r requirements-test.txt
+pytest tests/integration
+```
+
+An integration suite has recently been added alongside the existing unit suite, exercising flows across real service boundaries rather than mocking them out. As with the unit suite, it runs against an in-memory SQLite database and `fakeredis` rather than live PostgreSQL/Redis instances.
+
+### CI
+
+There's no GitHub Actions CI pipeline yet — tests currently run locally only. Wiring up GitHub Actions to run the suite automatically on push/PR is planned.
+
 ## Deployment
 
 `Procfile` runs `python start-all.py` — the combined entry point (API + in-thread RQ worker + in-process scheduler) suited to a single-dyno-style deployment. For a topology with independent worker scaling, run `app.py` under Gunicorn and one or more standalone `worker.py` processes separately instead; both entry points share the same application factory and neither modifies the other's behavior.
@@ -185,6 +197,8 @@ This project went through a deliberate horizontal-scaling pass: WebSocket presen
 Two things remain process-local, and they're not the same case. Typing-indicator dedup bookkeeping and the raw thread/notification broadcast mechanics needed no migration at all — the broadcast is already cross-instance correct via Socket.IO's Redis-backed message queue, and typing dedup only suppresses a redundant client-side re-emit. Separately, and explicitly flagged as such in the code's own migration notes: the rate limiter gating Learnora's auto-reply-without-`@mention` behavior is still a genuine, working, process-local sliding-window limiter that hasn't been migrated yet — a real (if narrow) instance of the class of bug this whole refactor was meant to close, still outstanding for that one limiter. There's also a legacy general-purpose WebSocket manager that still handles some non-messaging broadcasts alongside a newer, purpose-built manager that owns all direct-message delivery — an intentional interim state from an in-progress migration.
 
 An honest current gap: cross-domain search (`ARCHITECTURE.md` §5.6) runs on unindexed `ILIKE` pattern matching. A `SearchIndex` table exists in the schema but is not populated or queried anywhere — it's dead code, not hidden infrastructure.
+
+Another honest current gap: the live study session's real-time activity feed is not implemented completely and is not wired up to the frontend yet.
 
 ---
 
