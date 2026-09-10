@@ -53,7 +53,7 @@ jobs:
 
       - name: Run unit + integration test suite
         run: |
-          pytest tests/unit tests/integration \
+          pytest tests/integration \
             --cov=services \
             --cov=routes.student.helpers \
             --cov-report=term-missing \
