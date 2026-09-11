@@ -438,7 +438,7 @@ def update_notification_settings(current_user):
         if not user:
             return error_response("User not found")
         
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         if not data:
             return error_response("No settings provided")
         
