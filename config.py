@@ -140,6 +140,31 @@ class TestingConfig(Config):
     TESTING = True
     RATE_LIMIT_STORAGE_URI = "memory://"
 
+    # Config.SQLALCHEMY_ENGINE_OPTIONS hardcodes Postgres/PgBouncer-only
+    # connect_args (sslmode=require, connect_timeout, statement_timeout
+    # via `options`). Test suites point SQLALCHEMY_DATABASE_URI at
+    # SQLite instead, and SQLite's DBAPI raises
+    # `TypeError: 'sslmode' is an invalid keyword argument for
+    # Connection()` if any of those keys reach it.
+    #
+    # This was previously "fixed" independently in both
+    # tests/unit/conftest.py and tests/integration/conftest.py via
+    # flask_app.config.update(SQLALCHEMY_ENGINE_OPTIONS=...) after the
+    # app object existed. That works when init_app is called afterward
+    # (unit conftest), but app.py::create_app() calls db.init_app(app)
+    # itself using whatever's in app.config at that point — so the
+    # integration fixture's later .update() was always too late, and
+    # Flask-SQLAlchemy had already bound the Postgres-only connect_args.
+    #
+    # Overriding it here means create_app() sees the correct value from
+    # the moment app.config.from_object(TestingConfig) runs, regardless
+    # of whether a fixture calls db.init_app() manually or lets
+    # create_app() do it. Empty dict = SQLAlchemy/SQLite defaults; test
+    # fixtures that need StaticPool + check_same_thread=False can still
+    # layer that on top via config.update() before create_all(), same
+    # as today.
+    SQLALCHEMY_ENGINE_OPTIONS = {}
+
 
 class ProductionConfig(Config):
     DEBUG = False
@@ -166,3 +191,4 @@ def get_config():
     """
     env = os.environ.get("FLASK_ENV") or os.environ.get("APP_ENV") or "production"
     return _ENV_TO_CONFIG.get(env.lower(), ProductionConfig)
+    
