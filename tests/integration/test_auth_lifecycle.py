@@ -226,7 +226,20 @@ class TestRefreshTokenRotation:
         assert new_refresh_cookie.value != old_refresh_cookie
 
     def test_refresh_with_invalid_token_returns_error_and_clears_cookies(self, client):
-        client.set_cookie("test.local", "refresh_token", "not-a-real-token")
+        # FIX: Werkzeug's Client.set_cookie signature is now
+        # set_cookie(key, value="", *, domain=..., path=..., **kwargs) —
+        # domain is keyword-only and no longer accepted positionally.
+        # The old 3-positional-arg call
+        # (client.set_cookie("test.local", "refresh_token", "not-a-real-token"))
+        # matched an older Werkzeug signature that put domain first; on
+        # the Werkzeug version this suite runs against it raised
+        # `TypeError: Client.set_cookie() takes from 2 to 3 positional
+        # arguments but 4 were given` before the request was ever sent.
+        # domain defaults to the app's SERVER_NAME via the
+        # _DomainAwareTestClient in conftest.py, but is passed explicitly
+        # here too for clarity since this test is specifically about
+        # cookie handling.
+        client.set_cookie("refresh_token", "not-a-real-token", domain="test.local")
         resp = client.post("/student/refresh-token")
         assert resp.status_code == 400
         body = resp.get_json()

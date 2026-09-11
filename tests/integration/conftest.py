@@ -57,6 +57,7 @@ import importlib
 from unittest.mock import Mock
 
 import pytest
+from flask.testing import FlaskClient
 
 
 # ============================================================================
@@ -159,6 +160,54 @@ def app_context(app):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter_storage(app):
+    """
+    FIX: the `app` fixture above is session-scoped (deliberately — see
+    its own docstring on why app *configuration* doesn't need recreating
+    per test), which means Flask-Limiter's in-memory storage
+    (RATELIMIT_STORAGE_URI="memory://") is also a single, long-lived
+    instance shared across every integration test in the whole run, not
+    reset between tests the way db_session resets table contents.
+
+    Any two tests that hit the same rate-limited route from the same key
+    (IP, for the pre-auth SENSITIVE_AUTH-tier routes — see ip_key() in
+    services/rate_limit_service.py) within the same fixed window
+    therefore share one running counter. Concretely:
+    test_auth_lifecycle.py alone POSTs to /student/login six times
+    (across TestLoginAndStreak, TestRefreshTokenRotation, TestLogout,
+    TestCSRFEnforcement) before test_rate_limiting.py ever runs — all
+    from the same test-client IP, all counted against the same 5-per-
+    minute budget — so by the time
+    TestSensitiveAuthRateLimit::test_login_rate_limit_returns_429_after_tier_limit
+    runs, the very first request in that test already gets 429 instead
+    of the expected first-five-succeed-then-429 pattern the test is
+    actually trying to verify.
+
+    Resetting the limiter's storage before every test isolates each
+    test's rate-limit budget from every other test's, which is the
+    correct behavior for a suite where any individual test may
+    legitimately want to hit a real per-minute ceiling — matching how
+    db_session already isolates database state per test despite `app`
+    itself being session-scoped.
+
+    NOTE: app.extensions["limiter"] is a *set* on this Flask-Limiter
+    version, not the Limiter instance itself (confirmed empirically) —
+    so this resets via the module-level `limiter` singleton
+    (services/rate_limit_service.py) directly, the same object
+    init_rate_limiter(app) wires up inside create_app().
+    """
+    from services.rate_limit_service import limiter as _limiter
+
+    try:
+        _limiter.storage.reset()
+    except Exception:
+        # Fail open — a storage backend that doesn't support reset()
+        # should never block test collection/execution.
+        pass
+    yield
+
+
 @pytest.fixture
 def db_session(app, app_context):
     """
@@ -180,10 +229,67 @@ def db_session(app, app_context):
             conn.execute(table.delete())
 
 
+# ============================================================================
+# FIX: Werkzeug's FlaskClient.get_cookie()/set_cookie() default `domain` to
+# "localhost" (see werkzeug.test.Client's signature) — but this app's
+# `app` fixture sets SERVER_NAME="test.local" (required for
+# url_for(..., _external=True) call sites like the verification/reset
+# links in auth.py), so every cookie this app's responses set is actually
+# stored in the test client's cookie jar under domain "test.local", not
+# "localhost".
+#
+# Every un-patched `client.get_cookie("access_token")` call across this
+# suite was therefore ALWAYS returning None regardless of whether the
+# server-side Set-Cookie header was correctly issued (confirmed via a
+# minimal repro: the Set-Cookie header is present and correct on the
+# response; only the test-side jar lookup was looking under the wrong
+# domain key). This silently broke:
+#   - every assertion of the shape `client.get_cookie(...) is not None`
+#     (test_auth_lifecycle.py's login/verify-email/refresh/logout tests)
+#   - the csrf_headers fixture below, which reads
+#     `client.get_cookie("csrf_token")` to build the X-CSRF-Token header
+#     for every mutating-route test in the suite — with that read always
+#     returning None, csrf_headers() always returned {}, so every
+#     mutating request sent no X-CSRF-Token header and was rejected by
+#     the real enforce_csrf hook with 403 "CSRF token missing or
+#     invalid" — this is what was actually behind the large block of
+#     403s across test_connections_flow.py, test_posts_comments_*.py,
+#     test_notifications_funnel.py, test_file_upload_validation.py, and
+#     test_ai_no_real_calls.py's canned-response test.
+#
+# Fix: a thin FlaskClient subclass that defaults `domain` to the app's
+# own SERVER_NAME instead of Werkzeug's hardcoded "localhost" default,
+# for both get_cookie and set_cookie. This is scoped to test
+# infrastructure only — no application code changes needed, since the
+# server was never wrong here (the Set-Cookie headers it issues have no
+# explicit Domain attribute at all, which is correct: an unqualified
+# cookie already matches the request's own host).
+# ============================================================================
+
+class _DomainAwareTestClient(FlaskClient):
+    def get_cookie(self, key, domain=None, *args, **kwargs):
+        if domain is None:
+            domain = self.application.config.get("SERVER_NAME") or "localhost"
+        return super().get_cookie(key, domain=domain, *args, **kwargs)
+
+    def set_cookie(self, key, value="", *, domain=None, **kwargs):
+        if domain is None:
+            domain = self.application.config.get("SERVER_NAME") or "localhost"
+        return super().set_cookie(key, value, domain=domain, **kwargs)
+
+
 @pytest.fixture
 def client(app):
     """Flask test client — the actual HTTP boundary integration tests
-    exercise (routes, not services directly)."""
+    exercise (routes, not services directly).
+
+    Uses _DomainAwareTestClient (see above) so get_cookie()/set_cookie()
+    calls anywhere in this suite transparently match the domain the
+    app's own SERVER_NAME config actually issues cookies under, without
+    every call site needing to remember to pass domain="test.local"
+    explicitly.
+    """
+    app.test_client_class = _DomainAwareTestClient
     return app.test_client()
 
 

@@ -32,11 +32,40 @@ class TestMaintenanceJobBodies:
             user, expires_at=now + datetime.timedelta(hours=1)
         )
 
+        expired_id = expired.id
+        still_valid_id = still_valid.id
+
         result = cleanup_expired_activity_feed_job()
 
         assert result["rows_deleted"] == 1
-        assert ActivityFeed.query.get(expired.id) is None
-        assert ActivityFeed.query.get(still_valid.id) is not None
+
+        # FIX: cleanup_expired_activity_feed_job() bulk-deletes via
+        # `.delete(synchronize_session=False)` (see maintenance_jobs.py's
+        # own comment on why — batched deletes, not a per-row ORM
+        # cascade). synchronize_session=False deliberately skips
+        # expiring/evicting matching objects already loaded in this
+        # session's identity map, so the `expired` instance created by
+        # make_activity_feed_row() above is left in a stale "looks alive"
+        # state in the identity map. Query.get(expired.id) checks the
+        # identity map before hitting the database, finds that stale
+        # object, and Query.get()'s own refresh-on-access path then
+        # raises ObjectDeletedError instead of returning None (an
+        # arguably-surprising interaction between bulk deletes and
+        # Query.get() as opposed to a fresh Query.filter_by(...).first(),
+        # which always issues a real SELECT and simply returns None for
+        # zero rows).
+        #
+        # Expire the identity map for these specific rows first so the
+        # subsequent lookups issue real SELECTs against the database
+        # instead of consulting stale in-memory objects — this is what
+        # the test actually intends to assert ("the row is gone from the
+        # database"), not "this specific Python object instance is
+        # marked deleted".
+        db_session.expire(expired)
+        db_session.expire(still_valid)
+
+        assert ActivityFeed.query.get(expired_id) is None
+        assert ActivityFeed.query.get(still_valid_id) is not None
 
     def test_cleanup_is_idempotent_on_repeated_run(
         self, db_session, make_user, make_activity_feed_row
