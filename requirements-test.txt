@@ -11,6 +11,7 @@ pytest-mock==3.14.0
 pytest-cov==5.0.0
 freezegun==1.5.1
 fakeredis==2.24.1
+redis>=4,<8.0
 
 # lupa provides Lua scripting support inside fakeredis (redis-py's EVAL
 # command). services/distributed_lock.py's release() uses a Lua script
