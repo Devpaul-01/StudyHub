@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 
 class TestAskLearnoraGracefulDegradation:
     def test_ask_learnora_with_no_provider_returns_503(
-        self, client, make_user, make_post, auth_headers, monkeypatch
+        self, client, make_user, make_post, auth_headers, csrf_headers, monkeypatch
     ):
         from services import ai_provider_service
 
@@ -32,7 +32,13 @@ class TestAskLearnoraGracefulDegradation:
         author = make_user(status="approved")
         post = make_post(author)
 
-        headers = auth_headers(author)
+        # FIX: /student/posts/<id>/ask-learnora is a POST and is NOT in
+        # CSRF_EXEMPT_PATHS/CSRF_EXEMPT_PREFIXES (routes/student/__init__.py)
+        # — the real enforce_csrf hook rejects it with 403 before the route
+        # body (and therefore this test's mocked no-provider branch) is
+        # ever reached without a valid X-CSRF-Token header alongside a
+        # matching csrf_token cookie. csrf_headers(client) provides both.
+        headers = {**auth_headers(author), **csrf_headers(client)}
         resp = client.post(
             f"/student/posts/{post.id}/ask-learnora",
             json={"question": "Explain this post"},
@@ -41,12 +47,12 @@ class TestAskLearnoraGracefulDegradation:
         assert resp.status_code == 503
 
     def test_ask_learnora_with_canned_response_returns_answer(
-        self, client, make_user, make_post, auth_headers, canned_ai_response
+        self, client, make_user, make_post, auth_headers, csrf_headers, canned_ai_response
     ):
         author = make_user(status="approved")
         post = make_post(author, title="Recursion", text_content="Explain base cases")
 
-        headers = auth_headers(author)
+        headers = {**auth_headers(author), **csrf_headers(client)}
         resp = client.post(
             f"/student/posts/{post.id}/ask-learnora",
             json={"question": "What's a base case?"},
@@ -59,7 +65,7 @@ class TestAskLearnoraGracefulDegradation:
 
 class TestNoRealHTTPCallEverMade:
     def test_requests_post_never_called_during_ai_route(
-        self, client, make_user, make_post, auth_headers, monkeypatch
+        self, client, make_user, make_post, auth_headers, csrf_headers, monkeypatch
     ):
         """
         Belt-and-suspenders: assert requests.post is never invoked at all
@@ -83,7 +89,7 @@ class TestNoRealHTTPCallEverMade:
 
         author = make_user(status="approved")
         post = make_post(author)
-        headers = auth_headers(author)
+        headers = {**auth_headers(author), **csrf_headers(client)}
 
         resp = client.post(
             f"/student/posts/{post.id}/ask-learnora",

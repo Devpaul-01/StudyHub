@@ -214,7 +214,17 @@ class TestRefreshTokenRotation:
         assert login_resp.status_code == 200
         old_refresh_cookie = client.get_cookie("refresh_token").value
 
-        refresh_resp = client.post("/student/refresh-token")
+        # FIX: /student/refresh-token is deliberately NOT in
+        # CSRF_EXEMPT_PATHS (routes/student/__init__.py's own docstring:
+        # "protecting this endpoint too is strictly safer with no real
+        # downside") — a real prior login (above) already set a real
+        # csrf_token cookie via set_auth_cookies, so the X-CSRF-Token
+        # header just needs to be read from it and attached, matching
+        # what the real frontend does on every mutating request.
+        csrf_cookie = client.get_cookie("csrf_token")
+        csrf_header = {"X-CSRF-Token": csrf_cookie.value} if csrf_cookie else {}
+
+        refresh_resp = client.post("/student/refresh-token", headers=csrf_header)
         assert refresh_resp.status_code == 200, refresh_resp.get_json()
 
         new_refresh_cookie = client.get_cookie("refresh_token")
@@ -225,7 +235,7 @@ class TestRefreshTokenRotation:
         assert new_refresh_cookie is not None
         assert new_refresh_cookie.value != old_refresh_cookie
 
-    def test_refresh_with_invalid_token_returns_error_and_clears_cookies(self, client):
+    def test_refresh_with_invalid_token_returns_error_and_clears_cookies(self, client, csrf_headers):
         # FIX: Werkzeug's Client.set_cookie signature is now
         # set_cookie(key, value="", *, domain=..., path=..., **kwargs) —
         # domain is keyword-only and no longer accepted positionally.
@@ -240,7 +250,10 @@ class TestRefreshTokenRotation:
         # here too for clarity since this test is specifically about
         # cookie handling.
         client.set_cookie("refresh_token", "not-a-real-token", domain="test.local")
-        resp = client.post("/student/refresh-token")
+        # FIX: this route is not CSRF-exempt (see comment above) — no
+        # prior login happens in this test, so csrf_headers(client) is
+        # used to mint and attach a valid double-submit pair directly.
+        resp = client.post("/student/refresh-token", headers=csrf_headers(client))
         assert resp.status_code == 400
         body = resp.get_json()
         assert body["status"] == "error"
@@ -263,7 +276,13 @@ class TestLogout:
         )
         refresh_value = client.get_cookie("refresh_token").value
 
-        logout_resp = client.post("/student/logout")
+        # FIX: /student/logout is not CSRF-exempt either — reuse the
+        # csrf_token cookie the real login above already set, same as
+        # the refresh-rotation test.
+        csrf_cookie = client.get_cookie("csrf_token")
+        csrf_header = {"X-CSRF-Token": csrf_cookie.value} if csrf_cookie else {}
+
+        logout_resp = client.post("/student/logout", headers=csrf_header)
         assert logout_resp.status_code == 200
 
         # Cookies cleared client-side.

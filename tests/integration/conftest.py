@@ -578,31 +578,41 @@ def auth_headers():
 @pytest.fixture
 def csrf_headers():
     """
-    Returns a function(client, user) -> dict of headers needed to pass the
-    real double-submit CSRF check (routes/student/__init__.py::enforce_csrf)
-    on a mutating request, by:
-      1. Logging the user in for real (POST /student/login), which is the
-         one code path that actually sets the csrf_token cookie (via
-         set_auth_cookies, gated behind ACCESS_TOKEN_HTTPONLY).
-      2. Reading the csrf_token cookie the test client now holds.
-      3. Returning it as the X-CSRF-Token header, matching what the real
-         frontend is documented to do.
+    Returns a function(client) -> dict of headers needed to pass the real
+    double-submit CSRF check (routes/student/__init__.py::enforce_csrf)
+    on a mutating request.
 
-    NOTE: ACCESS_TOKEN_HTTPONLY defaults to "true" per config.py's
-    os.environ.get("ACCESS_TOKEN_HTTPONLY", "true") default — meaning
-    csrf_token IS issued by default unless that env var is explicitly set
-    to "false" in your environment. If your deployment currently runs with
-    it off, the csrf_headers helper below still works (it just returns an
-    empty dict when no csrf_token cookie was set, matching
-    enforce_csrf's own must-both-exist-and-match check, which is a no-op
-    concern in that mode since the whole double-submit mechanism per
-    __init__.py's docstring exists specifically for the httponly-on case).
+    FIX: enforce_csrf's check is a pure double-submit comparison — it
+    only verifies that the `csrf_token` cookie and the `X-CSRF-Token`
+    header are both present and equal to each other (see that
+    function's own `cookie_value != header_value` check); it never
+    validates the value against anything stored server-side. The
+    previous version of this fixture only ever *read* whatever
+    `csrf_token` cookie happened to already be on the client — which
+    works for tests that log in for real via POST /student/login (the
+    only route that calls set_auth_cookies, the sole place csrf_token
+    gets set), but every test in this suite actually authenticates via
+    the auth_headers fixture (a directly-built JWT Bearer token, with no
+    HTTP request and therefore no cookie side effect at all). For those
+    tests — the overwhelming majority of mutating-route tests — the
+    `csrf_token` cookie was simply never present, so this fixture always
+    returned {} and every one of those requests was correctly rejected
+    by the real enforce_csrf hook with a 403.
+
+    Since the value itself is never checked against anything besides the
+    header, this fixture can mint its own token, set it as the
+    `csrf_token` cookie directly on the client (matching what
+    set_auth_cookies would have set, without requiring a real login
+    round-trip), and return the same value as the X-CSRF-Token header —
+    genuinely exercising the double-submit comparison enforce_csrf
+    performs, just without depending on a prior /student/login call.
     """
+    import secrets
+
     def _make(client):
-        csrf_cookie = client.get_cookie("csrf_token")
-        if not csrf_cookie:
-            return {}
-        return {"X-CSRF-Token": csrf_cookie.value}
+        token = secrets.token_urlsafe(32)
+        client.set_cookie("csrf_token", token)
+        return {"X-CSRF-Token": token}
 
     return _make
 
