@@ -11,7 +11,7 @@ simple-websocket
 python-dotenv
 SQLAlchemy
 PyJWT
-redis
+redis>=4,<8.0
 apscheduler
 bleach
 eventlet
