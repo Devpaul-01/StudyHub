@@ -185,7 +185,7 @@ def mark_all_notifications_read(current_user):
         if not user:
             return error_response("User not found")
         
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         notif_type = data.get("type")
         before_date = data.get("before_date")
         
