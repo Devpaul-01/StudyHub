@@ -1615,6 +1615,8 @@
   <button class="sticky-dismiss" id="stickyDismiss" aria-label="Dismiss">✕</button>
 </div>
 <script>
+  /* ─── VISIT TRACKING (fire-and-forget, no auth needed) ─── */
+  fetch('/api/track-visit', { method: 'POST' }).catch(() => {});
   /* ─── STARFIELD (subtle, paused off-screen) ─── */
   (function(){
     const c = document.getElementById('stars');

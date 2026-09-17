@@ -366,7 +366,43 @@ def create_app(config_class=None):
     def home():
         """Landing page"""
         return render_template("index.html")
-    
+
+    @app.route("/api/track-visit", methods=["POST"])
+    def track_visit():
+        """Log/upsert a visitor by IP for basic traffic tracking.
+
+        Public, unauthenticated endpoint — fired from index.html on page
+        load before any login happens. Upserts into visitor_logs keyed on
+        ip_address: first visit inserts a row, repeat visits from the same
+        IP bump visit_count and last_seen_at instead of duplicating.
+
+        NOTE: no rate limiting applied yet — services/rate_limit_service.py
+        wasn't available to confirm its decorator API. Since this is a
+        public POST endpoint, consider wiring it in before relying on this
+        in production, to avoid it being hammered and bloating the table.
+        """
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if ip and ',' in ip:
+            ip = ip.split(',')[0].strip()  # first entry = real client IP
+
+        user_agent = request.headers.get('User-Agent')
+        referrer = request.headers.get('Referer')
+
+        try:
+            db.session.execute(text("""
+                insert into visitor_logs (ip_address, user_agent, referrer)
+                values (:ip, :ua, :ref)
+                on conflict (ip_address)
+                do update set last_seen_at = now(), visit_count = visitor_logs.visit_count + 1
+            """), {"ip": ip, "ua": user_agent, "ref": referrer})
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"track_visit failed: {e}")
+            return jsonify({"status": "error", "message": "Could not log visit"}), 500
+
+        return jsonify({"status": "success"}), 200
+
     @app.route("/health")
     def health_check():
         """Health check endpoint for monitoring"""
