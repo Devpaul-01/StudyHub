@@ -10,6 +10,10 @@ fixes ("Finding #1" through "Finding #8") and similar audit-style comments elsew
 like the record of an actual security review, not planning notes, so where a comment describes
 what a bug used to be and how it got closed, that's treated as the authoritative account below.
 
+The "Finding #N" references throughout this document come from a structured security review I ran
+against this codebase, cataloguing authentication and session-handling gaps. Where a finding is
+cited, the fix it produced is described inline.
+
 ---
 
 ## 1. Authentication

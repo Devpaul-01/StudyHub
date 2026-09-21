@@ -182,7 +182,7 @@ The product-facing guarantee this produces: **a notification is never lost becau
 
 ## 14. Search
 
-Cross-domain search over users, posts, and threads from one entry point, with results grouped by type. Worth stating plainly here rather than only in the architecture document: this runs on straightforward pattern matching (`ILIKE`) against the live tables, not a dedicated search index — a `SearchIndex` table exists in the schema but isn't populated or queried anywhere (`ARCHITECTURE.md` §5.6). It's an honest current limitation, not a hidden one.
+Cross-domain search over users, posts, and threads from one entry point, with results grouped by type. Implementation detail and current limitations are covered in [`ARCHITECTURE.md` §5.6](ARCHITECTURE.md#56-two-honest-gaps-tables-that-exist-but-arent-load-bearing).
 
 ---
 

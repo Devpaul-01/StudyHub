@@ -1,14 +1,22 @@
 # StudyHub — Peer Academic Collaboration Platform
 
-**Status:** Actively in development — core systems are functional and used daily while building, though the product is not yet feature-complete.
+[![Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/tests.yml)
+
+**Status:** Deployed and running. Core systems — auth, feed, threads, homework, AI assistant, real-time presence — are complete and functional. Known gaps and planned improvements are documented rather than hidden.
 
 **Live:** [https://studyhub-two-psi.vercel.app/](https://studyhub-two-psi.vercel.app/)
+
+Try this:
+- Sign up and complete onboarding to see compatibility-ranked matches
+- Post a question, then use the post AI action menu to ask questions about the post
+- Create a thread and `@mention` Learnora to see the AI reply with thread context
+- Check the leaderboard, then look at your own rank card — the ranked list is cached, your row never is
 
 StudyHub is a peer-to-peer academic platform for a university student body, built around one idea: reputation earned by helping other students should be the platform's actual currency, not a vanity number bolted onto a forum. It combines a Q&A/discussion feed, a connections-based social graph, private group chat (Threads), a homework help marketplace, live collaborative study sessions, and a multi-provider AI study assistant ("Learnora") into a single system where almost every feature either produces reputation, consumes it as a signal, or reinforces the behavior that generates it.
 
 A student stuck on a problem set at 11pm has no reliable way to find a classmate who already understands the material, is online right now, and is willing to help — outside of scattered group chats with no structure, no accountability, and no way to reward the people who actually show up. StudyHub's bet is that peer tutoring is abundant but undiscoverable: every class has students who are strong in a subject and students who need help in that same subject, but there's no matching layer, no reputation signal for who's reliable, and no lightweight tooling to make an ad hoc study session productive. The product surfaces the right people to connect with (department, subject overlap, complementary skills, mutual connections), gives every helpful action a transparent point value, and wraps live collaboration — shared timers, a collaborative notepad, embedded AI tutoring — directly around the connections graph instead of leaving students to coordinate over unrelated tools.
 
-The backend is a Flask monolith on PostgreSQL (SQLAlchemy), with real-time features over Socket.IO, Cloudinary for media, Flask-Mail for transactional email, Firebase Cloud Messaging for push, and a self-built multi-provider AI layer (Gemini, Groq, Cohere, Cloudflare Workers AI, Mistral, OpenRouter) with automatic classified failover. Redis backs four structurally different roles across the app — AI provider state, WebSocket presence, distributed job locking, and durable background job queues — following a horizontal-scaling pass that moved every piece of previously single-process state onto Redis (see [Status & Recent Changes](#status--recent-changes)). The frontend is vanilla JavaScript.
+The backend is a Flask monolith on PostgreSQL (SQLAlchemy), with real-time features over Socket.IO, Cloudinary for media, Flask-Mail for transactional email, Firebase Cloud Messaging for push, and a self-built multi-provider AI layer (Gemini, Groq, Cohere, Cloudflare Workers AI, Mistral, OpenRouter) with automatic classified failover. Redis backs four structurally different roles across the app — AI provider state, WebSocket presence, distributed job locking, and durable background job queues — following a horizontal-scaling pass that moved every piece of previously single-process state onto Redis (see [Status & Recent Changes](#status--recent-changes)). The frontend is vanilla JavaScript (no framework) — a deliberate choice to keep the client lightweight and to force the backend API to be genuinely self-sufficient.
 
 ![Learnora responding live inside a group study thread, grounded in that thread's own conversation history](assets/product/thread-ai-mention.png)
 
@@ -53,7 +61,7 @@ Full technical breakdown — request lifecycle, data model, AI pipeline, Redis r
 
 ## Background Processing
 
-Five scheduled jobs (login streaks, denormalized-count reconciliation, leaderboard snapshots, weekly champions, activity-feed cleanup), each guarded by a Redis distributed lock so exactly one instance runs a given job on any tick — the one place in the app that deliberately fails *closed* rather than open, because duplicate execution is a worse outcome than a skipped tick. Two RQ-backed queues (`email_queue`, `maintenance_queue`) handle durable, retryable work off the request path. Full job-by-job detail, retry policy, and idempotency notes are in **[`BACKGROUND_JOBS.md`](BACKGROUND_JOBS.md)**.
+Five scheduled jobs (weekly + monthly leaderboard snapshots, denormalized-count reconciliation, activity-feed cleanup, stale-AI-conversation alert), each guarded by a Redis distributed lock so exactly one instance runs a given job on any tick — the one place in the app that deliberately fails *closed* rather than open, because duplicate execution is a worse outcome than a skipped tick. Two RQ-backed queues (`email_queue`, `maintenance_queue`) handle durable, retryable work off the request path. Full job-by-job detail, retry policy, and idempotency notes are in **[`BACKGROUND_JOBS.md`](BACKGROUND_JOBS.md)**.
 
 ## AI Architecture
 
@@ -182,7 +190,7 @@ An integration suite has recently been added alongside the existing unit suite, 
 
 ### CI
 
-There's no GitHub Actions CI pipeline yet — tests currently run locally only. Wiring up GitHub Actions to run the suite automatically on push/PR is planned.
+Both suites run automatically on every push and pull request to `main` via GitHub Actions (`.github/workflows/tests.yml`) — one job for unit tests, one for integration tests, each installing its own dependencies and running against SQLite + fakeredis exactly as described above. No Postgres or Redis service containers, no real AI provider calls, no real RQ worker process. Coverage is reported for both jobs; the integration job additionally uploads a `coverage.xml` artifact. See the badge at the top of this file for current build status.
 
 ## Deployment
 
@@ -196,7 +204,7 @@ This project went through a deliberate horizontal-scaling pass: WebSocket presen
 
 Two things remain process-local, and they're not the same case. Typing-indicator dedup bookkeeping and the raw thread/notification broadcast mechanics needed no migration at all — the broadcast is already cross-instance correct via Socket.IO's Redis-backed message queue, and typing dedup only suppresses a redundant client-side re-emit. Separately, and explicitly flagged as such in the code's own migration notes: the rate limiter gating Learnora's auto-reply-without-`@mention` behavior is still a genuine, working, process-local sliding-window limiter that hasn't been migrated yet — a real (if narrow) instance of the class of bug this whole refactor was meant to close, still outstanding for that one limiter. There's also a legacy general-purpose WebSocket manager that still handles some non-messaging broadcasts alongside a newer, purpose-built manager that owns all direct-message delivery — an intentional interim state from an in-progress migration.
 
-An honest current gap: cross-domain search (`ARCHITECTURE.md` §5.6) runs on unindexed `ILIKE` pattern matching. A `SearchIndex` table exists in the schema but is not populated or queried anywhere — it's dead code, not hidden infrastructure.
+An honest current gap: cross-domain search runs on unindexed `ILIKE` pattern matching rather than the `SearchIndex` table reserved for it. Full detail in [`ARCHITECTURE.md` §5.6](ARCHITECTURE.md#56-two-honest-gaps-tables-that-exist-but-arent-load-bearing).
 
 Another honest current gap: the live study session's real-time activity feed is not implemented completely and is not wired up to the frontend yet.
 
