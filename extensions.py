@@ -21,8 +21,6 @@ def _create_redis_client():
     """Create Redis client with error handling and logging."""
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-    print("redis url : ")
-    print(redis_url)
 
     safe_url = redis_url
     if '@' in redis_url:
