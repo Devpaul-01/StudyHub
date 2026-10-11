@@ -2,18 +2,20 @@
 worker.py
 
 StudyHub RQ worker entry point. Run as its own process, separate from
-the gunicorn-served app.py — see
-BACKGROUND_JOBS_IMPLEMENTATION.md §11 for exactly how many of these to
-run and how they relate to API instance count (answer: independently —
-they don't need to match).
+the gunicorn-served app.py — see BACKGROUND_JOBS.md §4 for exactly how
+many of these to run and how they relate to API instance count (answer:
+independently — they don't need to match). (Audit fix: this used to
+cite BACKGROUND_JOBS_IMPLEMENTATION.md, a working/planning document that
+isn't part of this repo — BACKGROUND_JOBS.md is the shipped doc that
+actually covers this.)
 
 Usage:
     python worker.py
 
 Each worker process handles ONE job at a time (RQ's simple worker is
-single-threaded per process, deliberately — see §11 for why this is
-the right default here and how to scale via process count instead of
-in-process concurrency).
+single-threaded per process, deliberately — see BACKGROUND_JOBS.md §4
+for why this is the right default here and how to scale via process
+count instead of in-process concurrency).
 
 CRITICAL — required environment for this process:
   - SCHEDULER_ENABLED must be set to "false". A worker process has no
@@ -73,8 +75,9 @@ def main() -> int:
         # additional scheduler-lock-race participant beyond whatever API
         # instances already have it enabled, multiplying lock contention
         # for zero benefit. Fail loudly rather than silently letting this
-        # slip through — BACKGROUND_JOBS_IMPLEMENTATION.md §24 flags this
-        # as the single highest operational risk in this phase.
+        # slip through — this is the single highest operational risk in
+        # this phase (see BACKGROUND_JOBS.md §4's explanation of this
+        # exact guard).
         logger.error(
             "[WORKER_STARTUP_ABORTED] SCHEDULER_ENABLED must be 'false' for "
             "the worker process — refusing to start with the scheduler "

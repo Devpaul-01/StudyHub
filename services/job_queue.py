@@ -8,7 +8,7 @@ every job-enqueuing call site imports the named queues from here,
 never constructs its own Queue(...).
 
 Two named queues, matching the two job categories this phase
-introduces (see BACKGROUND_JOBS_IMPLEMENTATION.md §6):
+introduces (see BACKGROUND_JOBS.md §3):
   - email_queue:       password reset / verification / waitlist /
                         referral-milestone email sends
   - maintenance_queue:  scheduled cleanup/alert jobs enqueued by
@@ -32,11 +32,10 @@ from extensions import redis_client
 # Job timeout ceilings — RQ's own per-job "kill if it runs longer than
 # this" guard, distinct from retry count (see services/jobs/job_specs.py's
 # per-job retry configuration). Chosen per queue based on the slowest
-# job that queue is expected to run — see
-# BACKGROUND_JOBS_IMPLEMENTATION.md §6.2/§6.3 for why each number was
-# picked.
+# job that queue is expected to run — see BACKGROUND_JOBS.md §3 for why
+# each number was picked.
 EMAIL_JOB_TIMEOUT_SECONDS = 30          # SMTP send, generous vs. realistic send time
-MAINTENANCE_JOB_TIMEOUT_SECONDS = 600   # batched DB scan/delete, see §9 batch sizing
+MAINTENANCE_JOB_TIMEOUT_SECONDS = 600   # batched DB scan/delete, see BACKGROUND_JOBS.md §3.2 batch sizing
 
 # FIX: extensions.redis_client is None whenever Redis is unreachable at
 # import time (see extensions.py::_create_redis_client's documented

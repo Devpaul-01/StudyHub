@@ -115,6 +115,17 @@ Returns `500` with `"status": "unhealthy", "database": "disconnected"` if the DB
 ### `GET /robots.txt`
 Plain-text robots directives. **Auth:** none.
 
+### `POST /api/track-visit`
+*(Audit addition — this endpoint existed and was reachable but was missing from this reference.)*
+Public, unauthenticated visitor logging — fired from `index.html` on page load, before any login.
+Upserts a row in `visitor_logs` keyed by IP address: first visit inserts a row, a repeat visit from
+the same IP bumps `visit_count`/`last_seen_at` instead of duplicating. **Auth:** none.
+**Rate limit:** `BURST_OK` (60/minute, keyed by IP) — this endpoint had no rate limiting at all
+until the same audit pass that added this doc entry; see its docstring in `app.py` for why
+`BURST_OK` was chosen over `WRITE_HEAVY` for this specific case.
+Returns `{"status": "success"}` (200) or `{"status": "error", "message": "Could not log visit"}`
+(500) if the insert fails.
+
 ---
 
 ## Google OAuth
@@ -301,7 +312,12 @@ token is detected, the *entire token family* is revoked and all auth cookies are
 is the tell for a stolen refresh token being replayed.
 
 **Auth:** none (uses the refresh cookie, not the access token). **Rate limit:** `SENSITIVE_AUTH`.
-**CSRF:** exempt.
+**CSRF:** *(audit correction — this was previously, incorrectly, marked exempt)* **required.**
+`/student/refresh-token` is deliberately **not** in `CSRF_EXEMPT_PATHS`
+(`routes/student/__init__.py`): the `csrf_token` cookie is reissued alongside `access_token` on
+the same lifetime, so it's expected to still be valid whenever a refresh is needed, and protecting
+this endpoint too is strictly safer with no real downside once that's true. Send the current
+`X-CSRF-Token` header (read from the `csrf_token` cookie) the same as any other mutating request.
 
 **400** — no refresh cookie, expired/invalid token, reuse detected, or account not approved.
 
@@ -318,7 +334,7 @@ should try `/student/refresh-token` before giving up.
 Disconnects any live WebSocket session, revokes the whole refresh-token family, clears all three
 auth cookies. Each step is best-effort — one failing doesn't block the others.
 
-**Auth:** required. **Rate limit:** `BURST_OK`.
+**Auth:** required. **Rate limit:** `BURST_OK`. **CSRF:** required (not in `CSRF_EXEMPT_PATHS`).
 
 ---
 

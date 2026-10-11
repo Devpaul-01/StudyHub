@@ -18,20 +18,28 @@ accept a connection, etc.) stays in charge of the commit, exactly like
 every other service in this migration.
 
 WebSocket broadcast integration:
-  services/websocket_events.py (the manager you supplied) is the LEGACY
-  real-time manager — messages.py already imports a NEWER, messaging-
-  specific manager from `services.websocket_messages` (not supplied) for
-  DM real-time events, per the comment in messages.py::get_conversation_messages:
-    "this is messaging functionality, so it now goes through the active
-    message_ws_manager ... that manager is being kept for non-messaging
-    functionality only (e.g. Homework activity tracking)."
-
-  So broadcasting a notification has two possible transports depending on
-  notification type, and I only have one of them. This module calls
-  websocket_events.ws_manager for the general case (badge/reputation/etc.)
-  and leaves a single, clearly marked seam (_broadcast_via_message_ws) for
-  wiring in services.websocket_messages once that file is supplied — it is
-  NOT guessed at or stubbed with fake behavior.
+  AUDIT BUG-4 FIX (same bug class already fixed in
+  routes/student/connections/crud.py, routes/student/homework_system.py,
+  and routes/student/study_sessions.py's _emit helper — this file was the
+  one remaining call site still using the broken manager): this module
+  used to call services.websocket_events.ws_manager, whose init_app/
+  register_handlers is never invoked anywhere in the app (see app.py's
+  own comment confirming websocket_events.py is unused for
+  initialization purposes). That left ws_manager.online_users
+  permanently empty and ws_manager.socketio permanently None, so
+  _broadcast()'s `if hasattr(ws_manager, "emit_to_user")` branch was
+  always taken (the method exists on the class regardless of init
+  state) and always iterated zero socket ids — every notification this
+  module ever created (badges, level-ups, connection requests/accepts,
+  homework help offers/solutions/feedback/cancellations, welcome) was
+  correctly persisted to the DB and correctly counted in the unread
+  badge, but never actually pushed live to a connected client. This now
+  calls services.websocket_messages.message_ws_manager instead — the
+  manager that IS genuinely initialized (see app.py's init_message_websocket)
+  and already correctly wired for cross-instance delivery via
+  message_queue — using the same emit_to_user(user_id, event_name, data)
+  signature, so this is a drop-in swap identical to the fix already
+  applied at the three sibling call sites above.
 """
 
 from __future__ import annotations
@@ -53,15 +61,18 @@ def _broadcast(user_id: int, notification: Notification) -> None:
     """
     Best-effort real-time push of a newly created notification.
 
-    Uses services.websocket_events.ws_manager (supplied). Failures are
-    swallowed and logged — a notification that fails to push in real time
-    still exists as a row and will show up next time the client polls/
-    fetches /profile/notifications/all, so this must never raise and
-    break the caller's actual (already-committed-elsewhere) business
-    operation.
+    Uses services.websocket_messages.message_ws_manager — see the
+    "AUDIT BUG-4 FIX" note in this module's docstring for why this no
+    longer goes through services.websocket_events.ws_manager (that
+    manager is never initialized anywhere in the app, so every call
+    through it was a silent no-op). Failures are swallowed and logged —
+    a notification that fails to push in real time still exists as a row
+    and will show up next time the client polls/fetches
+    /profile/notifications/all, so this must never raise and break the
+    caller's actual (already-committed-elsewhere) business operation.
     """
     try:
-        from services.websocket_events import ws_manager
+        from services.websocket_messages import message_ws_manager
 
         payload = {
             "id": notification.id,
@@ -76,10 +87,7 @@ def _broadcast(user_id: int, notification: Notification) -> None:
             ),
         }
 
-        if hasattr(ws_manager, "emit_to_user"):
-            ws_manager.emit_to_user(user_id, "new_notification", payload)
-        elif getattr(ws_manager, "socketio", None) and user_id in getattr(ws_manager, "online_users", {}):
-            ws_manager.socketio.emit("new_notification", payload, room=f"user_{user_id}")
+        message_ws_manager.emit_to_user(user_id, "new_notification", payload)
 
     except Exception as exc:
         logger.warning(f"Notification broadcast failed (non-critical): {exc}")

@@ -8,7 +8,7 @@ daemon-thread pattern (waitlist welcome, referral milestone) -- both
 collapse into this one durable, retryable job.
 
 CRITICAL: this function is NOT idempotent on retry, and that is
-intentional -- see BACKGROUND_JOBS_IMPLEMENTATION.md §13.2. True
+intentional -- see BACKGROUND_JOBS.md §3.1 and §7. True
 delivery-exactly-once would require a durable send-ledger for a
 codebase whose actual email surface is four low-frequency transactional
 types, each already protected downstream by its own single-use

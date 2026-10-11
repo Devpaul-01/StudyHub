@@ -8,8 +8,8 @@ rate_limit_service.py's own RateLimitTier pattern (named policies,
 picked by name at the call site) for the identical reason: one place
 to see/change every job's retry policy, not scattered inline literals.
 
-See BACKGROUND_JOBS_IMPLEMENTATION.md §12 for why each policy's max
-attempts / backoff intervals were chosen per job.
+See BACKGROUND_JOBS.md §3.4 for why each policy's max attempts /
+backoff intervals were chosen per job.
 """
 
 from rq import Retry

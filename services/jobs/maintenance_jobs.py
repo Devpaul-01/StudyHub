@@ -1,8 +1,10 @@
 """
 services/jobs/maintenance_jobs.py
 
-RQ job bodies for the two new scheduled maintenance jobs
-(BACKGROUND_JOBS_IMPLEMENTATION.md §9). Both are enqueued (never run
+RQ job bodies for the two new scheduled maintenance jobs — see
+BACKGROUND_JOBS.md §3.2/§3.3 (this repo's shipped doc; the working/
+planning doc this comment used to cite, BACKGROUND_JOBS_IMPLEMENTATION.md,
+isn't part of this repo). Both are enqueued (never run
 inline) by scheduler.py's locked scheduler ticks — see that file's
 _job_activity_feed_cleanup / _job_stale_conversation_alert wrappers.
 
@@ -38,7 +40,7 @@ from models import ActivityFeed, AIConversation
 logger = logging.getLogger(__name__)
 
 # [DEFAULT -- TUNE LATER once real ActivityFeed row-growth data exists,
-# per BACKGROUND_JOBS_IMPLEMENTATION.md §9.1]. Large enough to be
+# per BACKGROUND_JOBS.md §3.2]. Large enough to be
 # efficient, small enough that one batch's transaction is never a
 # problem for a simple indexed-column DELETE.
 ACTIVITY_FEED_BATCH_SIZE = 5000
@@ -65,8 +67,8 @@ def cleanup_expired_activity_feed_job() -> dict:
     Selects a bounded batch of expired row IDs, THEN deletes by ID --
     not a single unbounded DELETE ... WHERE expires_at < :cutoff, which
     on a very large table would be one giant transaction (see
-    BACKGROUND_JOBS_IMPLEMENTATION.md §8's "no long-running
-    transactions" rule). Each batch gets its own commit.
+    BACKGROUND_JOBS.md §3.2's "no long-running transactions" rule).
+    Each batch gets its own commit.
 
     Returns a summary dict (rows_deleted, batches_run) -- RQ persists a
     job's return value on its own Job record, which doubles as
@@ -126,9 +128,15 @@ def alert_stale_ai_conversations_job() -> dict:
     about, where auto-acting on it is a product decision this job does
     not make unilaterally.
 
-    Uses idx_ai_conv_archived_last_msg (models.py) for the filter --
-    added alongside this job specifically because neither filtered
-    column had an index before this phase.
+    Uses idx_ai_conv_archived_last_msg (models.py, AIConversation.__table_args__)
+    for the filter -- added alongside this job specifically because
+    neither filtered column had an index before this phase. (Audit fix:
+    this index was referenced here and in BACKGROUND_JOBS.md §3.3 before
+    it actually existed in models.py -- the AIConversation model only had
+    idx_ai_conv_user_archived_lastmsg, a user_id-led composite index that
+    cannot serve this query via the leftmost-prefix rule since this job
+    has no user_id predicate at all. The missing index has now been
+    added.)
     """
     threshold = datetime.datetime.utcnow() - datetime.timedelta(
         days=STALE_CONVERSATION_THRESHOLD_DAYS

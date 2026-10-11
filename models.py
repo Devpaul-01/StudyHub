@@ -1671,8 +1671,20 @@ class AIConversation(db.Model):
     # — filter by (user_id, is_archived), sort by last_message_at — on
     # every sidebar load. Also serves plain user_id-only lookups via the
     # leftmost-prefix rule, so a separate single-column index isn't needed.
+    #
+    # idx_ai_conv_archived_last_msg (audit fix): services/jobs/
+    # maintenance_jobs.py::alert_stale_ai_conversations_job() filters on
+    # (is_archived, last_message_at) with NO user_id predicate — a
+    # platform-wide weekly aggregate, not a per-user lookup. The index
+    # above is led by user_id, so it cannot serve this query via the
+    # leftmost-prefix rule; that job's own docstring and
+    # BACKGROUND_JOBS.md §3.3 already (incorrectly) claimed this exact
+    # index name existed for that purpose, which is what surfaced the
+    # gap — the index was referenced everywhere it was needed except
+    # here, where it actually needed to be declared.
     __table_args__ = (
         db.Index("idx_ai_conv_user_archived_lastmsg", "user_id", "is_archived", "last_message_at"),
+        db.Index("idx_ai_conv_archived_last_msg", "is_archived", "last_message_at"),
     )
 
 

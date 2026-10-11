@@ -174,8 +174,10 @@ LEARNORA_TRIGGERS = list(_TRIGGER_MAP.keys())
 # process-local variant's exact algorithm.
 _auto_reply_buckets: dict = {}
 
-# Background-jobs phase hardening (BACKGROUND_JOBS_IMPLEMENTATION.md
-# §18): bounds concurrent Learnora background calls across ALL threads/
+# Background-jobs phase hardening (see BACKGROUND_JOBS.md §6 — this
+# repo's shipped doc; the working/planning doc this comment used to cite,
+# BACKGROUND_JOBS_IMPLEMENTATION.md, isn't part of this repo): bounds
+# concurrent Learnora background calls across ALL threads/
 # actions combined, replacing the previous unbounded
 # threading.Thread(...).start() calls. AI dispatch stays threaded, NOT
 # moved to RQ, per explicit product decision (no frontend polling

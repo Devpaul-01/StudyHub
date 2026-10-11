@@ -25,6 +25,7 @@ from sqlalchemy import text
 from services.websocket_messages import init_message_websocket
 from services.websocket_threads import thread_ws_manager
 from services.rate_limit_service import init_app as init_rate_limiter
+from services.rate_limit_service import limiter, RateLimitTier, ip_key
 from extensions import db, mail
 from routes.student.helpers import (
     token_required, success_response, error_response
@@ -357,7 +358,33 @@ def create_app(config_class=None):
 
     from routes.admin import admin_bp
     app.register_blueprint(admin_bp)
-    
+
+    # ========================================================================
+    # AI Provider Model Discovery (Document 1 §5 / services/ai_provider_service.py
+    # module docstring's "Import-time network call fix")
+    # ========================================================================
+    # services/ai_provider_service.py's MultiProviderManager deliberately no
+    # longer starts its background model-discovery thread from __init__ (that
+    # used to fire a live network call the moment the module was imported,
+    # which broke importing/unit-testing it without network access). The
+    # module's own docstring states this explicit call is what replaces that:
+    # "app.py's create_app() must call provider_manager.warm_model_discovery()
+    # explicitly once, after blueprint registration" — this was never actually
+    # wired up, so discovery never ran and every provider silently stayed on
+    # its static, hardcoded priority model list forever (ARCHITECTURE.md §11.4
+    # already documented the intended behavior; this is the missing wiring).
+    #
+    # Gated on TESTING: TestingConfig sets TESTING=True as a class attribute,
+    # already applied above via app.config.from_object(config_class), so this
+    # correctly skips in both the unit suite (which never calls create_app()
+    # at all) and the integration suite (which does call the real create_app()
+    # against TestingConfig) — avoiding exactly the "background thread making
+    # live provider HTTP calls during a test run with no network access"
+    # problem this whole explicit-call design was introduced to avoid.
+    if not app.config.get('TESTING', False):
+        from services.ai_provider_service import provider_manager
+        provider_manager.warm_model_discovery()
+
     # ========================================================================
     # Routes
     # ========================================================================
@@ -368,6 +395,7 @@ def create_app(config_class=None):
         return render_template("index.html")
 
     @app.route("/api/track-visit", methods=["POST"])
+    @limiter.limit(RateLimitTier.BURST_OK, key_func=ip_key)
     def track_visit():
         """Log/upsert a visitor by IP for basic traffic tracking.
 
@@ -376,10 +404,17 @@ def create_app(config_class=None):
         ip_address: first visit inserts a row, repeat visits from the same
         IP bump visit_count and last_seen_at instead of duplicating.
 
-        NOTE: no rate limiting applied yet — services/rate_limit_service.py
-        wasn't available to confirm its decorator API. Since this is a
-        public POST endpoint, consider wiring it in before relying on this
-        in production, to avoid it being hammered and bloating the table.
+        Audit fix: this used to have no rate limiting at all (the
+        docstring flagged it as a known, unresolved risk — "consider
+        wiring it in before relying on this in production"). BURST_OK
+        (60/minute, matching rate_limit_service.py's own description of
+        that tier as "cheap, frequently-polled" / "low-risk
+        high-frequency actions") fits a public, unauthenticated,
+        idempotent-per-IP upsert fired once per page load better than
+        WRITE_HEAVY would -- this isn't a user-authored write with
+        moderation/spam concerns, it's closer in risk shape to the other
+        BURST_OK-tier actions. Keyed by IP (ip_key), not user_or_ip_key,
+        since this fires before any login/JWT exists.
         """
         ip = request.headers.get('X-Forwarded-For', request.remote_addr)
         if ip and ',' in ip:

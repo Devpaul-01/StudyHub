@@ -243,13 +243,22 @@ admin_required = role_required("admin", "system")
 # each call site (which is what let access_token's httponly=False survive
 # unnoticed across several routes before this phase).
 #
-# ACCESS_TOKEN_HTTPONLY (config.py, defaults False) gates the actual
-# behavior change: while False, this behaves exactly like the pre-Phase-4
-# code (httponly=False on access_token, no csrf_token cookie) — while
-# True, access_token becomes httponly and csrf_token is issued alongside
-# it. This is a runtime config flag rather than a code branch removed
-# after rollout specifically so the switch is instant and reversible
-# (Document 5 Phase 4's rollback plan), not a redeploy.
+# ACCESS_TOKEN_HTTPONLY (config.py: `os.environ.get("ACCESS_TOKEN_HTTPONLY",
+# "true")`, so this DEFAULTS TO TRUE in every environment unless the env var
+# is explicitly set to something else) gates the actual behavior change:
+# while False, this behaves exactly like the pre-Phase-4 code
+# (httponly=False on access_token, no csrf_token cookie) — while True (the
+# default), access_token becomes httponly and csrf_token is issued
+# alongside it. This is a runtime config flag rather than a code branch
+# removed after rollout specifically so the switch is instant and
+# reversible (Document 5 Phase 4's rollback plan), not a redeploy.
+#
+# Audit fix: the `current_app.config.get("ACCESS_TOKEN_HTTPONLY", False)`
+# call below has `False` as its *.get()-is-missing-the-key* fallback, not
+# as the system's actual default -- config.py always sets this key, so
+# that fallback is never actually reached in practice. This comment used
+# to (incorrectly) describe that unreachable fallback as "defaults False",
+# which contradicted both config.py and SECURITY.md's cookie table.
 # ============================================================================
 
 def set_auth_cookies(response, access_token, refresh_token=None, *, secure=None):

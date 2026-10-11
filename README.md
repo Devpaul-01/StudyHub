@@ -175,18 +175,19 @@ pip install -r requirements-test.txt
 pytest
 ```
 
-The unit suite (`pytest.ini`: `testpaths = tests/unit`) runs against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
+`pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (495 tests as of this writing). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
 Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
 
-### Integration Tests
+### Running Just the Unit or Integration Suite
 
 ```bash
 pip install -r requirements-test.txt
-pytest tests/integration
+pytest tests/unit          # unit suite only
+pytest tests/integration   # integration suite only
 ```
 
-An integration suite has recently been added alongside the existing unit suite, exercising flows across real service boundaries rather than mocking them out. As with the unit suite, it runs against an in-memory SQLite database and `fakeredis` rather than live PostgreSQL/Redis instances.
+The integration suite exercises flows across real service boundaries rather than mocking them out. As with the unit suite, it runs against an in-memory SQLite database and `fakeredis` rather than live PostgreSQL/Redis instances.
 
 ### CI
 

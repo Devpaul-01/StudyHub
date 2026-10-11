@@ -134,16 +134,16 @@ Its own docstring calls the `connect`-based check the primary path.
 | `csrf_token` | always `false` (has to be JS-readable) | `SESSION_COOKIE_SECURE` config | `Lax` | 30 minutes, reissued with `access_token` |
 
 `csrf_token` only gets issued when `ACCESS_TOKEN_HTTPONLY` is on — which, since that flag defaults
-to `true`, means it's issued by default. Here's the honest state of it: the cookie goes out on
-every authenticated response, but nothing in this codebase actually validates it against a
-submitted header. No `X-CSRF-Token` check, no `validate_csrf` call, anywhere in the request path.
-It's the client-side half of a double-submit pattern that never got wired up to server-side
-enforcement.
+to `true`, means it's issued by default. *(Audit correction: an earlier version of this section
+said the cookie is issued but never validated against a submitted header. That was wrong —
+`routes/student/__init__.py::enforce_csrf()` is registered as a `before_request` hook on the
+entire `student_bp` blueprint and does exactly that check on every mutating request, 403'ing on a
+missing or mismatched `X-CSRF-Token` header. See §7 below for the corrected description and a note
+on how this was verified.)*
 
-That gap is narrower than "no CSRF protection" in practice, because `SameSite=Lax` on all three
-auth cookies already blocks the cross-site POST-with-cookie forgery this pattern exists to stop,
-in every modern browser. Still, treat it as an open item, not a working control, until the token's
-either actually checked or removed.
+`SameSite=Lax` on all three auth cookies is additional, real protection against cross-site
+POST-with-cookie forgery in every modern browser — on top of, not instead of, the double-submit
+check above.
 
 ### 2.2 CORS
 
@@ -318,10 +318,17 @@ explicitly rather than left to the library default.
 
 Naming what isn't finished, same as everywhere else in this doc:
 
-- **CSRF double-submit is half-wired.** The `csrf_token` cookie gets issued (by default, since
-  `ACCESS_TOKEN_HTTPONLY` defaults to `true`) but nothing validates it against a submitted header
-  anywhere in the reviewed routes. `SameSite=Lax` on all three auth cookies is the actual
-  protection in effect right now; the double-submit infrastructure just isn't finished.
+- ~~CSRF double-submit is half-wired~~ **Audit correction: this is implemented and enforced, not
+  a gap.** `routes/student/__init__.py::enforce_csrf()` runs as a `before_request` hook on the
+  whole `student_bp` blueprint — not a per-route decorator, so new routes are protected by
+  default — and compares the `csrf_token` cookie against a submitted `X-CSRF-Token` header on
+  every mutating request (GET/HEAD/OPTIONS and a documented list of pre-auth routes, e.g.
+  `/student/login`, `/student/verify-email/<token>`, are exempt since there's no session cookie
+  yet to protect on those). A missing or mismatched token raises a 403. This is genuinely
+  exercised by the integration suite (`tests/integration/conftest.py`'s `csrf_headers` fixture,
+  which itself documents a prior bug where the fixture silently produced an empty header and
+  masked whether `enforce_csrf` was actually being hit — see that fixture's own comments).
+  `SameSite=Lax` is still additional, real protection on top of this, not a replacement for it.
 - **Password minimum is 6 characters**, no complexity requirement beyond that. This is a real
   current limit, not a placeholder waiting to be filled in.
 - **`_auto_reply_buckets`** — the limiter gating Learnora's unprompted auto-replies (no `@mention`

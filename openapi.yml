@@ -423,6 +423,32 @@ paths:
                   status: { type: string, enum: [unhealthy] }
                   database: { type: string, enum: [disconnected] }
 
+  /api/track-visit:
+    post:
+      tags: [System]
+      summary: Track a page visit
+      description: >-
+        Audit addition — this endpoint existed and was reachable but was missing from this spec.
+        Public, unauthenticated visitor logging fired from index.html on page load, before any
+        login. Upserts a row in visitor_logs keyed by IP address.
+      security: []
+      responses:
+        '200':
+          description: Visit logged (or upserted) successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          description: Could not log the visit (e.g. DB write failed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   /robots.txt:
     get:
       tags: [System]
