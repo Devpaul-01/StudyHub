@@ -9,7 +9,7 @@ Flask-Dance
 Flask-SocketIO
 simple-websocket
 python-dotenv
-SQLAlchemy
+SQLAlchemy<2.1
 PyJWT
 redis>=4,<8.0
 apscheduler
