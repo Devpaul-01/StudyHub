@@ -33,6 +33,36 @@ SERVICES_DIR = Path("services")
 # a cache TTL or a feature flag) without needing the full request context.
 DISALLOWED_FLASK_IMPORTS = {"request", "session", "g", "jsonify", "abort"}
 
+# Narrow, individually-justified exemptions from DISALLOWED_FLASK_IMPORTS.
+# These are NOT "business logic that got grandfathered in" — each entry is
+# infrastructure that cannot be built any other way, reviewed case by case:
+#
+#   - websocket_threads.py / websocket_events.py / websocket_messages.py
+#     register @socketio.on(...) handlers directly. `request.sid` and
+#     `request.cookies` there are Flask-SocketIO's connection identity and
+#     handshake data — the real-time equivalent of an HTTP route reading
+#     flask.request, i.e. these modules are acting as the entry-point layer
+#     for WebSocket traffic the same way routes/ is for HTTP, not as
+#     reusable service functions. Only `request` is exempted — session/g/
+#     jsonify/abort are still disallowed here, same as everywhere else.
+#
+#   - rate_limit_service.py constructs and configures the app's single
+#     Flask-Limiter instance. `request`/`g` are read inside Flask-Limiter's
+#     own hook mechanism (key_func callbacks, @limiter.request_filter,
+#     @app.errorhandler(429)) and `jsonify` builds that handler's response
+#     body — Flask-Limiter's extension API requires these to run inside a
+#     live Flask request context, there is no plain-argument equivalent.
+#     This is extension bootstrapping (compare extensions.py), not business
+#     logic, despite living in services/ for discoverability.
+#
+# Anything not listed here follows the rule with zero exceptions.
+FLASK_IMPORT_EXEMPTIONS: dict[str, set[str]] = {
+    "services/websocket_threads.py": {"request"},
+    "services/websocket_events.py": {"request"},
+    "services/websocket_messages.py": {"request"},
+    "services/rate_limit_service.py": {"request", "g", "jsonify"},
+}
+
 
 def _iter_service_files():
     if not SERVICES_DIR.is_dir():
@@ -57,7 +87,8 @@ def _check_file(path: Path) -> list[str]:
                 )
             if module == "flask":
                 imported_names = {alias.name for alias in node.names}
-                bad = imported_names & DISALLOWED_FLASK_IMPORTS
+                exempt = FLASK_IMPORT_EXEMPTIONS.get(path.as_posix(), set())
+                bad = (imported_names & DISALLOWED_FLASK_IMPORTS) - exempt
                 if bad:
                     violations.append(
                         f"{path}:{node.lineno}: services/ must not import "

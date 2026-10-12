@@ -1,6 +1,7 @@
 # StudyHub — Peer Academic Collaboration Platform
 
-[![Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/tests.yml)
+[![Unit Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/integration-tests.yml)
 
 **Status:** Deployed and running. Core systems — auth, feed, threads, homework, AI assistant, real-time presence — are complete and functional. Known gaps and planned improvements are documented rather than hidden.
 
@@ -34,7 +35,7 @@ I also used this project to go deep on things that don't show up in a typical CR
 
 - **A self-built multi-provider AI layer** — six LLM providers, four-way failure classification (bad key vs. down provider vs. bad model vs. non-retryable), Redis-shared cross-instance failover state, mid-stream provider switching, and a fully-functional non-AI fallback for one feature if every provider is down at once.
 - **Horizontal scaling that's actually real**, not aspirational — WebSocket presence, distributed scheduler locking, and per-user rate limits all moved from process-local state to Redis-coordinated state, with `gunicorn -w N` now a safe deployment shape instead of requiring `-w 1`.
-- **A CI-enforced architectural boundary** between HTTP concerns and business logic — not a convention, a static-analysis check that fails the build.
+- **A CI-enforced architectural boundary** between HTTP concerns and business logic — not a convention, a static-analysis check (`scripts/check_layering.py`) that runs as the first CI step and fails the build.
 - **A reputation system with one write path and an immutable audit ledger** — every point change is independently reconstructable from history, not trusted as a bare mutable counter.
 - **Three genuinely different background-processing mechanisms**, chosen deliberately per problem: APScheduler with a fail-closed distributed lock for scheduled work, RQ for durable retryable jobs, and a bounded thread pool for latency-sensitive AI dispatch that doesn't need to survive a crash.
 - **A shared-cache-plus-per-viewer-overlay pattern** on the leaderboard — the expensive part is computed once and cached; the identity-specific part (your rank, your connection to each name shown) is never cached and always fresh.
@@ -87,7 +88,7 @@ Learnora is one AI infrastructure layer surfaced through five product moments (s
 
 ## Engineering Highlights
 
-**A CI-enforced architectural boundary.** Business logic lives in a `services/` layer with zero Flask dependency; a `routes/` layer handles HTTP concerns only. Not a documented convention — `check_layering.py` statically parses every service file's AST and fails the build if a service ever imports a Flask request-scoped object or reaches into `routes/`. This is also what makes background jobs and WebSocket handlers able to call the exact same service functions the HTTP routes call.
+**A CI-enforced architectural boundary.** Business logic lives in a `services/` layer with zero Flask dependency; a `routes/` layer handles HTTP concerns only. Not a documented convention — `check_layering.py` runs as the first step of both CI workflows, statically parses every service file's AST, and fails the build if a service imports a Flask request-scoped object or reaches into `routes/`. Four narrow, individually-reviewed exceptions exist (listed in the script itself) for infrastructure that genuinely cannot work any other way — SocketIO handler registration reading `request.sid`/`.cookies`, and Flask-Limiter's own bootstrapping hooks — everything else is enforced with no exceptions. This is also what makes background jobs and WebSocket handlers able to call the exact same service functions the HTTP routes call.
 
 **One reputation write path.** `award_reputation()` is the only function that ever touches `User.reputation`. It floors at zero, recomputes the tier from a single shared lookup table, and writes an auditable before/after history row in the same operation.
 
@@ -175,7 +176,7 @@ pip install -r requirements-test.txt
 pytest
 ```
 
-`pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (495 tests as of this writing). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
+`pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (498 tests as of this writing: 456 unit, 42 integration). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
 Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
 
@@ -191,7 +192,7 @@ The integration suite exercises flows across real service boundaries rather than
 
 ### CI
 
-Both suites run automatically on every push and pull request to `main` via GitHub Actions (`.github/workflows/tests.yml`) — one job for unit tests, one for integration tests, each installing its own dependencies and running against SQLite + fakeredis exactly as described above. No Postgres or Redis service containers, no real AI provider calls, no real RQ worker process. Coverage is reported for both jobs; the integration job additionally uploads a `coverage.xml` artifact. See the badge at the top of this file for current build status.
+Both suites run automatically on every push and pull request to `main` via GitHub Actions — two independent workflows, `.github/workflows/unit-tests.yml` and `.github/workflows/integration-tests.yml`, each installing its own dependencies and running against SQLite + fakeredis exactly as described above. Each workflow also runs `scripts/check_layering.py` as its first step, before dependencies are even installed, so a services/ → routes/ layering violation fails the build immediately rather than surfacing later as a test failure. No Postgres or Redis service containers, no real AI provider calls, no real RQ worker process. Coverage is reported for both jobs; the integration job additionally uploads a `coverage.xml` artifact. See the badges at the top of this file for current build status.
 
 ## Deployment
 
@@ -220,4 +221,4 @@ Another honest current gap: the live study session's real-time activity feed is 
 
 ## License
 
-MIT
+[MIT](LICENSE)
