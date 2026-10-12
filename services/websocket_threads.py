@@ -2143,7 +2143,7 @@ def _call_learnora_for_thread(app, thread_id: int, trigger_text: str, triggering
             ]
 
             # ── Get provider and call AI ──────────────────────────────
-            from routes.student.learnora import provider_manager, _call_provider_sync
+            from services.ai_provider_service import provider_manager, _call_provider_sync
             provider = provider_manager.get_working_provider(needs_vision=False)
             if not provider:
                 logger.warning(
@@ -2261,7 +2261,7 @@ def _call_learnora_action(app, thread_id, message_id, action, target_lang, trigg
                 {"role": "user", "content": f"{ACTION_PROMPTS[action]}\n\n---\n\n{target_msg.text_content}"}
             ]
 
-            from routes.student.learnora import provider_manager, _call_provider_sync
+            from services.ai_provider_service import provider_manager, _call_provider_sync
             provider = provider_manager.get_working_provider(needs_vision=False)
             if not provider:
                 return
