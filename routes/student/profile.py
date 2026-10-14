@@ -675,7 +675,15 @@ def can_help_suggestions(current_user):
 def get_own_profile(current_user):
     """Get current user's full profile including stats, badges, and activity."""
     if request.method == "GET":
-        return render_template("profile/profile.html")
+        # Batch 1 fix: "profile/profile.html" doesn't exist anywhere under
+        # templates/ — this always 500'd. post/feed2.html is the single-page
+        # app shell used for every other page in the app (see /profile/homepage
+        # just below and the main entry route), and it already has a fully
+        # working "my profile" view. static/js/feed/feed.init.js now checks
+        # for this exact path and opens straight to the profile tab, so
+        # serving the same shell here gives a working page instead of a
+        # second, separate template that would drift out of sync with it.
+        return render_template("post/feed2.html")
 
     try:
         profile = StudentProfile.query.filter_by(user_id=current_user.id).first()

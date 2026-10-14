@@ -22,7 +22,7 @@ import {
   appendPostsToFeed,
 } from './feed.render.js';
 import { setupAllEventListeners } from './feed.events.js';
-import { getLoadingSkeleton } from './feed.utils.js';
+import { getLoadingSkeleton, navigateTo } from './feed.utils.js';
 
 // ---------------------------------------------------------------------------
 // Logging helper — prefixes every message so it's easy to filter in DevTools
@@ -513,6 +513,20 @@ document.addEventListener('DOMContentLoaded', async function () {
     log('✅ PullToRefresh ready');
 
     log('=== ✅ All systems initialized ===');
+
+    // Batch 1 fix: GET /student/profile/me used to render a standalone
+    // template (profile/profile.html) that didn't exist, so hitting that
+    // URL directly 500'd. feed2.html is the single-page app shell for the
+    // whole site (this very file), and it already has a fully working
+    // "my profile" view — the #profile section navigateTo() switches to.
+    // Rather than build a second, separate profile page that would drift
+    // out of sync with this one, /profile/me now serves this same shell
+    // (see routes/student/profile.py), and this one line opens it
+    // straight to the profile tab when that's the URL that was loaded —
+    // every other page gets the normal feed view, unaffected.
+    if (window.location.pathname === '/student/profile/me') {
+      navigateTo('profile');
+    }
   } catch (error) {
     err('=== INITIALIZATION FAILED ===', error);
     alert('Failed to load feed: ' + error.message);
