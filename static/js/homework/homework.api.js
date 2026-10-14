@@ -60,16 +60,27 @@ export const homeworkAPI = {
 
   /**
    * Share assignment for help
+   *
+   * Batch 1 fix: POST /assignments/<id>/share-for-help is not a real
+   * route — sharing for help is one of the actions handled by the
+   * existing quick-actions endpoint (see
+   * routes/student/homework_system.py's quick_actions(), which accepts
+   * action: "mark_complete" | "start_working" | "share_for_help" |
+   * "unshare"), so this now calls that instead of a 404.
    */
   async shareAssignmentForHelp(id) {
-    return await api.post(`/assignments/${id}/share-for-help`);
+    return await api.post(`/assignments/${id}/quick-actions`, { action: 'share_for_help' });
   },
 
   /**
    * Unshare assignment
+   *
+   * Batch 1 fix: same issue as shareAssignmentForHelp() above —
+   * POST /assignments/<id>/unshare isn't a real route either; "unshare"
+   * is also just an action value for quick-actions.
    */
   async unshareAssignment(id) {
-    return await api.post(`/assignments/${id}/unshare`);
+    return await api.post(`/assignments/${id}/quick-actions`, { action: 'unshare' });
   },
   
 
