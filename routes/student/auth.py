@@ -501,6 +501,77 @@ def onboard_suggestions_by_email(email):
         return error_response("Failed to generate suggestions")
 
 
+def _send_request_all(email):
+    """
+    Shared body for request_all() and request_all_by_token(): send a
+    connection request from `email`'s user to every id in the request
+    body's "ids" list, skipping any pair that's already connected (in
+    either direction) or already has a pending request between them.
+
+    Callers are responsible for their own authorization check and for
+    wrapping this in their own try/except for a consistent error response
+    — this only raises on genuine failures (bad user, db error) rather
+    than handling them itself, so both routes report errors the same way
+    they already did before this was factored out.
+    """
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return error_response("User not found")
+
+    data = request.get_json()
+    ids  = (data or {}).get("ids", [])
+
+    if ids:
+        for rid in ids:
+            # FIX: skip if a connection already exists in either direction
+            existing = Connection.query.filter(
+                or_(
+                    and_(Connection.requester_id == user.id, Connection.receiver_id == rid),
+                    and_(Connection.requester_id == rid,    Connection.receiver_id == user.id),
+                )
+            ).first()
+            if not existing:
+                db.session.add(Connection(
+                    status="pending",
+                    requester_id=user.id,
+                    receiver_id=rid,
+                    requested_at=datetime.datetime.utcnow(),
+                ))
+
+    db.session.commit()
+    return success_response("Connection request sent successfully")
+
+
+@auth_bp.route("/onboard/request-all/<token>", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
+def request_all_by_token(token):
+    """
+    Token-based counterpart to request_all() below.
+
+    Batch 1 fix: templates/onboarding.html calls
+    POST /onboarding/request-all (wrong prefix, and no identifier at all —
+    see the frontend fix in that file). The onboarding page only ever has
+    a verification *token* in hand (every other call on that page uses
+    /onboard/suggestions/<token> and /onboard/<token> — see
+    onboard_suggestions() just above), never a raw email, and the
+    existing request_all() below requires the email directly in the URL.
+    Rather than have the frontend try to extract or request an email it
+    was never given, this decodes the token the same way
+    onboard_suggestions() does and then runs the exact same
+    "send a connection request to every id, skipping existing
+    connections" logic as request_all().
+    """
+    email = verify_token(token)
+    if isinstance(email, dict) and "error" in email:
+        return error_response(email["error"])
+    try:
+        return _send_request_all(email)
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"request_all_by_token error: {str(e)}")
+        return error_response("An error occurred sending connection requests")
+
+
 @auth_bp.route("/onboard/request-all/<email>", methods=["POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def request_all(email):
@@ -509,36 +580,17 @@ def request_all(email):
         if not email:
             return error_response("Email not found")
 
-        # FIX: verify the caller is the owner of this email
+        # FIX: verify the caller is the owner of this email. This check is
+        # specific to the email-based route: it's the only place that can
+        # prove ownership (session or JWT cookie), since a raw email in a
+        # URL carries no proof on its own. The token-based sibling route
+        # above (request_all_by_token) doesn't need this check — a valid,
+        # correctly-signed verification token *is* the proof, the same way
+        # onboard_suggestions() already treats it a few routes up.
         if not _is_request_authorized_for_email(email):
             return error_response("Unauthorized", 401)
 
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found")
-
-        data = request.get_json()
-        ids  = (data or {}).get("ids", [])
-
-        if ids:
-            for rid in ids:
-                # FIX: skip if a connection already exists in either direction
-                existing = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == user.id, Connection.receiver_id == rid),
-                        and_(Connection.requester_id == rid,    Connection.receiver_id == user.id),
-                    )
-                ).first()
-                if not existing:
-                    db.session.add(Connection(
-                        status="pending",
-                        requester_id=user.id,
-                        receiver_id=rid,
-                        requested_at=datetime.datetime.utcnow(),
-                    ))
-
-        db.session.commit()
-        return success_response("Connection request sent successfully")
+        return _send_request_all(email)
 
     except Exception as e:
         db.session.rollback()

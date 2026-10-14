@@ -1637,7 +1637,14 @@ async function requestAll() {
     connectAllBtn.textContent = 'Connecting...';
     
     try {
-        const response = await api.post(`/onboarding/request-all`, { ids });
+        // Batch 1 fix: this called POST /onboarding/request-all (wrong
+        // prefix — the blueprint is /onboard, not /onboarding — and with
+        // no identifier at all). Every other call on this page uses the
+        // token-based /onboard/... routes (see submitOnboarding() above,
+        // which sources its token the same way), so this now does the
+        // same via the new /onboard/request-all/<token> route.
+        const token = localStorage.getItem('onboarding_token') || window.location.pathname.split('/').pop();
+        const response = await api.post(`/onboard/request-all/${token}`, { ids });
         
         if (response.status === "success") {
             // Disable all connect buttons
