@@ -227,8 +227,12 @@ export async function followPost(postId)   { return await api.post(`/posts/${pos
 export async function unfollowPost(postId) { return await api.delete(`/posts/${postId}/unfollow`); }
 export async function deletePost(postId)   { return await api.delete(`/posts/${postId}`); }
 export async function deleteComment(commentId) { return await api.delete(`/comments/${commentId}`); }
-export async function pinPost(postId)      { return await api.post(`/posts/${postId}/pin`); }
-export async function unpinPost(postId)    { return await api.post(`/posts/${postId}/unpin`); }
+// Batch 1 fix: these pointed at /posts/<id>/pin and /posts/<id>/unpin,
+// neither of which exists — the real routes live under /profile/ (see
+// routes/student/profile.py), since pinning is a profile-level action
+// (pinned posts show on the pinner's profile) rather than a post-level one.
+export async function pinPost(postId)      { return await api.post(`/profile/pin-post/${postId}`); }
+export async function unpinPost(postId)    { return await api.post(`/profile/unpin-post/${postId}`); }
 export async function joinThread(threadId, type) { return await api.post(`/threads/${threadId}/join`, { type }); }
 export async function reportPost(postId, reason) { return await api.post(`/posts/${postId}/report`, { reason }); }
 
