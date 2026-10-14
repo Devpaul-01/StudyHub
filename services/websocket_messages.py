@@ -44,6 +44,7 @@ from models import User, Message, Connection, MessageReaction
 from extensions import db
 from sqlalchemy import or_, and_
 import bleach
+from services.websocket_config import ALLOWED_REACTIONS
 
 # H-10 fix: the typing-indicator tracker used to be a hand-rolled, unlocked
 # class defined right here. Under async_mode='threading' that dict was being
@@ -842,11 +843,30 @@ class MessageWebSocketManager:
             """Add reaction to message"""
             try:
                 message_id = data.get('message_id')
-                emoji = data.get('emoji', 'thumbs_up')
-                
+                # NOTE: despite the parameter name used by the frontend
+                # (messageWS.addReaction(messageId, reactionType) sends it
+                # as 'emoji'), the value here is actually the reaction TYPE
+                # key ('love', 'fire', 'thumbs_up', ...), not a literal
+                # emoji character — it matches ALLOWED_REACTIONS' keys, not
+                # its values. Keeping the incoming field name as 'emoji' to
+                # stay wire-compatible with the existing frontend payload.
+                reaction_type = data.get('emoji', 'thumbs_up')
+
                 if not message_id:
                     return
-                
+
+                # Batch 1 fix: reaction_type was being validated nowhere
+                # and the required `emoji` column (NOT NULL in the
+                # MessageReaction model) was never populated at all, so
+                # every reaction add raised psycopg2.errors.NotNullViolation
+                # and was silently rolled back by the except block below —
+                # reactions have never actually been saved. Falling back to
+                # 'thumbs_up' for an unrecognised type keeps this handler
+                # from failing closed on a bad/outdated client payload.
+                if reaction_type not in ALLOWED_REACTIONS:
+                    reaction_type = 'thumbs_up'
+                emoji_char = ALLOWED_REACTIONS[reaction_type]
+
                 # Check if reaction already exists
                 existing = MessageReaction.query.filter_by(
                     message_id=message_id,
@@ -854,12 +874,14 @@ class MessageWebSocketManager:
                 ).first()
                 
                 if existing:
-                    existing.reaction_type = emoji
+                    existing.reaction_type = reaction_type
+                    existing.emoji = emoji_char
                 else:
                     reaction = MessageReaction(
                         message_id=message_id,
                         user_id=current_user_id,
-                        reaction_type=emoji
+                        reaction_type=reaction_type,
+                        emoji=emoji_char
                     )
                     db.session.add(reaction)
                 
@@ -873,7 +895,11 @@ class MessageWebSocketManager:
                     if r.reaction_type not in reaction_counts:
                         reaction_counts[r.reaction_type] = {
                             'count': 0,
-                            'emoji': r.reaction_type,
+                            # Batch 1 fix: this was r.reaction_type, so the
+                            # frontend (message.templates.js, which renders
+                            # `${data.emoji}` directly) displayed the raw
+                            # type string ("love") instead of a glyph.
+                            'emoji': r.emoji,
                             'users': []
                         }
                     reaction_counts[r.reaction_type]['count'] += 1
@@ -921,7 +947,10 @@ class MessageWebSocketManager:
                         if r.reaction_type not in reaction_counts:
                             reaction_counts[r.reaction_type] = {
                                 'count': 0,
-                                'emoji': r.reaction_type,
+                                # Batch 1 fix: see handle_add_reaction above —
+                                # this was r.reaction_type (the raw type
+                                # string), not the actual emoji glyph.
+                                'emoji': r.emoji,
                                 'users': []
                             }
                         reaction_counts[r.reaction_type]['count'] += 1
