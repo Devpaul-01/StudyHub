@@ -140,6 +140,170 @@ def ask_learnora_about_post(current_user, post_id):
         return error_response("Failed to get AI response about this post")
  
 # ─────────────────────────────────────────────────────────────────────────────
+# AI REFINE (Batch 1, item: refinePostStream 404 fix)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# static/js/feed/feed.api.js's refinePostStream() has always called this
+# path (POST /posts/<id>/refine), but no matching route existed anywhere in
+# the backend, so refining a post's title/content with AI always 404'd.
+# This route exists to generate the refined {title, content} pair that
+# apply-refinement (right below) then persists once the user approves it —
+# the two routes are a matched pair: this one proposes, that one applies.
+#
+# static/js/feed/feed.modals.js's startRefinement() reads the response as a
+# Server-Sent Events stream with a specific, already-hardcoded contract:
+#   data: {"type": "start"}\n\n
+#   data: {"content": "<fragment of the raw AI text, possibly many chunks>"}\n\n   (repeated)
+#   data: {"type": "done", "success": true, "refined": {"title": "...", "content": "..."}}\n\n
+#   data: {"error": "..."}\n\n   (on failure, in place of the chunks above)
+# This route is built to produce exactly that, reusing the same
+# StudyAssistant / provider_manager primitives as the Learnora chat
+# endpoint (routes/student/learnora/__init__.py), rather than hand-rolling
+# a second AI call path. Unlike that chat endpoint, this is a single
+# one-shot generation with no conversation history to persist and no
+# multi-provider rotation loop — if the first provider fails, the error is
+# surfaced to the user (who can just hit "refine" again) rather than
+# silently retried across every configured provider.
+def _extract_refined_json(text):
+    """
+    Pull a {"title": ..., "content": ...} object out of an AI response.
+
+    refine_post()'s system prompt asks for ONLY a JSON object, but models
+    occasionally comply loosely anyway — a markdown fence, a line of
+    commentary, or an unrelated '{' earlier in the reply. A single greedy
+    regex from the first '{' to the last '}' breaks on that last case (it
+    spans across the earlier, unrelated brace). This instead tries the
+    whole response first, then every individually-balanced {...} block in
+    it, and returns the first one that actually parses with both keys
+    present. Returns None if nothing in the text qualifies.
+    """
+    candidates = [text]
+    starts = [m.start() for m in re.finditer(r"\{", text)]
+    for start in starts:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start:i + 1])
+                    break
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and "title" in parsed and "content" in parsed:
+            return {"title": str(parsed["title"]), "content": str(parsed["content"])}
+    return None
+
+
+@posts_ai_bp.route("/posts/<int:post_id>/refine", methods=["POST"])
+@limiter.limit(RateLimitTier.AI_EXPENSIVE, key_func=user_or_ip_key)
+@token_required
+def refine_post(current_user, post_id):
+    """
+    Stream an AI-refined {title, content} pair for a post, for the user to
+    review and (via apply-refinement) approve.
+
+    Body (optional JSON): { "instructions": "make it more concise" }
+    """
+    post = Post.query.get(post_id)
+    if not post:
+        return error_response("Post not found", 404)
+
+    if post.student_id != current_user.id:
+        return error_response("Only the post author can refine this post", 403)
+
+    data = request.get_json(silent=True) or {}
+    instructions = (data.get("instructions") or "").strip()
+
+    from services.ai_provider_service import StudyAssistant, provider_manager
+
+    system_prompt = (
+        "You are Learnora, a helpful study assistant. You improve the "
+        "clarity, grammar, and structure of a student's post without "
+        "changing its meaning or the facts/claims it makes. "
+        "Respond with ONLY a single JSON object of the exact shape "
+        '{"title": "<refined title>", "content": "<refined body>"} '
+        "and nothing else — no markdown fences, no commentary before or "
+        "after it."
+    )
+    user_prompt = (
+        f'Original title: "{post.title}"\n\n'
+        f"Original content:\n{post.text_content or '[No content]'}\n\n"
+        + (f"Additional instructions from the author: {instructions}\n\n" if instructions else "")
+        + "Return the refined {\"title\": ..., \"content\": ...} JSON object now."
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    def generate():
+        full_response = ""
+        stream_failed = False
+
+        yield f"data: {json.dumps({'type': 'start'})}\n\n"
+
+        try:
+            provider = provider_manager.get_working_provider(needs_vision=False)
+            if not provider:
+                yield f"data: {json.dumps({'error': 'No AI provider is currently available'})}\n\n"
+                return
+
+            assistant = StudyAssistant(provider)
+            assistant.select_model(has_images=False)
+
+            for chunk in assistant.stream_response(messages, has_images=False):
+                # stream_response() already yields fully-formed SSE lines
+                # ("data: {...}\n\n") whose JSON body uses a 'content' key
+                # for each text fragment — exactly the shape
+                # feed.modals.js's startRefinement() already parses, so
+                # these are relayed to the client as-is.
+                yield chunk
+
+                if chunk.startswith("data: "):
+                    try:
+                        parsed_chunk = json.loads(chunk[6:])
+                    except Exception:
+                        continue
+                    if "content" in parsed_chunk:
+                        full_response += parsed_chunk["content"]
+                    elif "error" in parsed_chunk:
+                        stream_failed = True
+
+        except Exception as e:
+            current_app.logger.error("Refine post stream error: ", exc_info=True)
+            yield f"data: {json.dumps({'error': 'Failed to generate a refinement'})}\n\n"
+            return
+
+        if stream_failed or not full_response.strip():
+            yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+            return
+
+        from services.ai_provider_service import clean_ai_response
+        cleaned = clean_ai_response(full_response)
+        refined = _extract_refined_json(cleaned)
+
+        if not refined:
+            yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type': 'done', 'success': True, 'refined': refined})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: Build a post dict (shared between feed and tag endpoints)
 # ─────────────────────────────────────────────────────────────────────────────
 
