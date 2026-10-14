@@ -263,21 +263,34 @@
         // ============================================
         async function loadNotificationCounts() {
             try {
-                // Unread notifications
-                const notifRes = await api.get('/notifications/unread-count');
-                if (notifRes.data?.count > 0) {
-                    document.getElementById('notif-count').textContent = notifRes.data.count;
+                // Batch 1 fix: '/notifications/unread-count' and
+                // '/messages/unread-count' are not real backend routes
+                // (there is no @notifications_bp / @messages_bp route
+                // registered for either path), so these two calls always
+                // 404'd and the badges never updated. There is no
+                // dedicated count-only endpoint on either side, so this
+                // reuses the real endpoints that already compute the
+                // count as part of a larger response. This function only
+                // runs once per page load (see the auth-check block above
+                // that calls it), not on a polling interval, so the extra
+                // payload size is a one-time cost rather than a recurring
+                // one — worth revisiting with a lightweight endpoint if
+                // this is ever turned into a poll.
+                const notifRes = await api.get('/profile/notifications/all');
+                const notifCount = notifRes.data?.unread_count ?? 0;
+                if (notifCount > 0) {
+                    document.getElementById('notif-count').textContent = notifCount;
                     document.getElementById('notif-count').style.display = 'flex';
                 } else {
                     document.getElementById('notif-count').style.display = 'none';
                 }
                 
                 // Message counts
-                const msgRes = await api.get('/messages/unread-count');
-                if (msgRes.data?.count > 0) {
-                    const count = msgRes.data.count;
-                    document.getElementById('msg-count').textContent = count;
-                    document.getElementById('messages-badge').textContent = count;
+                const msgRes = await api.get('/messages/conversations');
+                const msgCount = msgRes.data?.total_unread ?? 0;
+                if (msgCount > 0) {
+                    document.getElementById('msg-count').textContent = msgCount;
+                    document.getElementById('messages-badge').textContent = msgCount;
                     document.getElementById('msg-count').style.display = 'flex';
                     document.getElementById('messages-badge').style.display = 'flex';
                 } else {
