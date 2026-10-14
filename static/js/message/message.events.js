@@ -415,7 +415,13 @@ export async function handleSelectReaction(target) {
 
   try {
     messageState.addOptimisticReaction(messageId, reactionType);
-    await messageApi.addReaction(messageId, reactionType);
+    // Reactions are a WebSocket-only operation — there is no matching
+    // REST route on the backend (only the socket handlers
+    // 'add_message_reaction' / 'remove_message_reaction' exist). The old
+    // call to messageApi.addReaction() hit a route that doesn't exist and
+    // always 404'd, so reaction picks silently failed and the optimistic
+    // reaction was reverted every time. See CHANGES.md, Batch 1, item 1.
+    messageWS.addReaction(messageId, reactionType);
     modals.closeReactionPicker();
   } catch (err) {
     console.error('Failed to add reaction:', err);

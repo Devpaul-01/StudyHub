@@ -15,16 +15,18 @@ export const API_ENDPOINTS = {
   HISTORY:        (partnerId) => `/messages/conversation/${partnerId}`,
 
   // Messages
-  SEND:                  '/messages/send',
-  MARK_READ:             '/messages/mark-read',
+  // SEND and MARK_READ were removed here (Batch 1, item 1): neither route
+  // exists on the backend (sending/marking-read is WebSocket-only — see
+  // message.websocket.js), so these were unused, 404-only constants.
   MARK_ALL_READ:         (partnerId) => `/messages/mark-all-read/${partnerId}`,
   DELETE_FOR_ME:         (messageId) => `/messages/${messageId}/delete-for-me`,
   DELETE_FOR_EVERYONE:   (messageId) => `/messages/${messageId}/delete-for-everyone`,
   CLEAR_CHAT:            (partnerId) => `/messages/clear/${partnerId}`,
 
   // Reactions
-  ADD_REACTION:    (messageId) => `/messages/${messageId}/react`,
-  REMOVE_REACTION: (messageId) => `/messages/${messageId}/react`,
+  // ADD_REACTION / REMOVE_REACTION were removed here (Batch 1, item 1):
+  // POST/DELETE /messages/<id>/react has no backend route — reactions are
+  // WebSocket-only ('add_message_reaction' / 'remove_message_reaction').
 
   // Resources (file / voice note upload)
   UPLOAD_RESOURCE: '/messages/resources/upload',

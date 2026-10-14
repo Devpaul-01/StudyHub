@@ -67,26 +67,12 @@ export async function fetchMessageHistory(partnerId, params = {}) {
 // MESSAGES
 // ============================================================================
 
-/**
- * Send a message (REST fallback — primary path is WebSocket).
- */
-export async function sendMessage(receiverId, body, resources = []) {
-  try {
-    const response = await api.post(API_ENDPOINTS.SEND, { receiver_id: receiverId, body, resources });
-    return response.data;
-  } catch (error) {
-    console.error('Failed to send message:', error);
-    throw error;
-  }
-}
-
-export async function markMessagesRead(messageIds) {
-  try {
-    await api.post(API_ENDPOINTS.MARK_READ, { message_ids: messageIds });
-  } catch (error) {
-    console.error('Failed to mark messages as read:', error);
-  }
-}
+// sendMessage() / markMessagesRead() were removed here (Batch 1, item 1):
+// both called backend routes that don't exist (POST /messages/send and
+// POST /messages/mark-read have no matching @messages_bp.route anywhere
+// in routes/student/messages.py), and every real call site already used
+// the WebSocket versions in message.websocket.js instead, so these were
+// unused dead code rather than a working fallback.
 
 export async function markAllRead(partnerId) {
   try {
@@ -126,23 +112,17 @@ export async function clearChat(partnerId) {
 // ============================================================================
 // REACTIONS
 // ============================================================================
-
-export async function addReaction(messageId, reactionType) {
-  try {
-    await api.post(API_ENDPOINTS.ADD_REACTION(messageId), { emoji: reactionType });
-  } catch (error) {
-    console.error('Failed to add reaction:', error);
-    throw error;
-  }
-}
-
-export async function removeReaction(messageId) {
-  try {
-    await api.delete(API_ENDPOINTS.REMOVE_REACTION(messageId));
-  } catch (error) {
-    console.error('Failed to remove reaction:', error);
-    throw error;
-  }
+//
+// addReaction() / removeReaction() were removed here (Batch 1, item 1):
+// POST/DELETE /messages/<id>/react has no matching backend route — only
+// the WebSocket events 'add_message_reaction' / 'remove_message_reaction'
+// exist (see services/websocket_events.py and websocket_messages.py).
+// message.events.js's handleSelectReaction() was calling this REST
+// version, so picking a reaction always 404'd; it now calls
+// messageWS.addReaction() instead, which is the real, working path.
+// There is still no UI action wired up for *removing* a reaction on
+// either path — that's a separate gap, not a 404, so it's left for a
+// later batch rather than built here.
 }
 
 // ============================================================================
