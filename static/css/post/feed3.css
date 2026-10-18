@@ -594,6 +594,35 @@ body {
   border-color: transparent;
 }
 
+/* Batch 2: post-type filter chips — same visual language as .filter-btn
+   above but smaller, since this is a secondary filter row underneath the
+   primary one, not an equally-weighted control. */
+.post-type-chip {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.8rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-base);
+}
+
+.post-type-chip:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.post-type-chip.active {
+  background: var(--accent);
+  color: white;
+  border-color: transparent;
+}
+
 /* ============================================================================
    POST CARDS
    ============================================================================ */

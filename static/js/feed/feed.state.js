@@ -79,6 +79,19 @@ class FeedState {
     this.widgetsLoaded = false;
     this.currentFilter = FEED_FILTERS.ALL;
 
+    // Batch 2: post_type ('', 'question', 'discussion', 'announcement',
+    // 'resource', 'problem') is a second, independent filter the backend
+    // already supports as an AND on top of the primary filter tab (see
+    // GET /posts/feed's post_type param in
+    // routes/student/posts/crud.py) — nothing in the UI ever sent it.
+    // This isn't tracked per-combination the way the five primary filters
+    // above are (that would mean 5x the cached post arrays and pagination
+    // state for a "quick win"); instead, changing it just forces a
+    // one-off re-fetch of whichever primary tab is currently active, with
+    // post_type added to that request. See feed.events.js's
+    // handlePostTypeFilterChange().
+    this.postTypeFilter = '';
+
     // ── Widget interleaving continuity ──────────────────────────────────────
     // renderedPostCount: How many post cards have been inserted for each filter.
     //   Used to compute the correct global index offset when appending a new batch,
@@ -177,6 +190,10 @@ class FeedState {
 
   setCurrentFilter(filter) { this.currentFilter = filter; }
   getCurrentFilter()        { return this.currentFilter; }
+
+  // Batch 2
+  setPostTypeFilter(type)  { this.postTypeFilter = type || ''; }
+  getPostTypeFilter()      { return this.postTypeFilter; }
 
   // ── Widgets ────────────────────────────────────────────────────────────────
 

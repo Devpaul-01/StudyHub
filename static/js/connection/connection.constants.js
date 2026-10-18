@@ -28,6 +28,10 @@ export const CONNECTION_ENDPOINTS = {
   CONNECT: '/connections/request',
   BLOCK: '/connections/block',
   UNBLOCK: '/connections/unblock',
+  // Batch 2: this existed as a working backend route
+  // (DELETE /connections/remove/<user_id>) with no frontend endpoint
+  // constant and nothing calling it at all.
+  REMOVE: '/connections/remove',
   BLOCKED_LIST: '/connections/blocked/list',
   MARK_RECEIVED_SEEN: '/connections/mark-received-seen',
   MARK_SENT_SEEN: '/connections/mark-sent-seen',

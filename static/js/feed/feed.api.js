@@ -57,9 +57,14 @@ export async function createLearnoraChat(initialMessage = '') {
  * @param {number} limit - Max posts per request (backend caps at 50)
  * @returns {{ posts: Array, nextCursor: string|null, hasMore: boolean }}
  */
-export async function loadPostsByFilter(filterType, cursor = null, limit = 20) {
+export async function loadPostsByFilter(filterType, cursor = null, limit = 20, postType = '') {
   const params = new URLSearchParams({ filter: filterType, limit });
   if (cursor) params.set('cursor', cursor);
+  // Batch 2: GET /posts/feed already accepted post_type as an independent
+  // filter (question/discussion/announcement/resource/problem) applied on
+  // top of `filter` — nothing here ever sent it. Optional 4th param so
+  // every existing caller (which doesn't pass one) is unaffected.
+  if (postType) params.set('post_type', postType);
 
   const response = await api.get(`/posts/feed?${params}`);
 

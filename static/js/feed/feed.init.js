@@ -211,8 +211,18 @@ async function filterFeed(type) {
   updateFilterButtons(type);
   updateFeedContainerVisibility(type);
 
-  // If already loaded, render from cache
-  if (feedState.isFilterLoaded(type)) {
+  // Batch 2: a post-type chip (Questions/Discussions/...) may be active.
+  // The per-filter cache below has no way to record whether its cached
+  // posts were fetched with a post_type filter applied or not, so
+  // switching primary tabs while a post-type filter is active always
+  // re-fetches fresh (skipping the cache-hit path) rather than risk
+  // showing the wrong (unfiltered, or differently-filtered) cached posts
+  // under an active filter chip.
+  const activePostType = feedState.getPostTypeFilter();
+
+  // If already loaded, render from cache — but only when no post-type
+  // filter is active; see note above.
+  if (!activePostType && feedState.isFilterLoaded(type)) {
     log(`"${type}" already cached — rendering from state`);
     feedState.setCurrentFilter(type);
     await renderFeed(type);
@@ -232,7 +242,7 @@ async function filterFeed(type) {
 
   try {
     log(`Fetching posts for filter "${type}"...`);
-    const response = await feedApi.loadPostsByFilter(type);
+    const response = await feedApi.loadPostsByFilter(type, null, 20, activePostType);
     log(`API response for filter "${type}":`, {
       postCount:  response?.posts?.length,
       nextCursor: response?.nextCursor,
@@ -261,6 +271,64 @@ async function filterFeed(type) {
   feedState.setCurrentFilter(type);
   log(`Rendering feed for "${type}"...`);
   await renderFeed(type);
+  setupInfiniteScroll();
+  groupEnd();
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2: post-type filter (question/discussion/announcement/resource/
+// problem), layered on top of whichever primary tab above is active.
+//
+// This deliberately does NOT follow the same per-filter caching model as
+// filterFeed() above — the five primary filters each have their own
+// permanent cache keyed by filter name (feedState.posts.all,
+// .department, etc.), and a cache entry has no way to record "this was
+// fetched with post_type=X" vs "with no post_type at all". Rather than
+// rework that caching model for a second filter dimension (a much bigger
+// change than this batch calls for), every post-type change just
+// re-fetches the CURRENT primary filter fresh, with post_type added, and
+// overwrites that one filter's cached posts/pagination with the result.
+// Switching back to "All types" re-fetches the same way, with
+// post_type='' — so leaving the chips doesn't leave stale, filtered data
+// sitting in the primary filter's cache for later tab switches to
+// accidentally reuse.
+// ---------------------------------------------------------------------------
+async function filterPostType(postType) {
+  group(`filterPostType("${postType}")`);
+
+  const activeFilter = feedState.getCurrentFilter();
+  feedState.setPostTypeFilter(postType);
+
+  // Update chip active state
+  document.querySelectorAll('.post-type-chip').forEach(chip => {
+    chip.classList.toggle('active', (chip.dataset.postType || '') === postType);
+  });
+
+  const container = document.getElementById(`feed-${activeFilter}`);
+  if (container) {
+    container.innerHTML = getLoadingSkeleton();
+  }
+
+  try {
+    log(`Fetching posts for filter "${activeFilter}" + post_type "${postType}"...`);
+    const response = await feedApi.loadPostsByFilter(activeFilter, null, 20, postType);
+
+    if (!Array.isArray(response?.posts)) {
+      throw new Error(`loadPostsByFilter("${activeFilter}", post_type="${postType}") returned non-array posts`);
+    }
+
+    const { posts, nextCursor, hasMore } = response;
+    feedState.setPosts(activeFilter, posts);
+    feedState.setPaginationState(activeFilter, { nextCursor, hasMore, loading: false });
+    log(`State updated for "${activeFilter}" (post_type="${postType}"): ${posts.length} posts`);
+  } catch (error) {
+    err(`Failed to load post_type "${postType}" for filter "${activeFilter}":`, error);
+    if (typeof showToast === 'function') showToast('Failed to apply that filter', 'error');
+    groupEnd();
+    return;
+  }
+
+  await renderFeed(activeFilter);
   setupInfiniteScroll();
   groupEnd();
 }
@@ -541,3 +609,4 @@ document.addEventListener('DOMContentLoaded', async function () {
 
 window.filterFeed          = filterFeed;
 window.setupInfiniteScroll = setupInfiniteScroll;
+window.filterPostType      = filterPostType; // Batch 2

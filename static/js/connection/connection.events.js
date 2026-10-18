@@ -2050,6 +2050,41 @@ export async function cancelRequest(connectionId, target) {
 
 
 
+// ============================================================================
+// BATCH 2: REMOVE CONNECTION ("unfriend")
+// ============================================================================
+
+export async function removeConnectionRequest(userId, target) {
+  if (!confirm('Remove this connection? You can send a new request later if you change your mind.')) return;
+
+  target.disabled = true;
+  const originalText = target.textContent;
+  target.textContent = 'Removing...';
+
+  try {
+    const response = await ConnectionAPI.removeConnection(userId);
+
+    if (response.status === 'success') {
+      showToast('Connection removed', 'success');
+
+      const card = target.closest('.connection-card');
+      if (card) {
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+      }
+    } else {
+      showToast(response.message || 'Failed to remove connection', 'error');
+      target.disabled = false;
+      target.textContent = originalText;
+    }
+  } catch (error) {
+    console.error('Remove connection error:', error);
+    showToast('Failed to remove connection', 'error');
+    target.disabled = false;
+    target.textContent = originalText;
+  }
+}
+
 export async function blockRequest(userId, target) {
   if (!confirm('Are you sure you want to block this user?')) return;
   

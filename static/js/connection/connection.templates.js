@@ -118,6 +118,20 @@ export function createConnectedConnectionCard(connection) {
     Mutual Connections
   </button>
 
+  <!-- Batch 2: "Remove connection" was entirely missing from the UI —
+       DELETE /connections/remove/<user_id> already existed on the backend
+       with nothing calling it, so an unwanted connection could only be
+       blocked (which also prevents future contact), never just quietly
+       removed. Only on this card — createConnectedConnectionCard — since
+       a pending received/sent request isn't a connection yet. -->
+  <button data-action="remove-connection" data-user-id="${user.id}" class="danger">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 6 6 18"/>
+      <path d="m6 6 12 12"/>
+    </svg>
+    Remove Connection
+  </button>
+
   <button data-action="block-user" data-user-id="${user.id}" class="danger">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="10"/>

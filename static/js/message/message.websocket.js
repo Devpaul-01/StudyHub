@@ -84,7 +84,13 @@ class MessageWebSocket {
 
     s.on(WS_EVENTS.CONNECT, () => {
       console.log('✅ WS connected');
-      
+
+      // Batch 2: read the last-known-good message timestamp BEFORE
+      // setWebSocketConnected(true) below overwrites messageState's
+      // (different) lastSyncTime field to "now" — see
+      // lastMessageReceivedAt's own comment in message.state.js.
+      const lastSync = messageState.lastMessageReceivedAt;
+
       this.reconnectAttempts   = 0;
       this.isConnected= true;
       messageState.setWebSocketConnected(true);
@@ -93,8 +99,55 @@ class MessageWebSocket {
       s.emit(WS_EVENTS.AUTHENTICATE, { token: this.token });
       this._retryFailedMessages();
 
+      // Batch 2: ask the server for anything missed while disconnected
+      // (phone sleep, network blip, tab backgrounded). On a true first
+      // connect (lastSync is null) the server just replies with an empty
+      // sync_complete — see handle_sync_state() in
+      // services/websocket_messages.py.
+      s.emit(WS_EVENTS.SYNC_STATE, { last_sync: lastSync });
+
       // Hide reconnecting banner
       import('./message.render.js').then(r => r.hideReconnectingBanner());
+    });
+
+    s.on(WS_EVENTS.SYNC_COMPLETE, (data) => {
+      const missed = data?.messages || [];
+      if (missed.length === 0) return;
+
+      console.log(`🔄 Sync: ${missed.length} message(s) missed while disconnected`);
+
+      const currentPartnerId = messageState.getCurrentPartnerId();
+      const touchedPartners = new Set();
+
+      for (const msg of missed) {
+        if (msg.type !== 'direct') {
+          // Thread messages aren't part of this module's state (threads
+          // have their own module) — only direct messages are merged here.
+          continue;
+        }
+        messageState.addMessage(msg);
+        touchedPartners.add(msg.sender_id);
+
+        if (msg.sender_id === currentPartnerId) {
+          renderNewMessage(msg);
+        } else {
+          messageState.incrementUnreadCount(msg.sender_id);
+        }
+      }
+
+      // Refresh the conversation list preview for anyone who sent
+      // something while we were disconnected.
+      import('./message.render.js').then(r => {
+        touchedPartners.forEach(partnerId => {
+          if (partnerId !== currentPartnerId) r.updateConversationItem(partnerId);
+        });
+      });
+
+      this.updateUnreadBadge();
+
+      if (touchedPartners.size > 0 && !touchedPartners.has(currentPartnerId)) {
+        _toast(`${missed.length} message(s) received while you were away`, 'info');
+      }
     });
 
     s.on(WS_EVENTS.AUTHENTICATED, (data) => {

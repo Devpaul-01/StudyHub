@@ -91,6 +91,20 @@ export async function fetchReputationHistory() {
   }
 }
 
+// Batch 2: GET /reputation/levels already existed on the backend (public,
+// no auth required) with nothing on the frontend calling it — there was
+// no "how does reputation work?" screen anywhere, just the progress bar
+// toward the next level with no explanation of how points are earned.
+export async function fetchReputationLevels() {
+  try {
+    const res = await api.get('/reputation/levels');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchReputationLevels:', e);
+    return null;
+  }
+}
+
 // ── Profile editing ───────────────────────────────────────────────────────────
 
 export async function saveProfileEdit(payload) {

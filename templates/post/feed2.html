@@ -572,6 +572,21 @@ html { scroll-behavior: smooth; }
                     </button>
                 </div>
 
+                <!-- Batch 2: post-type filter chips — a second, independent
+                     filter on top of whichever tab above is active.
+                     GET /posts/feed already accepted post_type
+                     (routes/student/posts/crud.py), nothing in the UI sent
+                     it. Values must match that route's valid_types list. -->
+                <div class="feed-post-type-filters" style="display:flex;gap:8px;overflow-x:auto;
+                     padding:0 0 1rem;-webkit-overflow-scrolling:touch;">
+                    <button class="post-type-chip active" data-action="filter-post-type" data-post-type="">All types</button>
+                    <button class="post-type-chip" data-action="filter-post-type" data-post-type="question">Questions</button>
+                    <button class="post-type-chip" data-action="filter-post-type" data-post-type="discussion">Discussions</button>
+                    <button class="post-type-chip" data-action="filter-post-type" data-post-type="resource">Resources</button>
+                    <button class="post-type-chip" data-action="filter-post-type" data-post-type="announcement">Announcements</button>
+                    <button class="post-type-chip" data-action="filter-post-type" data-post-type="problem">Problems</button>
+                </div>
+
                 <div id="posts-container">
                     <!-- For You Feed -->
                     <div class="posts-feed active" id="feed-all">
@@ -1035,8 +1050,31 @@ html { scroll-behavior: smooth; }
                         <input type="checkbox" role="switch" id="toggle-notification">
                         <span class="slider"></span>
                     </label>
+
+                    <!-- Batch 2: these were missing entirely — see
+                         POST /profile/notifications/mark-all-read and
+                         DELETE /profile/notifications/delete-all in
+                         routes/student/notifications.py, both of which
+                         already existed on the backend with nothing in
+                         the UI calling them. -->
+                    <hr style="border: none; border-top: 1px solid var(--border-light, #eee); margin: 2px 0;">
+                    <button type="button" class="notification-bulk-action" data-action="mark-all-notifications-read"
+                            style="background: none; border: none; text-align: left; padding: 8px 0; font-size: 0.9rem; cursor: pointer; color: inherit;">
+                        Mark all as read
+                    </button>
+                    <button type="button" class="notification-bulk-action" data-action="clear-read-notifications"
+                            style="background: none; border: none; text-align: left; padding: 8px 0; font-size: 0.9rem; cursor: pointer; color: #dc2626;">
+                        Clear read notifications
+                    </button>
                 </div>
             </div>
+        </div>
+
+        <!-- Batch 2: filter chips — scope the list (and Mark all as read,
+             above) to one notification category at a time. Values match
+             _build_type_filter() in routes/student/notifications.py. -->
+        <div id="notification-filter-chips" class="notification-filter-chips"
+             style="display: flex; gap: 8px; overflow-x: auto; padding: 4px 16px 12px; -webkit-overflow-scrolling: touch;">
         </div>
 
         <!-- Pull to Refresh Indicator -->

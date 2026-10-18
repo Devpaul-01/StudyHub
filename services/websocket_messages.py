@@ -40,7 +40,7 @@ import os
 import socket as _hostsocket
 import threading
 import uuid
-from models import User, Message, Connection, MessageReaction
+from models import User, Message, Connection, MessageReaction, ThreadMember, ThreadMessage
 from extensions import db
 from sqlalchemy import or_, and_
 import bleach
@@ -1018,7 +1018,131 @@ class MessageWebSocketManager:
                 
             except Exception as e:
                 current_app.logger.error(f'Unread count error: {e}')
-        
+
+        # ====================================================================
+        # SYNC STATE (Batch 2)
+        # ====================================================================
+        #
+        # This existed, fully written, in services/websocket_events.py —
+        # but that whole module is dead code: app.py only wires up
+        # services/websocket_messages.py's init_message_websocket (see the
+        # note at app.py's import of it), so 'sync_state' was never an
+        # event the live server actually listened for, and the frontend
+        # never emitted it either. Ported here (into the module that's
+        # actually registered) rather than just registering the old file,
+        # since nothing else in that file has been verified against the
+        # current schema the way this handler's field references were
+        # checked here (User/Message/ThreadMember/ThreadMessage field
+        # names all confirmed against models.py before porting).
+        #
+        # static/js/message/message.websocket.js emits this after a
+        # reconnect, with the timestamp of the last message it saw, so a
+        # client that was briefly disconnected (phone sleep, network
+        # blip) can catch up on anything it missed instead of silently
+        # having a gap in its message history.
+
+        @self.socketio.on('sync_state')
+        @self.auth_required
+        def handle_sync_state(current_user_id, data):
+            """
+            Sync state after reconnection.
+            Client sends the last timestamp it saw; server sends everything
+            since then.
+
+            Expected payload: {'last_sync': '2025-01-15T10:30:00Z'}
+            """
+            try:
+                last_sync_str = (data or {}).get('last_sync')
+
+                if not last_sync_str:
+                    # No previous sync point to work from (e.g. first-ever
+                    # connect this session) — nothing to catch up on.
+                    emit('sync_complete', {
+                        'messages': [],
+                        'current_timestamp': datetime.now(timezone.utc).isoformat()
+                    })
+                    return
+
+                last_sync = datetime.fromisoformat(last_sync_str.replace('Z', '+00:00'))
+
+                missed_messages = Message.query.filter(
+                    Message.receiver_id == current_user_id,
+                    Message.sent_at > last_sync,
+                    Message.deleted_by_receiver == False
+                ).order_by(Message.sent_at.asc()).limit(100).all()
+
+                thread_ids = [
+                    m.thread_id for m in
+                    ThreadMember.query.filter_by(student_id=current_user_id).all()
+                ]
+
+                missed_thread_messages = []
+                if thread_ids:
+                    missed_thread_messages = ThreadMessage.query.filter(
+                        ThreadMessage.thread_id.in_(thread_ids),
+                        ThreadMessage.sent_at > last_sync
+                    ).order_by(ThreadMessage.sent_at.asc()).limit(100).all()
+
+                messages_data = []
+                for msg in missed_messages:
+                    sender = User.query.get(msg.sender_id)
+                    messages_data.append({
+                        'type': 'direct',
+                        'id': msg.id,
+                        'sender_id': msg.sender_id,
+                        'sender': {
+                            'id': sender.id,
+                            'username': sender.username,
+                            'name': sender.name,
+                            'avatar': sender.avatar
+                        } if sender else None,
+                        'text_content': msg.body,
+                        'resources': msg.resources,
+                        'sent_at': msg.sent_at.isoformat(),
+                        'status': msg.status
+                    })
+
+                for msg in missed_thread_messages:
+                    sender = User.query.get(msg.sender_id)
+                    messages_data.append({
+                        'type': 'thread',
+                        'id': msg.id,
+                        'thread_id': msg.thread_id,
+                        'sender_id': msg.sender_id,
+                        'sender': {
+                            'id': sender.id,
+                            'username': sender.username,
+                            'name': sender.name,
+                            'avatar': sender.avatar
+                        } if sender else None,
+                        'text_content': msg.text_content,
+                        # The ported-from-dead-code version of this
+                        # referenced msg.resources, which does not exist
+                        # on ThreadMessage (only Message has that field) —
+                        # it would have raised an AttributeError the
+                        # moment this ever actually ran. ThreadMessage's
+                        # real attachment fields are surfaced instead.
+                        'attachment': {
+                            'url': msg.attachment_url,
+                            'name': msg.attachment_name,
+                            'type': msg.attachment_type,
+                        } if msg.attachment_url else None,
+                        'sent_at': msg.sent_at.isoformat()
+                    })
+
+                emit('sync_complete', {
+                    'messages': messages_data,
+                    'count': len(messages_data),
+                    'current_timestamp': datetime.now(timezone.utc).isoformat()
+                })
+
+            except Exception as e:
+                current_app.logger.error(f'Sync state error: {e}')
+                emit('sync_complete', {
+                    'messages': [],
+                    'current_timestamp': datetime.now(timezone.utc).isoformat()
+                })
+
         # ====================================================================
         # PING/PONG
         # ====================================================================
