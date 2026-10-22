@@ -45,7 +45,12 @@ import {
   removeTimeSlot,
   confirmStudySession,
   cancelStudySession,
-  filterSessions
+  filterSessions,
+  showAvailableNowModal,
+  refreshAvailableNowResults,
+  closeAvailableNowModal,
+  showConnectionDetailsModal,
+  closeConnectionDetailsModal,
 } from './connection.events.js';
 
 import {renderHelpResults, appendVolunteerCard,renderConnectionTab} from './connection.render.js';
@@ -277,6 +282,35 @@ export const ConnectionHandlers = {
   'toggle-connection-notification': (target, event) => {
     event.stopPropagation();
     toggleConnectionSetting(target);
+  },
+
+  // Batch 3
+
+  'show-available-now': (target, event) => {
+    event.stopPropagation();
+    showAvailableNowModal();
+  },
+
+  'refresh-available-now': (target, event) => {
+    event.stopPropagation();
+    const input = document.getElementById('available-now-subject-input');
+    refreshAvailableNowResults(input?.value?.trim() || '');
+  },
+
+  'close-available-now': (target, event) => {
+    event.stopPropagation();
+    closeAvailableNowModal();
+  },
+
+  'show-connection-details': (target, event) => {
+    event.stopPropagation();
+    const connectionId = parseInt(target.dataset.connectionId);
+    if (connectionId) showConnectionDetailsModal(connectionId);
+  },
+
+  'close-connection-details': (target, event) => {
+    event.stopPropagation();
+    closeConnectionDetailsModal();
   },
 
   'view-avatar': (target, event) => {

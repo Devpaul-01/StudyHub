@@ -959,6 +959,26 @@ html { scroll-behavior: smooth; }
         </svg>
         Stats
       </button>
+
+      <!-- Batch 3: "Offers on my work" and "Helping Others" — see
+           GET /homework/my-help-requests and GET /homework/helping in
+           routes/student/homework_system.py, both of which already
+           existed with no tab calling either. -->
+      <button class="hw-tab" data-action="switch-homework-tab" data-tab="my-help-requests">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+        Offers
+      </button>
+
+      <button class="hw-tab" data-action="switch-homework-tab" data-tab="helping-with">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <path d="M9 12l2 2 4-4"></path>
+        </svg>
+        Helping
+      </button>
     </div>
     
     <!-- Tab Content -->
@@ -974,6 +994,22 @@ html { scroll-behavior: smooth; }
       <!-- Connections Homework Tab -->
       <div class="hw-tab-panel" data-tab-panel="connections-homework">
         <div id="connections-homework-container">
+          <!-- Populated by homework.render.js -->
+        </div>
+      </div>
+
+      <!-- Batch 3: Offers on My Work -->
+      <div class="hw-tab-panel" data-tab-panel="my-help-requests">
+        <div id="my-help-requests-filter-container"></div>
+        <div id="my-help-requests-container">
+          <!-- Populated by homework.render.js -->
+        </div>
+      </div>
+
+      <!-- Batch 3: Helping Others -->
+      <div class="hw-tab-panel" data-tab-panel="helping-with">
+        <div id="helping-with-filter-container"></div>
+        <div id="helping-with-container">
           <!-- Populated by homework.render.js -->
         </div>
       </div>
@@ -1307,7 +1343,22 @@ html { scroll-behavior: smooth; }
                             <input type="checkbox" class="toggle-input" data-action="filter-connections" data-filter="active" />
                             <span class="toggle-slider"></span>
                             <span class="toggle-label">Active Now</span>
+                            <!-- Batch 3: lightweight count badge, from
+                                 GET /connections/online/count, which
+                                 already existed with nothing calling it. -->
+                            <span id="connections-online-count-badge" class="tab-count" style="margin-left:4px;"></span>
                         </label>
+
+                        <!-- Batch 3: "Available now" — a different, richer
+                             feature than the toggle above: scores by
+                             online status, schedule match, and (if a
+                             subject is given) who can help with it. Backs
+                             GET /connections/available-now, which already
+                             existed with no entry point in the UI. -->
+                        <button type="button" data-action="show-available-now"
+                                class="toggle-filter" style="cursor:pointer;background:none;border:none;">
+                            <span class="toggle-label">🟢 Available Now</span>
+                        </button>
                     </div>
                 </div>
 
@@ -2306,6 +2357,14 @@ html { scroll-behavior: smooth; }
     <button class="p-tab-btn" data-action="profile-tab" data-tab="reputation">
       ⭐ Rep
     </button>
+    <!-- Batch 3: GET /badges/my-badges, /badges/progress and
+         /badges/available already existed with no tab anywhere showing
+         earned badges, progress toward new ones, or a way to feature
+         them — only the unrelated "top earners" sidebar widget used any
+         badges endpoint before this. -->
+    <button class="p-tab-btn" data-action="profile-tab" data-tab="badges">
+      🏅 Badges
+    </button>
   </div>
 
   <!-- Tab Content (rendered by JS) -->
@@ -2892,6 +2951,61 @@ html { scroll-behavior: smooth; }
   </div>
 </div>
 
+<!-- Batch 3: Privacy settings — GET/POST /profile/visibility-settings
+     already existed with no settings screen anywhere calling either. -->
+<div id="p-privacy-modal" class="p-modal-overlay hidden" role="dialog" aria-modal="true">
+  <div class="p-modal-box">
+
+    <div class="p-modal-header">
+      <h3 class="p-modal-title">Privacy Settings</h3>
+      <button data-action="profile-close-modal" data-modal-id="p-privacy-modal" class="p-modal-close">✕</button>
+    </div>
+
+    <label class="p-label" style="display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;">
+      <span>Private profile <span class="p-helper">(only connections can see your full profile)</span></span>
+      <input type="checkbox" id="p-privacy-profile-private">
+    </label>
+
+    <label class="p-label" style="display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;margin-top:0.75rem;">
+      <span>Show when I'm active</span>
+      <input type="checkbox" id="p-privacy-show-active">
+    </label>
+
+    <label class="p-label" style="display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;margin-top:0.75rem;">
+      <span>Weekly summary email</span>
+      <input type="checkbox" id="p-privacy-weekly-notification">
+    </label>
+
+    <div class="p-modal-footer">
+      <button data-action="profile-close-modal" data-modal-id="p-privacy-modal" class="p-btn p-btn--secondary">Cancel</button>
+      <button data-action="profile-save-privacy" class="p-btn p-btn--primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch 3: Study schedule editing — GET/POST /profile/study-schedule
+     already existed; the schedule was only ever set once during
+     onboarding and never editable or even viewable afterward. The grid
+     itself is built by JS (populateScheduleModal(), in
+     profile.delegation.js) rather than 28 hardcoded checkboxes here. -->
+<div id="p-schedule-modal" class="p-modal-overlay hidden" role="dialog" aria-modal="true">
+  <div class="p-modal-box" style="max-width:480px;">
+
+    <div class="p-modal-header">
+      <h3 class="p-modal-title">Study Schedule</h3>
+      <button data-action="profile-close-modal" data-modal-id="p-schedule-modal" class="p-modal-close">✕</button>
+    </div>
+
+    <p class="p-helper" style="margin:0 0 0.75rem;">Tap the times you're usually free to study.</p>
+    <div id="p-schedule-grid"><!-- Populated by JS --></div>
+
+    <div class="p-modal-footer">
+      <button data-action="profile-close-modal" data-modal-id="p-schedule-modal" class="p-btn p-btn--secondary">Cancel</button>
+      <button data-action="profile-save-schedule" class="p-btn p-btn--primary">Save</button>
+    </div>
+  </div>
+</div>
+
 <div id="p-edit-modal" class="hidden" role="dialog" aria-modal="true"
   style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;
          display:flex;align-items:center;justify-content:center;padding:1rem;">
@@ -2949,6 +3063,27 @@ html { scroll-behavior: smooth; }
                  font-size:1rem;font-weight:600;line-height:1;">＋</button>
       </div>
 
+      <!-- Batch 3: Skills — POST /profile/skills and
+           DELETE /profile/skills/<name> already existed with no UI calling
+           either. Same chip-list pattern as Learning Goals above. -->
+      <label style="font-size:0.82rem;font-weight:600;color:var(--text-secondary);
+                    display:block;margin-bottom:0.25rem;">Skills</label>
+      <div id="p-edit-skills-list" style="margin-bottom:0.25rem;">
+        <!-- Populated by JS -->
+      </div>
+      <div style="display:flex;gap:0.5rem;position:relative;">
+        <input id="p-edit-skill-input" type="text" placeholder="Add a skill and press +" maxlength="50"
+          autocomplete="off" list="p-edit-skill-suggestions"
+          style="flex:1;padding:0.55rem 0.75rem;border:1px solid var(--border);
+                 border-radius:8px;background:var(--bg-primary);color:var(--text-primary);
+                 font-size:0.9rem;outline:none;box-sizing:border-box;">
+        <datalist id="p-edit-skill-suggestions"><!-- Populated by JS from /skills/popular --></datalist>
+        <button data-action="profile-add-skill"
+          style="flex-shrink:0;padding:0.55rem 0.9rem;background:var(--accent,#0057FF);
+                 color:#fff;border:none;border-radius:8px;cursor:pointer;
+                 font-size:1rem;font-weight:600;line-height:1;">＋</button>
+      </div>
+
       <!-- Edit Academic Info -->
       <button data-action="profile-open-academic"
         style="width:100%;margin-top:0.25rem;padding:0.55rem;
@@ -2956,6 +3091,22 @@ html { scroll-behavior: smooth; }
                border-radius:8px;cursor:pointer;font-size:0.82rem;
                color:var(--text-primary);text-align:center;font-family:inherit;">
         ✏️ Edit Academic Info
+      </button>
+
+      <!-- Batch 3: entry points for the two new settings sub-modals below. -->
+      <button data-action="profile-open-privacy"
+        style="width:100%;padding:0.55rem;
+               background:var(--bg-tertiary);border:1px solid var(--border);
+               border-radius:8px;cursor:pointer;font-size:0.82rem;
+               color:var(--text-primary);text-align:center;font-family:inherit;">
+        🔒 Privacy Settings
+      </button>
+      <button data-action="profile-open-schedule"
+        style="width:100%;padding:0.55rem;
+               background:var(--bg-tertiary);border:1px solid var(--border);
+               border-radius:8px;cursor:pointer;font-size:0.82rem;
+               color:var(--text-primary);text-align:center;font-family:inherit;">
+        📅 Study Schedule
       </button>
     </div>
 

@@ -548,7 +548,7 @@ export function buildConnectionsTab(connections) {
 // REPUTATION TAB
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildReputationTab(repData, historyData) {
+export function buildReputationTab(repData, historyData, rankHistoryData) {
   if (!repData) return `<div class="p-empty">Could not load reputation data</div>`;
 
   const rep     = repData.reputation;
@@ -625,6 +625,9 @@ export function buildReputationTab(repData, historyData) {
           </div>
         ` : `<div style="font-size:0.82rem;color:var(--success);font-weight:600;">🎉 Max level reached!</div>`}
       </div>
+
+      <!-- Batch 3: rank-history trend chart -->
+      ${buildRankHistoryChart(rankHistoryData)}
 
       <!-- Summary boxes -->
       ${summary.total_gained !== undefined ? `
@@ -714,4 +717,287 @@ export function buildGoalsList(goals) {
                border-radius:6px;cursor:pointer;font-size:0.72rem;color:#ef4444;flex-shrink:0;">✕</button>
     </div>`
   ).join('');
+}
+
+// Batch 3: same pattern as buildGoalsList above, rendered as wrapping
+// chips rather than a vertical list, since skills (unlike goals) are
+// short tags more than sentences.
+export function buildSkillsList(skills) {
+  if (!skills || !skills.length) {
+    return `<div style="font-size:0.78rem;color:var(--text-secondary);padding:0.25rem 0;">No skills added yet</div>`;
+  }
+  return `<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">` +
+    skills.map(s => `
+      <span style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.25rem 0.5rem;
+                   background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;
+                   font-size:0.78rem;color:var(--text-primary);">
+        ${s}
+        <button data-action="profile-remove-skill" data-skill="${s.replace(/"/g, '&quot;')}"
+          style="padding:0;background:none;border:none;cursor:pointer;font-size:0.7rem;
+                 color:var(--text-secondary);line-height:1;">✕</button>
+      </span>`
+    ).join('') +
+    `</div>`;
+}
+
+// Batch 3: study-schedule grid, one row per day, one toggle chip per time
+// slot. Built by JS instead of 28 hardcoded checkboxes in feed2.html (the
+// way templates/onboard.html does it) — see populateScheduleModal() in
+// profile.delegation.js for how selections are read back out of this.
+const SCHEDULE_DAYS  = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const SCHEDULE_SLOTS = ['morning', 'afternoon', 'evening', 'night'];
+
+export function buildScheduleGrid(schedule) {
+  schedule = schedule || {};
+  return SCHEDULE_DAYS.map(day => {
+    const selected = new Set(schedule[day] || []);
+    return `
+      <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0;border-bottom:1px solid var(--border);">
+        <span style="width:72px;flex-shrink:0;font-size:0.78rem;font-weight:600;
+                     color:var(--text-primary);text-transform:capitalize;">${day}</span>
+        <div style="display:flex;flex-wrap:wrap;gap:0.35rem;flex:1;">
+          ${SCHEDULE_SLOTS.map(slot => `
+            <button type="button" data-action="profile-toggle-schedule-slot"
+                    data-day="${day}" data-slot="${slot}"
+                    class="${selected.has(slot) ? 'active' : ''}"
+                    style="padding:0.3rem 0.6rem;border-radius:999px;font-size:0.72rem;
+                           cursor:pointer;text-transform:capitalize;
+                           border:1px solid ${selected.has(slot) ? 'var(--accent,#0057FF)' : 'var(--border)'};
+                           background:${selected.has(slot) ? 'var(--accent,#0057FF)' : 'transparent'};
+                           color:${selected.has(slot) ? '#fff' : 'var(--text-secondary)'};">
+              ${slot}
+            </button>`).join('')}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCH 3: Badges tab
+// ─────────────────────────────────────────────────────────────────────────────
+// Backs GET /badges/my-badges, /badges/progress and /badges/available,
+// all of which already existed with no tab in the UI calling any of
+// them — the only existing badges feature was the unrelated "top
+// earners" sidebar widget.
+
+const RARITY_COLORS = {
+  common:    '#9ca3af',
+  uncommon:  '#22c55e',
+  rare:      '#3b82f6',
+  epic:      '#a855f7',
+  legendary: '#f59e0b',
+};
+
+function _rarityColor(rarity) {
+  return RARITY_COLORS[(rarity || '').toLowerCase()] || 'var(--text-secondary)';
+}
+
+export function buildBadgesTab(myBadges, progress) {
+  if (!myBadges) return `<div class="p-empty">Could not load badges</div>`;
+
+  const earned = myBadges.badges || [];
+  const featured = myBadges.featured || [];
+  const progressList = progress?.progress || [];
+
+  const earnedGrid = earned.length ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:0.6rem;">
+      ${earned.map(b => `
+        <button data-action="profile-open-badge-details" data-badge-id="${b.id}"
+                style="display:flex;flex-direction:column;align-items:center;gap:0.3rem;
+                       padding:0.6rem 0.3rem;background:var(--p-card-bg,var(--bg-secondary));
+                       border:1px solid ${b.is_featured ? _rarityColor(b.rarity) : 'var(--border)'};
+                       border-radius:10px;cursor:pointer;font-family:inherit;">
+          <div style="font-size:1.6rem;">${b.icon || '🏅'}</div>
+          <div style="font-size:0.68rem;font-weight:600;color:var(--text-primary);text-align:center;
+                      line-height:1.2;">${b.name}</div>
+          ${b.is_featured ? `<div style="font-size:0.6rem;color:${_rarityColor(b.rarity)};">★ Featured</div>` : ''}
+        </button>
+      `).join('')}
+    </div>` : `<div class="p-empty">No badges earned yet — keep participating!</div>`;
+
+  const progressRows = progressList.length ? progressList.slice(0, 8).map(p => `
+    <div data-action="profile-open-badge-details" data-badge-id="${p.badge.id}"
+         style="padding:0.5rem 0;border-bottom:1px solid var(--border);cursor:pointer;">
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.3rem;">
+        <span style="font-size:1.1rem;opacity:0.5;">${p.badge.icon || '🏅'}</span>
+        <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text-primary);">${p.badge.name}</span>
+        <span style="font-size:0.72rem;color:var(--text-secondary);">
+          ${p.progress.message || `${p.progress.current}/${p.progress.required} ${p.progress.type}`}
+        </span>
+      </div>
+      <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden;">
+        <div style="height:100%;width:${Math.min(100, p.progress.percentage || 0)}%;
+                    background:${_rarityColor(p.badge.rarity)};"></div>
+      </div>
+    </div>
+  `).join('') : `<div class="p-empty">No badges in progress</div>`;
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:1.1rem;">
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:0.6rem;">
+          Earned (${earned.length}) ${featured.length ? `— ${featured.length}/3 featured` : ''}
+        </div>
+        ${earnedGrid}
+      </div>
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:0.3rem;">
+          In Progress
+        </div>
+        ${progressRows}
+      </div>
+      <button data-action="profile-browse-all-badges"
+              style="background:none;border:none;padding:0;cursor:pointer;
+                     font-size:0.78rem;color:var(--primary);font-weight:600;text-align:left;">
+        Browse all badges →
+      </button>
+    </div>`;
+}
+
+export function buildBadgeDetailsModal(data) {
+  if (!data) return `<div class="p-empty">Could not load badge details</div>`;
+  const b = data.badge;
+  const color = _rarityColor(b.rarity);
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:0.9rem;">
+      <div style="text-align:center;">
+        <div style="font-size:3rem;">${b.icon || '🏅'}</div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:0.3rem;">${b.name}</div>
+        <div style="font-size:0.78rem;color:${color};text-transform:capitalize;font-weight:600;">${b.rarity}</div>
+        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.4rem;">${b.description}</div>
+      </div>
+
+      ${data.has_earned ? `
+        <div class="p-card" style="text-align:center;">
+          <div style="font-size:0.78rem;color:var(--text-secondary);">
+            Earned ${data.earned_at ? new Date(data.earned_at).toLocaleDateString() : ''}
+          </div>
+          <button data-action="profile-toggle-feature-badge" data-badge-id="${b.id}"
+                  style="margin-top:0.5rem;padding:0.4rem 1rem;border-radius:999px;border:1px solid ${color};
+                         background:transparent;color:${color};cursor:pointer;font-size:0.78rem;font-weight:600;">
+            ${data.is_featured ? '★ Unfeature' : '☆ Feature on profile'}
+          </button>
+        </div>
+      ` : data.progress ? `
+        <div class="p-card">
+          <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.3rem;">
+            ${data.progress.message || `${data.progress.current} / ${data.progress.required} ${data.progress.type}`}
+          </div>
+          <div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden;">
+            <div style="height:100%;width:${Math.min(100, data.progress.percentage || 0)}%;background:${color};"></div>
+          </div>
+        </div>
+      ` : ''}
+
+      ${data.recent_earners && data.recent_earners.length ? `
+        <div class="p-card">
+          <div style="font-size:0.78rem;font-weight:700;margin-bottom:0.4rem;">Recently earned by</div>
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+            ${data.recent_earners.map(e => `
+              <img src="${e.avatar || '/static/default-avatar.png'}" alt="${e.name}" title="${e.name}"
+                   style="width:28px;height:28px;border-radius:50%;object-fit:cover;">
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      <div style="font-size:0.7rem;color:var(--text-secondary);text-align:center;">
+        Awarded to ${b.awarded_count} student(s) total
+      </div>
+    </div>`;
+}
+
+export function buildAllBadgesModal(data) {
+  if (!data) return `<div class="p-empty">Could not load badges</div>`;
+  const badges = data.badges || [];
+  return `
+    <div style="display:flex;flex-direction:column;gap:0.4rem;max-height:65vh;overflow-y:auto;">
+      ${badges.map(b => `
+        <button data-action="profile-open-badge-details" data-badge-id="${b.id}"
+                style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem;
+                       background:none;border:none;border-bottom:1px solid var(--border);
+                       cursor:pointer;text-align:left;font-family:inherit;
+                       opacity:${b.has_earned ? '1' : '0.5'};">
+          <span style="font-size:1.4rem;">${b.icon || '🏅'}</span>
+          <div style="flex:1;">
+            <div style="font-size:0.84rem;font-weight:600;color:var(--text-primary);">${b.name}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary);">${b.description}</div>
+          </div>
+          ${b.has_earned ? '<span style="font-size:0.9rem;">✅</span>' : ''}
+        </button>
+      `).join('')}
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCH 3: Rank history chart
+// ─────────────────────────────────────────────────────────────────────────────
+// Backs GET /leaderboard/rank-history, which already existed with no
+// trend shown anywhere — the reputation tab only ever showed the
+// CURRENT rank, never how it changed over time.
+//
+// This renders as an empty state for any account that hasn't been
+// through at least one weekly snapshot cycle yet (the backend's
+// leaderboard snapshots run every Sunday via scheduler.py — confirmed
+// that job is real and scheduled, unlike WeeklyChampion elsewhere in
+// this codebase, which the original audit flagged as never actually
+// populated) — so an empty chart here is the correct, expected state
+// for a new account, not a bug.
+export function buildRankHistoryChart(data) {
+  const history = data?.history || [];
+
+  if (history.length < 2) {
+    return `
+      <div class="p-card">
+        <div style="font-size:0.78rem;font-weight:700;color:var(--text-primary);margin-bottom:0.3rem;">
+          Rank Over Time
+        </div>
+        <div class="p-empty">
+          ${history.length === 0
+            ? 'No rank history yet — check back after this week\u2019s leaderboard snapshot.'
+            : 'Not enough history yet to show a trend.'}
+        </div>
+      </div>`;
+  }
+
+  const W = 280, H = 80, PAD = 8;
+  const ranks = history.map(h => h.global_rank);
+  const minRank = Math.min(...ranks);
+  const maxRank = Math.max(...ranks);
+  const range = Math.max(maxRank - minRank, 1);
+
+  // Lower rank = better, so this is drawn inverted: the best (lowest)
+  // rank sits near the TOP of the chart, not the bottom.
+  const points = history.map((h, i) => {
+    const x = PAD + (i / (history.length - 1)) * (W - PAD * 2);
+    const y = PAD + ((h.global_rank - minRank) / range) * (H - PAD * 2);
+    return { x, y, rank: h.global_rank, date: h.date };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+  const first = history[0].global_rank;
+  const last  = history[history.length - 1].global_rank;
+  const delta = first - last; // positive = improved (rank number went down)
+  const trendColor = delta > 0 ? '#10b981' : (delta < 0 ? '#ef4444' : 'var(--text-secondary)');
+  const trendLabel = delta > 0 ? `▲ Improved ${delta}` : (delta < 0 ? `▼ Dropped ${Math.abs(delta)}` : 'No change');
+
+  return `
+    <div class="p-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem;">
+        <span style="font-size:0.78rem;font-weight:700;color:var(--text-primary);">Rank Over Time</span>
+        <span style="font-size:0.72rem;font-weight:600;color:${trendColor};">${trendLabel} this period</span>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+        <path d="${pathD}" fill="none" stroke="var(--primary,#0057FF)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"></path>
+        ${points.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5"
+                                   fill="var(--primary,#0057FF)"><title>${p.date}: #${p.rank}</title></circle>`).join('')}
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-secondary);margin-top:0.2rem;">
+        <span>${history[0].date}</span>
+        <span>#${last} now</span>
+        <span>${history[history.length - 1].date}</span>
+      </div>
+    </div>`;
 }

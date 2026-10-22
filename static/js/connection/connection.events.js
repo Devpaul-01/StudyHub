@@ -5,7 +5,10 @@
 import { connectionContainer } from './connection.constants.js';
 import { ConnectionAPI } from './connection.api.js';
 import { connectionState } from './connection.state.js';
-import { createSearchResultCard, createBlockedUserCard, createMutualConnectionCard } from './connection.templates.js';
+import {
+  createSearchResultCard, createBlockedUserCard, createMutualConnectionCard,
+  buildAvailableNowList, buildConnectionDetails,
+} from './connection.templates.js';
 import { getLoadingSkeleton, showEmptyState } from './connection.utils.js';
 import { renderConnectionTab } from './connection.render.js';
 import { loadConnectionTab } from './connection.init.js';
@@ -2691,4 +2694,100 @@ export function openConnectionActionsModal(target) {
   // Show modal
   openModal('userActionsModal');
   document.body.style.overflow = 'hidden';
+}
+
+// ============================================================================
+// BATCH 3: "Available Now" and "Connection Details"
+// ============================================================================
+// Both backing routes (GET /connections/available-now and
+// GET /connections/<id>/details) already existed with no entry point in
+// the UI. Neither has a static modal in feed2.html — like the reputation
+// levels modal added in Batch 2, these are built and inserted into the
+// page on demand (reusing the same p-modal-* classes other modals use)
+// and removed again when closed, rather than adding two more large
+// static blocks to the already-huge feed2.html for one-off info screens.
+
+function _removeDynamicModal(id) {
+  document.getElementById(id)?.remove();
+}
+
+function _openDynamicModal(id, title, bodyHtml, closeAction) {
+  _removeDynamicModal(id); // avoid piling up duplicates across repeated opens
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = 'p-modal-overlay hidden';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.innerHTML = `
+    <div class="p-modal-box" style="max-width:460px;">
+      <div class="p-modal-header">
+        <h3 class="p-modal-title">${title}</h3>
+        <button data-action="${closeAction}" class="p-modal-close">✕</button>
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+  document.body.appendChild(el);
+  openModal(id);
+}
+
+export async function showAvailableNowModal(subject = '') {
+  _openDynamicModal(
+    'available-now-modal', '🟢 Available Now',
+    `<div style="margin-bottom:0.75rem;">
+      <input id="available-now-subject-input" type="text" value="${subject}"
+             placeholder="Filter by subject (optional)"
+             style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--border);
+                    border-radius:8px;background:var(--bg-primary);color:var(--text-primary);
+                    box-sizing:border-box;font-size:0.85rem;">
+      <button data-action="refresh-available-now"
+              style="margin-top:0.5rem;width:100%;padding:0.5rem;background:var(--accent,#0057FF);
+                     color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.82rem;">
+        Search
+      </button>
+    </div>
+    <div id="available-now-results">Loading…</div>`,
+    'close-available-now'
+  );
+  await refreshAvailableNowResults(subject);
+}
+
+export async function refreshAvailableNowResults(subject = '') {
+  const resultsEl = document.getElementById('available-now-results');
+  if (!resultsEl) return;
+  resultsEl.innerHTML = getLoadingSkeleton();
+  try {
+    const response = await ConnectionAPI.getAvailableNow(subject);
+    const list = response?.data?.available_now || [];
+    resultsEl.innerHTML = buildAvailableNowList(list, subject);
+  } catch (error) {
+    console.error('Available now error:', error);
+    resultsEl.innerHTML = `<div class="p-empty">Failed to load</div>`;
+  }
+}
+
+export function closeAvailableNowModal() {
+  closeModal('available-now-modal');
+  _removeDynamicModal('available-now-modal');
+}
+
+export async function showConnectionDetailsModal(connectionId) {
+  _openDynamicModal(
+    'connection-details-modal', 'Connection Details',
+    `<div id="connection-details-body">Loading…</div>`,
+    'close-connection-details'
+  );
+  const bodyEl = document.getElementById('connection-details-body');
+  try {
+    const response = await ConnectionAPI.getConnectionDetails(connectionId);
+    if (bodyEl) bodyEl.innerHTML = buildConnectionDetails(response?.data);
+  } catch (error) {
+    console.error('Connection details error:', error);
+    if (bodyEl) bodyEl.innerHTML = `<div class="p-empty">Failed to load connection details</div>`;
+  }
+}
+
+export function closeConnectionDetailsModal() {
+  closeModal('connection-details-modal');
+  _removeDynamicModal('connection-details-modal');
 }

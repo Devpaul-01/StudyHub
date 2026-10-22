@@ -19,6 +19,9 @@ class ProfileState {
     this.connections  = [];
     this.reputation   = null;
     this.repHistory   = null;
+    this.myBadges     = null; // Batch 3
+    this.badgeProgress = null; // Batch 3
+    this.rankHistory  = null; // Batch 3
 
     // Which tabs have been fetched already
     this.loaded = {
@@ -57,6 +60,9 @@ class ProfileState {
     this.connections  = [];
     this.reputation   = null;
     this.repHistory   = null;
+    this.myBadges     = null; // Batch 3
+    this.badgeProgress = null; // Batch 3
+    this.rankHistory  = null; // Batch 3
     this.currentTab   = 'posts';
   }
 

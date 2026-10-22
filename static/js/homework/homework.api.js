@@ -111,11 +111,31 @@ export const homeworkAPI = {
 
   /**
    * Get homework I'm helping with
+   *
+   * Batch 3 fix: this called /homework/helping-with, which doesn't exist
+   * (the real route is /homework/helping — no "-with" — see
+   * get_homework_im_helping_with() in routes/student/homework_system.py).
+   * This function itself was unused before Batch 3 (nothing called it),
+   * so the 404 never surfaced; it's fixed now that the new "Helping
+   * Others" tab calls it.
    */
   async getHelpingWith(params = {}) {
     const queryParams = new URLSearchParams(cleanParams(params)).toString();
-    const url = `/homework/helping-with${queryParams ? '?' + queryParams : ''}`;
+    const url = `/homework/helping${queryParams ? '?' + queryParams : ''}`;
     return await api.get(url);
+  },
+
+  /**
+   * Batch 3: "Offers on my work" — everyone who's offered to help across
+   * ALL of my assignments (not one assignment's helper list, which is
+   * the different, pre-existing getMyHelpRequests(assignmentId) above —
+   * deliberately named differently here to avoid confusing the two).
+   * Backs GET /homework/my-help-requests, which already existed with
+   * nothing in the UI calling it.
+   */
+  async getMyHelpRequestsInbox(status = 'all') {
+    const qs = status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : '';
+    return await api.get(`/homework/my-help-requests${qs}`);
   },
 
   /**

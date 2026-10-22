@@ -20,6 +20,11 @@ import {
   buildReputationTab,
   buildGoalsList,
   buildReputationLevelsModal,
+  buildSkillsList,
+  buildScheduleGrid,
+  buildBadgesTab,
+  buildBadgeDetailsModal,
+  buildAllBadgesModal,
 } from './profile.templates.js';
 import { closeModal, openModal } from '../feed/feed.utils.js';
 
@@ -95,13 +100,28 @@ async function renderConnectionsTab() {
 async function renderReputationTab() {
   if (!profileState.isLoaded('reputation')) {
     setTabContent(buildSkeleton());
-    [profileState.reputation, profileState.repHistory] = await Promise.all([
+    // Batch 3: rankHistory fetched alongside the two existing calls here.
+    [profileState.reputation, profileState.repHistory, profileState.rankHistory] = await Promise.all([
       profileApi.fetchReputation(),
       profileApi.fetchReputationHistory(),
+      profileApi.fetchRankHistory(),
     ]);
     profileState.markLoaded('reputation');
   }
-  setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory));
+  setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory, profileState.rankHistory));
+}
+
+// Batch 3
+async function renderBadgesTab() {
+  if (!profileState.isLoaded('badges')) {
+    setTabContent(buildSkeleton());
+    [profileState.myBadges, profileState.badgeProgress] = await Promise.all([
+      profileApi.fetchMyBadges(),
+      profileApi.fetchBadgeProgress(),
+    ]);
+    profileState.markLoaded('badges');
+  }
+  setTabContent(buildBadgesTab(profileState.myBadges, profileState.badgeProgress));
 }
 
 async function renderCurrentTab() {
@@ -110,6 +130,7 @@ async function renderCurrentTab() {
   if (tab === 'stats')       return renderStatsTab();
   if (tab === 'connections') return renderConnectionsTab();
   if (tab === 'reputation')  return renderReputationTab();
+  if (tab === 'badges')     return renderBadgesTab();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,6 +184,45 @@ function closeReputationLevelsModal() {
   document.getElementById(REPUTATION_LEVELS_MODAL_ID)?.remove();
 }
 
+// Batch 3: badge details and "browse all badges" — both built and
+// inserted into the page on demand (same p-modal-* classes other modals
+// use) and removed on close, rather than two more large static blocks in
+// feed2.html for what are essentially one-off info screens. Each uses
+// its own fixed id and is replaced (not stacked) on repeated opens.
+function _openDynamicProfileModal(id, title, bodyHtml) {
+  document.getElementById(id)?.remove();
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = 'p-modal-overlay hidden';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.innerHTML = `
+    <div class="p-modal-box" style="max-width:420px;">
+      <div class="p-modal-header">
+        <h3 class="p-modal-title">${title}</h3>
+        <button data-action="profile-close-modal" data-modal-id="${id}" class="p-modal-close">✕</button>
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+  document.body.appendChild(el);
+  openProfileModal(id);
+}
+
+const BADGE_DETAILS_MODAL_ID = 'p-badge-details-modal';
+const ALL_BADGES_MODAL_ID    = 'p-all-badges-modal';
+
+function openBadgeDetailsModal(data) {
+  _openDynamicProfileModal(BADGE_DETAILS_MODAL_ID, 'Badge Details', buildBadgeDetailsModal(data));
+}
+function closeBadgeDetailsModal() {
+  closeProfileModal(BADGE_DETAILS_MODAL_ID);
+  document.getElementById(BADGE_DETAILS_MODAL_ID)?.remove();
+}
+function openAllBadgesModal(data) {
+  _openDynamicProfileModal(ALL_BADGES_MODAL_ID, 'All Badges', buildAllBadgesModal(data));
+}
+
 function populateEditModal() {
   const d = profileState.profileData;
   if (!d) return;
@@ -171,6 +231,42 @@ function populateEditModal() {
   setVal('p-edit-bio',  d.bio);
   const goalsEl = $id('p-edit-goals-list');
   if (goalsEl) goalsEl.innerHTML = buildGoalsList(d.learning_goals || []);
+  // Batch 3: skills is already part of the same profile payload (see
+  // "skills" in the /profile/me response, routes/student/profile.py) —
+  // no extra request needed to populate this.
+  const skillsEl = $id('p-edit-skills-list');
+  if (skillsEl) skillsEl.innerHTML = buildSkillsList(d.skills || []);
+  populateSkillSuggestions();
+}
+
+// Batch 3: populates the <datalist> backing the skill input's
+// autocomplete from GET /skills/popular. Fire-and-forget — if it fails,
+// the input still works as a plain text field, just without suggestions.
+async function populateSkillSuggestions() {
+  const el = $id('p-edit-skill-suggestions');
+  if (!el) return;
+  const popular = await profileApi.fetchPopularSkills();
+  el.innerHTML = popular.map(s => `<option value="${String(s).replace(/"/g, '&quot;')}"></option>`).join('');
+}
+
+// Batch 3: Privacy settings modal — populated from GET
+// /profile/visibility-settings each time it's opened, so it always
+// reflects the current saved state rather than a stale local copy.
+async function populatePrivacyModal() {
+  const data = await profileApi.fetchVisibilitySettings();
+  if (!data) return;
+  const setChecked = (id, val) => { const el = $id(id); if (el) el.checked = !!val; };
+  setChecked('p-privacy-profile-private',     data.set_profile_private);
+  setChecked('p-privacy-show-active',         data.show_active_status);
+  setChecked('p-privacy-weekly-notification', data.send_weekly_notification);
+}
+
+// Batch 3: Study schedule modal — same "always re-fetch on open" approach
+// as privacy above.
+async function populateScheduleModal() {
+  const schedule = await profileApi.fetchStudySchedule();
+  const gridEl = $id('p-schedule-grid');
+  if (gridEl) gridEl.innerHTML = buildScheduleGrid(schedule || {});
 }
 
 async function populateAcademicModal() {
@@ -229,6 +325,7 @@ export const ProfileHandlers = {
     else if (tab === 'stats')       await renderStatsTab();
     else if (tab === 'connections') await renderConnectionsTab();
     else if (tab === 'reputation')  await renderReputationTab();
+    else if (tab === 'badges')      await renderBadgesTab();
   },
 
   // ── Post filter ───────────────────────────────────────────────────────────
@@ -324,6 +421,47 @@ export const ProfileHandlers = {
     openReputationLevelsModal(data);
   },
 
+  // Batch 3
+  'profile-open-privacy': () => {
+    populatePrivacyModal().then(() => openProfileModal('p-privacy-modal'));
+  },
+
+  'profile-open-schedule': () => {
+    populateScheduleModal().then(() => openProfileModal('p-schedule-modal'));
+  },
+
+  // Batch 3: badge details — dynamically built/removed modal, same
+  // approach as the privacy/schedule modals above but with no static
+  // shell in feed2.html at all (see openBadgeDetailsModal() below for
+  // why — same reasoning as the reputation-levels-style modals).
+  'profile-open-badge-details': async (target) => {
+    const badgeId = target.closest('[data-badge-id]')?.dataset.badgeId;
+    if (!badgeId) return;
+    const data = await profileApi.fetchBadgeDetails(badgeId);
+    openBadgeDetailsModal(data);
+  },
+
+  'profile-toggle-feature-badge': async (target) => {
+    const badgeId = target.dataset.badgeId;
+    if (!badgeId) return;
+    const res = await profileApi.toggleFeatureBadge(badgeId);
+    if (res?.status === 'success') {
+      showToast(res.message || 'Updated', 'success');
+      profileState.invalidate('badges'); // featured state changed — refetch next visit
+      closeBadgeDetailsModal();
+      // If the badges tab is currently open, refresh it immediately
+      // rather than waiting for the next tab switch.
+      if (profileState.getCurrentTab() === 'badges') await renderBadgesTab();
+    } else {
+      showToast(res?.message || 'Could not update badge', 'error');
+    }
+  },
+
+  'profile-browse-all-badges': async () => {
+    const data = await profileApi.fetchAvailableBadges();
+    openAllBadgesModal(data);
+  },
+
   // ── Close modals ──────────────────────────────────────────────────────────
 
   'profile-close-modal': (target) => {
@@ -387,6 +525,85 @@ export const ProfileHandlers = {
       if (goalsEl) goalsEl.innerHTML = buildGoalsList(newGoals);
     } else {
       showToast(res?.message || 'Could not remove goal', 'error');
+    }
+  },
+
+  // ── Batch 3: Skills ────────────────────────────────────────────────────────
+
+  'profile-add-skill': async () => {
+    const input = $id('p-edit-skill-input');
+    const skill = input?.value?.trim();
+    if (!skill) return;
+    const res = await profileApi.addSkill(skill);
+    if (res?.status === 'success') {
+      if (input) input.value = '';
+      const newSkills = res.data?.skills || [];
+      if (profileState.profileData) profileState.profileData.skills = newSkills;
+      const skillsEl = $id('p-edit-skills-list');
+      if (skillsEl) skillsEl.innerHTML = buildSkillsList(newSkills);
+    } else {
+      showToast(res?.message || 'Could not add skill', 'error');
+    }
+  },
+
+  'profile-remove-skill': async (target) => {
+    const skill = target.dataset.skill;
+    if (!skill) return;
+    const res = await profileApi.removeSkill(skill);
+    if (res?.status === 'success') {
+      const newSkills = res.data?.skills || [];
+      if (profileState.profileData) profileState.profileData.skills = newSkills;
+      const skillsEl = $id('p-edit-skills-list');
+      if (skillsEl) skillsEl.innerHTML = buildSkillsList(newSkills);
+    } else {
+      showToast(res?.message || 'Could not remove skill', 'error');
+    }
+  },
+
+  // ── Batch 3: Privacy settings ─────────────────────────────────────────────
+
+  'profile-save-privacy': async () => {
+    const settings = {
+      set_profile_private:      !!$id('p-privacy-profile-private')?.checked,
+      show_active_status:       !!$id('p-privacy-show-active')?.checked,
+      send_weekly_notification: !!$id('p-privacy-weekly-notification')?.checked,
+    };
+    const res = await profileApi.saveVisibilitySettings(settings);
+    if (res?.status === 'success') {
+      showToast('Privacy settings saved', 'success');
+      closeProfileModal('p-privacy-modal');
+    } else {
+      showToast(res?.message || 'Could not save privacy settings', 'error');
+    }
+  },
+
+  // ── Batch 3: Study schedule ───────────────────────────────────────────────
+
+  'profile-toggle-schedule-slot': (target) => {
+    // Pure UI toggle — read back by profile-save-schedule below. No
+    // request per click; one save sends the whole schedule at once, the
+    // same way the academic-info modal batches its fields into one save.
+    target.classList.toggle('active');
+    const active = target.classList.contains('active');
+    target.style.background   = active ? 'var(--accent,#0057FF)' : 'transparent';
+    target.style.borderColor  = active ? 'var(--accent,#0057FF)' : 'var(--border)';
+    target.style.color        = active ? '#fff' : 'var(--text-secondary)';
+  },
+
+  'profile-save-schedule': async () => {
+    const schedule = {};
+    document.querySelectorAll('#p-schedule-grid [data-action="profile-toggle-schedule-slot"].active')
+      .forEach(btn => {
+        const day = btn.dataset.day;
+        if (!schedule[day]) schedule[day] = [];
+        schedule[day].push(btn.dataset.slot);
+      });
+    const res = await profileApi.saveStudySchedule(schedule);
+    if (res?.status === 'success') {
+      showToast('Study schedule saved', 'success');
+      closeProfileModal('p-schedule-modal');
+    } else {
+      showToast(res?.message || 'Could not save study schedule', 'error');
     }
   },
 
