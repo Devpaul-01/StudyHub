@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Features — StudyHub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet" />
+<style>
+  /*
+    Batch 1: this template didn't exist at all, so GET /features (served by
+    routes/student/auth.py's features() view) always 500'd. Nothing in the
+    app currently links to this URL (confirmed — no href="/features" or
+    href="#features" anywhere in templates/index.html's nav or footer), so
+    this fixes the crash with an honest, simple page rather than inventing
+    product claims this project hasn't actually shipped. The design tokens,
+    fonts, and copy below are taken directly from templates/index.html so
+    this doesn't look like an unrelated page bolted onto the site.
+  */
+  :root {
+    --bg: #07090f;
+    --surface: rgba(255,255,255,0.035);
+    --surface-hover: rgba(255,255,255,0.065);
+    --border: rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.14);
+    --accent: #6366F1;
+    --accent-hover: #4F46E5;
+    --accent-subtle: rgba(99,102,241,0.15);
+    --accent-border: rgba(99,102,241,0.3);
+    --violet: #8b5cf6;
+    --violet-soft: rgba(139,92,246,0.12);
+    --violet-border: rgba(139,92,246,0.28);
+    --pink: #ec4899;
+    --pink-soft: rgba(236,72,153,0.12);
+    --pink-border: rgba(236,72,153,0.28);
+    --green: #4ade80;
+    --green-soft: rgba(74,222,128,0.12);
+    --text: #f3f5fb;
+    --text-soft: rgba(243,245,251,0.80);
+    --text-muted: rgba(243,245,251,0.62);
+    --shadow-card: 0 8px 28px rgba(0,0,0,0.35);
+    --r-md: 12px;
+    --r-lg: 18px;
+    --r-pill: 99px;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  h1, h2, h3, .logo { font-family: 'Outfit', sans-serif; }
+  a { color: inherit; }
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.1rem 6vw;
+    background: rgba(7,9,15,0.85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { font-weight: 800; font-size: 1.3rem; text-decoration: none; }
+  .nav-links a { text-decoration: none; color: var(--text-soft); margin-left: 1.6rem; font-size: 0.95rem; }
+  .nav-links a.cta {
+    color: var(--text); background: var(--accent); padding: 0.55rem 1.2rem;
+    border-radius: var(--r-pill); font-weight: 600;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 4rem 6vw 6rem; }
+  .eyebrow {
+    display: inline-block; padding: 0.3rem 0.9rem; border-radius: var(--r-pill);
+    background: var(--accent-subtle); border: 1px solid var(--accent-border);
+    color: #c7d2fe; font-size: 0.85rem; font-weight: 600; margin-bottom: 1.2rem;
+  }
+  h1 { font-size: clamp(2.1rem, 4.5vw, 3rem); font-weight: 800; margin: 0 0 1rem; max-width: 18ch; }
+  .lede { color: var(--text-soft); font-size: 1.15rem; max-width: 60ch; margin: 0 0 3.5rem; }
+  .group { margin-bottom: 3rem; }
+  .group h2 { font-size: 1.6rem; font-weight: 700; margin: 0 0 0.6rem; }
+  .group p.desc { color: var(--text-soft); max-width: 65ch; margin: 0 0 1.6rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 1.3rem 1.4rem; box-shadow: var(--shadow-card);
+  }
+  .card h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.4rem; }
+  .card p { color: var(--text-muted); font-size: 0.93rem; margin: 0; }
+  .people   .card { border-top: 2px solid var(--accent); }
+  .work     .card { border-top: 2px solid var(--violet); }
+  .growth   .card { border-top: 2px solid var(--green); }
+  .cta-row { text-align: center; margin-top: 3.5rem; }
+  .cta-row a {
+    display: inline-block; text-decoration: none; background: var(--accent);
+    color: var(--text); font-weight: 700; padding: 0.9rem 2.2rem; border-radius: var(--r-pill);
+  }
+  footer { text-align: center; padding: 2.5rem 6vw; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="logo">StudyHub</a>
+  <div class="nav-links">
+    <a data-type="login" href="/student/login">Log In</a>
+    <a data-type="register" href="/student/register" class="cta">Sign Up Free</a>
+  </div>
+</nav>
+
+<main>
+  <span class="eyebrow">What's inside StudyHub</span>
+  <h1>Everything you need to study with the right people, stay organized, and see yourself grow.</h1>
+  <p class="lede">
+    StudyHub brings together study-partner matching, a shared homework
+    tracker, a community feed, and progress tracking — in one place, built
+    for students.
+  </p>
+
+  <div class="group people">
+    <h2>Find your people</h2>
+    <p class="desc">
+      Not random matchmaking — explainable compatibility. StudyHub matches
+      you with classmates whose strong subjects are your weak ones, whose
+      schedule overlaps yours, and who learn the way you do — and tells you
+      exactly why.
+    </p>
+    <div class="grid">
+      <div class="card"><h3>Study buddy matching</h3><p>Matched on subjects, schedule, and learning style — with the reasoning shown, not hidden.</p></div>
+      <div class="card"><h3>Connections</h3><p>Build a real network of classmates you study and share progress with.</p></div>
+      <div class="card"><h3>Study threads</h3><p>Join subject-based group chats with people working on the same material.</p></div>
+    </div>
+  </div>
+
+  <div class="group work">
+    <h2>Get organized, together</h2>
+    <p class="desc">
+      A personal assignment tracker with a priority list that re-sorts
+      itself, a peer-help marketplace for when you're stuck, and live study
+      sessions where "studying together" actually means together.
+    </p>
+    <div class="grid">
+      <div class="card"><h3>Homework tracker</h3><p>Every assignment in one list, automatically prioritized by what's due and what's urgent.</p></div>
+      <div class="card"><h3>Peer help marketplace</h3><p>Share an assignment for help, or offer help on someone else's — and build reputation doing it.</p></div>
+      <div class="card"><h3>Live study sessions</h3><p>One goal, one timer, one shared notepad — visible to everyone in the session in real time.</p></div>
+    </div>
+  </div>
+
+  <div class="group growth">
+    <h2>Watch yourself grow</h2>
+    <p class="desc">
+      Reputation, badges, and a weekly leaderboard turn effort you were
+      already putting in into something you can actually see add up.
+    </p>
+    <div class="grid">
+      <div class="card"><h3>Reputation &amp; levels</h3><p>Earn reputation for helping others, answering questions, and staying active.</p></div>
+      <div class="card"><h3>Badges</h3><p>Unlock badges for streaks, milestones, and being a reliable member of the community.</p></div>
+      <div class="card"><h3>Leaderboard</h3><p>See how you stack up against your department, your connections, and the wider community.</p></div>
+    </div>
+  </div>
+
+  <div class="cta-row">
+    <a data-type="register" href="/student/register">Sign Up Free</a>
+  </div>
+</main>
+
+<footer>
+  StudyHub — built for students, by students.
+</footer>
+
+</body>
+</html>

@@ -123,7 +123,6 @@ export async function clearChat(partnerId) {
 // There is still no UI action wired up for *removing* a reaction on
 // either path — that's a separate gap, not a 404, so it's left for a
 // later batch rather than built here.
-}
 
 // ============================================================================
 // RESOURCES  (file / voice note upload)

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Request a Demo — StudyHub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /*
+    Batch 1: this template didn't exist at all, so GET/POST /demo (served
+    by routes/student/auth.py's demo() view) always 500'd. Like
+    features.html, nothing in the app currently links to this URL, so this
+    is a minimal, honest page rather than a built-out interactive demo —
+    the actual product experience lives behind sign-up, which is what this
+    page points people to. Design tokens match templates/index.html.
+  */
+  :root {
+    --bg: #07090f;
+    --surface: rgba(255,255,255,0.035);
+    --border: rgba(255,255,255,0.08);
+    --accent: #6366F1;
+    --accent-hover: #4F46E5;
+    --text: #f3f5fb;
+    --text-soft: rgba(243,245,251,0.80);
+    --text-muted: rgba(243,245,251,0.62);
+    --r-md: 12px;
+    --r-lg: 18px;
+    --r-pill: 99px;
+  }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg); color: var(--text);
+    text-align: center; padding: 2rem;
+    box-sizing: border-box;
+  }
+  h1, .logo { font-family: 'Outfit', sans-serif; }
+  .logo {
+    position: absolute; top: 1.5rem; left: 6vw; font-weight: 800; font-size: 1.2rem;
+    text-decoration: none; color: var(--text);
+  }
+  .card {
+    max-width: 520px; width: 100%;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 2.5rem 2rem;
+  }
+  h1 { font-size: 1.6rem; font-weight: 700; margin: 0 0 0.8rem; }
+  p { color: var(--text-soft); margin: 0 0 1.8rem; line-height: 1.6; }
+  .btn {
+    display: inline-block; text-decoration: none; font-weight: 700;
+    padding: 0.85rem 2rem; border-radius: var(--r-pill); margin: 0.3rem;
+  }
+  .btn-primary { background: var(--accent); color: var(--text); }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-ghost { color: var(--text-soft); border: 1px solid var(--border); }
+  .note { margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<a href="/" class="logo">StudyHub</a>
+
+<div class="card">
+  <h1>See StudyHub for yourself</h1>
+  <p>
+    The best way to see what StudyHub can do is to try it — studying with
+    the right people, tracking your work, and watching your progress add
+    up. It only takes a minute to create a free account.
+  </p>
+  <a href="/student/register" class="btn btn-primary">Create a Free Account</a>
+  <a href="/student/login" class="btn btn-ghost">Log In</a>
+  <p class="note">Already curious what's inside? <a href="/features" style="color: var(--text-soft);">See the features</a>.</p>
+</div>
+
+</body>
+</html>
