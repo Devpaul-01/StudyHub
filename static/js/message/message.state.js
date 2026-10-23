@@ -45,6 +45,17 @@ export const messageState = {
   isConnectedToWebSocket: false,
   lastSyncTime: null,
 
+  // Batch 2: the ISO timestamp of the most recent message actually
+  // received over the socket (any conversation, not just the one
+  // currently open) — set in message.websocket.js's 'new_message'
+  // handler. This is deliberately separate from lastSyncTime above:
+  // lastSyncTime gets overwritten to "now" on every single connect (see
+  // setWebSocketConnected()), including the very reconnect where
+  // sync_state needs the *previous* known-good timestamp to ask "what did
+  // I miss since then?" — reading lastSyncTime at that moment would
+  // always yield a ~0-second gap and defeat the point of syncing.
+  lastMessageReceivedAt: null,
+
   // ── Failed / retry ───────────────────────────────────────────────────────
   failedMessages: [],
   retryQueue: [],
@@ -222,6 +233,16 @@ export function addMessage(message) {
 
   if (message.client_temp_id) {
     messageState.pendingMessages.delete(message.client_temp_id);
+  }
+
+  // Batch 2: track the newest message timestamp seen from the server, for
+  // sync_state on reconnect — see the field's own comment above for why
+  // this is kept separate from lastSyncTime.
+  if (message.sent_at) {
+    const ts = new Date(message.sent_at);
+    if (!messageState.lastMessageReceivedAt || ts > new Date(messageState.lastMessageReceivedAt)) {
+      messageState.lastMessageReceivedAt = message.sent_at;
+    }
   }
 }
 

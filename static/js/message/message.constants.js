@@ -93,6 +93,11 @@ export const WS_EVENTS = {
   // Keep-alive
   PING: 'ping',
   PONG: 'pong',
+
+  // Batch 2: reconnect sync — see handle_sync_state() in
+  // services/websocket_messages.py.
+  SYNC_STATE:    'sync_state',
+  SYNC_COMPLETE: 'sync_complete',
 };
 
 // ============================================================================

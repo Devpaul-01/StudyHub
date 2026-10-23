@@ -19,6 +19,7 @@ import {
   buildConnectionsTab,
   buildReputationTab,
   buildGoalsList,
+  buildReputationLevelsModal,
 } from './profile.templates.js';
 import { closeModal, openModal } from '../feed/feed.utils.js';
 
@@ -121,6 +122,45 @@ function openProfileModal(id) {
 
 function closeProfileModal(id) {
   closeModal(id);
+}
+
+// Batch 2: builds and opens the "How does reputation work?" modal on
+// demand (see the 'show-reputation-levels' handler above for why this
+// isn't a static block in feed2.html like the other profile modals).
+const REPUTATION_LEVELS_MODAL_ID = 'p-reputation-levels-modal';
+
+function openReputationLevelsModal(data) {
+  // Remove any previous instance first, in case the user opened and
+  // closed this more than once in the same session — avoids piling up
+  // duplicate elements with the same id.
+  document.getElementById(REPUTATION_LEVELS_MODAL_ID)?.remove();
+
+  const el = document.createElement('div');
+  el.id = REPUTATION_LEVELS_MODAL_ID;
+  el.className = 'p-modal-overlay hidden';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.innerHTML = `
+    <div class="p-modal-box" style="max-width:420px;">
+      <div class="p-modal-header">
+        <h3 class="p-modal-title">How Reputation Works</h3>
+        <button data-action="profile-close-reputation-levels" class="p-modal-close">✕</button>
+      </div>
+      ${buildReputationLevelsModal(data)}
+    </div>
+  `;
+  document.body.appendChild(el);
+  openProfileModal(REPUTATION_LEVELS_MODAL_ID);
+}
+
+function closeReputationLevelsModal() {
+  closeProfileModal(REPUTATION_LEVELS_MODAL_ID);
+  // Unlike the static modals (which stay in the DOM, hidden, for reuse),
+  // this one was created fresh on open — remove it right away so a stale
+  // copy of someone's levels data doesn't linger in the DOM. .p-modal-overlay
+  // toggles with a plain display:none/flex (no CSS transition — checked
+  // static/css/profile/profile.css), so there's no animation to wait out.
+  document.getElementById(REPUTATION_LEVELS_MODAL_ID)?.remove();
 }
 
 function populateEditModal() {
@@ -269,11 +309,30 @@ export const ProfileHandlers = {
     populateAcademicModal().then(() => openProfileModal('p-academic-modal'));
   },
 
+  // Batch 2: "How does reputation work?" — see the matching entry point
+  // link added to buildReputationTab() in profile.templates.js.
+  // GET /reputation/levels already existed on the backend with nothing
+  // in the UI calling it. There's no existing generic/reusable info
+  // modal in this app (every other profile modal — p-edit-modal,
+  // p-avatar-modal, p-academic-modal — is a dedicated static block
+  // already sitting in feed2.html), and adding a large new static block
+  // there for a one-off info modal isn't worth it, so this one is built
+  // the same way (same p-modal-* classes) but created on demand and
+  // removed on close instead of living in the template permanently.
+  'show-reputation-levels': async () => {
+    const data = await profileApi.fetchReputationLevels();
+    openReputationLevelsModal(data);
+  },
+
   // ── Close modals ──────────────────────────────────────────────────────────
 
   'profile-close-modal': (target) => {
     const id = target.dataset.modalId;
     if (id) closeProfileModal(id);
+  },
+
+  'profile-close-reputation-levels': () => {
+    closeReputationLevelsModal();
   },
 
   // ── Save profile edit ─────────────────────────────────────────────────────

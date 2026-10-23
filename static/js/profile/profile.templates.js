@@ -606,6 +606,15 @@ export function buildReputationTab(repData, historyData) {
             <div style="font-size:0.65rem;color:var(--text-secondary);">Top ${100 - Math.floor(rank.percentile)}%</div>
           </div>
         </div>
+        <!-- Batch 2: entry point for the new "How reputation works" modal
+             — GET /reputation/levels already existed with nothing in the
+             UI surfacing it, so there was no way to see the full level
+             table or what actions earn points without already knowing. -->
+        <button data-action="show-reputation-levels"
+                style="margin-bottom:0.7rem;background:none;border:none;padding:0;cursor:pointer;
+                       font-size:0.72rem;color:var(--primary);font-weight:600;">
+          How does reputation work? →
+        </button>
         ${next ? `
           <div style="font-size:0.72rem;color:var(--text-secondary);display:flex;justify-content:space-between;margin-bottom:0.3rem;">
             <span>Progress to ${next.icon || ''} ${next.name}</span>
@@ -638,6 +647,53 @@ export function buildReputationTab(repData, historyData) {
       <div class="p-card">
         <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:0.5rem;">Recent History</div>
         ${historyRows || `<div class="p-empty">No history yet</div>`}
+      </div>
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPUTATION LEVELS MODAL (Batch 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function buildReputationLevelsModal(data) {
+  if (!data) return `<div class="p-empty">Could not load reputation info</div>`;
+
+  const levels  = data.levels  || [];
+  const actions = data.actions || [];
+
+  const levelRows = levels.map(l => `
+    <div style="display:flex;align-items:center;gap:0.7rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
+      <div style="font-size:1.4rem;">${l.icon || '⭐'}</div>
+      <div style="flex:1;">
+        <div style="font-size:0.85rem;font-weight:700;color:${l.color || 'var(--text-primary)'};">${l.name}</div>
+        <div style="font-size:0.7rem;color:var(--text-secondary);">
+          ${l.min}${l.max >= 999999 ? '+' : ` – ${l.max}`} points
+        </div>
+      </div>
+    </div>`).join('');
+
+  const actionRows = actions
+    .slice()
+    .sort((a, b) => b.points - a.points)
+    .map(a => {
+      const isPos = a.points > 0;
+      return `
+      <div style="display:flex;align-items:center;gap:0.65rem;padding:0.5rem 0;border-bottom:1px solid var(--border);">
+        <span style="font-size:0.78rem;font-weight:700;color:${isPos ? 'var(--success)' : 'var(--danger)'};
+                     min-width:38px;text-align:right;">${isPos ? '+' : ''}${a.points}</span>
+        <div style="flex:1;font-size:0.78rem;color:var(--text-primary);">${a.description}</div>
+      </div>`;
+    }).join('');
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:1.1rem;max-height:70vh;overflow-y:auto;">
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:0.3rem;">Levels</div>
+        ${levelRows || `<div class="p-empty">No levels defined</div>`}
+      </div>
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:0.3rem;">How you earn (and lose) points</div>
+        ${actionRows || `<div class="p-empty">No actions defined</div>`}
       </div>
     </div>`;
 }
