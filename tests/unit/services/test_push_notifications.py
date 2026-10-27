@@ -183,26 +183,6 @@ def test_send_multicast_empty_token_list_returns_zero_zero():
     assert result == {"success": 0, "failure": 0}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG FOUND BY THIS TEST: requirements.txt pins 'firebase-admin' "
-        "with no version constraint. The installed version (7.7.0) has "
-        "removed firebase_admin.messaging.send_multicast entirely (it "
-        "was replaced by send_each_for_multicast/_async) -- confirmed "
-        "directly: patch.object(messaging, 'send_multicast', ...) "
-        "raises AttributeError because the attribute doesn't exist on "
-        "the installed module. send_multicast()'s own bare "
-        "`except Exception` swallows that AttributeError on every real "
-        "call, so right now this method always returns "
-        "{'success': 0, 'failure': len(fcm_tokens)} in production -- "
-        "every multicast push notification silently reports total "
-        "failure, with nothing surfacing the breakage. strict=True so "
-        "this flips to XPASS the moment send_multicast is pinned to a "
-        "compatible version or the method is migrated to "
-        "send_each_for_multicast."
-    ),
-)
 def test_send_multicast_happy_path_returns_counts_from_response():
     PushNotificationService._initialized = True
     fake_response = Mock(success_count=2, failure_count=1, responses=[
@@ -211,7 +191,7 @@ def test_send_multicast_happy_path_returns_counts_from_response():
         Mock(success=False, exception=RuntimeError("bad token")),
     ])
 
-    with patch.object(push_notifications.messaging, "send_multicast", return_value=fake_response):
+    with patch.object(push_notifications.messaging, "send_each_for_multicast", return_value=fake_response):
         result = PushNotificationService.send_multicast(["t1", "t2", "t3"], "Title", "Body")
 
     assert result == {"success": 2, "failure": 1}
@@ -233,7 +213,7 @@ def test_send_multicast_exception_returns_all_failures_without_raising():
     PushNotificationService._initialized = True
 
     with patch.object(push_notifications, "messaging") as mock_messaging:
-        mock_messaging.send_multicast.side_effect = RuntimeError("down")
+        mock_messaging.send_each_for_multicast.side_effect = RuntimeError("down")
         result = PushNotificationService.send_multicast(["t1", "t2"], "Title", "Body")
 
     assert result == {"success": 0, "failure": 2}

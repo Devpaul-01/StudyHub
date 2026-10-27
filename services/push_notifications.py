@@ -157,7 +157,7 @@ class PushNotificationService:
             )
             
             # Send
-            response = messaging.send_multicast(message)
+            response = messaging.send_each_for_multicast(message)
             
             logger.info(
                 f"✅ Multicast sent: {response.success_count} success, {response.failure_count} failures"

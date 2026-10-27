@@ -22,7 +22,7 @@ pandas==2.2.3
 docx2txt
 PyPDF2
 cloudinary
-firebase-admin
+firebase-admin>=6.2.0
 gunicorn[eventlet]
 sentry-sdk
 psycopg2
