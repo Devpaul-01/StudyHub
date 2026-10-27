@@ -208,7 +208,9 @@ def _create_activity(user_id: int, activity_type: str, data: dict):
 def get_assignment_helpers(current_user, assignment_id):
     """Get all helpers for a specific assignment."""
     try:
-        assignment = Assignment.query.get_or_404(assignment_id)
+        assignment = Assignment.query.get(assignment_id)
+        if not assignment:
+            return error_response("Assignment not found", 404)
 
         if assignment.user_id != current_user.id:
             return error_response("Unauthorized. You can only view helpers for your own assignments.", 403)

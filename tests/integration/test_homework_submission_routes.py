@@ -197,28 +197,6 @@ class TestSubmitSolution:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: submit_solution() sets "
-            "submission.status = 'submitted', but HomeworkSubmission.status "
-            "is a strict SQLAlchemy Enum(HomeworkSubmissionStatus) whose "
-            "only valid values are pending/accepted/completed/declined/"
-            "cancelled -- 'submitted' is not one of them. The commit "
-            "raises LookupError(\"'submitted' is not among the defined "
-            "enum values ... homeworksubmissionstatus\"), which the "
-            "route's bare `except Exception` turns into a generic 400 "
-            "'Failed to submit solution'. A helper can therefore NEVER "
-            "successfully submit a solution in production -- this is the "
-            "single call site that is supposed to drive the entire "
-            "request-help -> submit-solution -> give-feedback pipeline, "
-            "and it always fails. strict=True so this flips to XPASS once "
-            "either HomeworkSubmissionStatus gains 'submitted'/'reviewed' "
-            "members (and give_feedback's 'submitted' check is updated to "
-            "match), or these routes are changed to use the enum's actual "
-            "values."
-        ),
-    )
     def test_helper_can_submit_a_solution(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
     ):
@@ -287,24 +265,6 @@ class TestGiveFeedback:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: give_feedback() requires "
-            "submission.status == 'submitted' before it will accept "
-            "feedback, but (see TestSubmitSolution above) no submission "
-            "can ever actually reach that status -- 'submitted' isn't a "
-            "valid HomeworkSubmissionStatus enum value, so "
-            "submit_solution() always fails before setting it. Even "
-            "constructing a submission directly with status='submitted' "
-            "is impossible (SQLAlchemy raises LookupError at flush, same "
-            "as the production bug), so this test uses the real two-step "
-            "flow and documents that give_feedback() is unreachable in "
-            "practice: it always returns 'Cannot give feedback - solution "
-            "not submitted yet'. strict=True so this flips to XPASS "
-            "together with the submit_solution fix."
-        ),
-    )
     def test_requester_can_give_feedback_after_solution_submitted(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
     ):

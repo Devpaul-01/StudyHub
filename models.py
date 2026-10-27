@@ -88,6 +88,8 @@ class ThreadJoinRequestStatus(str, Enum):
 class HomeworkSubmissionStatus(str, Enum):
     PENDING    = "pending"
     ACCEPTED   = "accepted"
+    SUBMITTED  = "submitted"   # helper has submitted a solution
+    REVIEWED   = "reviewed"    # requester has given feedback on it
     COMPLETED  = "completed"
     DECLINED   = "declined"
     CANCELLED  = "cancelled"

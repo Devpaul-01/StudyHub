@@ -42,24 +42,6 @@ def _make_submission(db_session, assignment, requester, helper, **overrides):
 # ============================================================================
 
 class TestGetAssignmentHelpers:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: get_assignment_helpers() calls "
-            "Assignment.query.get_or_404(assignment_id), which raises "
-            "werkzeug's NotFound (an HTTPException, itself a subclass of "
-            "Exception) for a missing id -- but the route wraps that call "
-            "in a bare `except Exception`, which catches the NotFound "
-            "before Flask ever gets to turn it into a real 404 response. "
-            "The except handler then returns its own hardcoded 500 "
-            "('Error fetching helpers: 404 Not Found: ...'), so GET "
-            "/homework/<id>/helpers for a nonexistent assignment id "
-            "responds 500 instead of 404. strict=True so this flips to "
-            "XPASS once get_or_404()'s abort is let propagate (or the "
-            "route checks `if not assignment` and returns error_response(…, "
-            "404) itself, matching every other route in this file)."
-        ),
-    )
     def test_nonexistent_assignment_returns_404(self, client, make_user, auth_headers):
         user = make_user()
 
