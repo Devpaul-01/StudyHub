@@ -171,3 +171,24 @@ def test_wrap_generic_exception_same_network_level_shape():
     wrapped = _wrap_request_exception(exc, "groq")
     assert wrapped.status is None
     assert wrapped.network_error_code is None
+
+
+@pytest.mark.parametrize("body", [
+    {"error": {"code": "model_not_found"}},
+    {"error": {"code": "model-not-found"}},
+    {"error": {"type": "invalid_request_error", "code": "model_not_found",
+               "message": "The model `x` does not exist"}},
+    {"error": {"code": "model_does_not_exist"}},
+])
+def test_classify_bad_model_matches_underscore_and_hyphen_codes(body):
+    """Structured error codes join words with _ or -, not spaces."""
+    err = ProviderCallError("x", status=400, provider_id="p", parsed_body=body)
+    assert classify_provider_error(err) == "BAD_MODEL"
+
+
+def test_classify_underscore_not_found_still_requires_model_word():
+    err = ProviderCallError(
+        "x", status=400, provider_id="p",
+        parsed_body={"error": {"code": "resource_not_found"}},
+    )
+    assert classify_provider_error(err) == "NON_RETRYABLE"

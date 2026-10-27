@@ -291,7 +291,7 @@ def _is_bad_model_signal(parsed_body) -> bool:
         return False
     text = f"{error_obj.get('type') or ''} {error_obj.get('code') or ''} {error_obj.get('message') or ''}".lower()
     return bool(re.search(r"model", text)) and bool(
-        re.search(r"not found|does not exist|invalid|decommission|unknown|unsupported", text)
+        re.search(r"not[\s_-]?found|does[\s_-]?not[\s_-]?exist|invalid|decommission|unknown|unsupported", text)
     )
 
 
