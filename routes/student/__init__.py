@@ -98,6 +98,7 @@ CSRF_EXEMPT_PATHS = {
     "/student/clear-session",
     "/student/check-username",
     "/student/reset-password",
+    "/student/demo",  # public, stateless marketing page; no session exists yet to carry a CSRF token
 }
 
 # Prefixes are checked separately from exact paths since several of the

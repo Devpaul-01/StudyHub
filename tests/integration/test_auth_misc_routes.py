@@ -112,46 +112,16 @@ class TestGetCurrentUserShort:
 # ============================================================================
 
 class TestStaticPages:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: features() does "
-            "`return render_template(\"features.html\")`, but no "
-            "features.html exists anywhere in the codebase (confirmed: "
-            "`find . -iname features.html` finds nothing). Every call to "
-            "GET /student/features raises jinja2.exceptions.TemplateNotFound, "
-            "uncaught by this route (no try/except), which Flask turns "
-            "into a 500 in production -- this page is completely broken. "
-            "strict=True so this flips to XPASS once features.html is "
-            "added back (or the route is removed if the page is no "
-            "longer meant to exist)."
-        ),
-    )
     def test_features_page_renders(self, client):
         resp = client.get("/student/features")
 
         assert resp.status_code == 200
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: demo() does "
-            "`return render_template(\"demo.html\")`, but no demo.html "
-            "exists anywhere in the codebase either -- same unreachable "
-            "TemplateNotFound crash as GET /student/features above. "
-            "strict=True so this flips to XPASS once demo.html is added "
-            "back (or the route is removed)."
-        ),
-    )
     def test_demo_page_renders_get(self, client):
         resp = client.get("/student/demo")
 
         assert resp.status_code == 200
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Same missing demo.html template as the GET case above.",
-    )
     def test_demo_page_renders_post(self, client):
         resp = client.post("/student/demo")
 
