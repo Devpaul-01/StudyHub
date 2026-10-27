@@ -917,7 +917,7 @@ def search_history(current_user):
         return jsonify({
             "status": "success",
             "data": {
-                "recent_searches": search_history[-10:]  # Last 10 searches
+                "recent_searches": search_history[:10]  # 10 most recent (list is newest-first)
             }
         })
         

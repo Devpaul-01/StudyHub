@@ -91,21 +91,6 @@ class TestSearchHistory:
 
         assert resp.get_json()["data"]["recent_searches"] == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: save_search_query() inserts each new "
-            "query at index 0 (newest-first), but search_history() reads "
-            "it back with `search_history[-10:]` -- the LAST 10 elements "
-            "of a newest-first list are the OLDEST entries, not the most "
-            "recent ones. Once more than 10 distinct queries have been "
-            "saved (the list is capped at 20), GET /search/history "
-            "returns the 10 oldest searches and silently omits the most "
-            "recent ones -- the opposite of what 'recent searches' "
-            "promises. strict=True so this flips to XPASS the moment the "
-            "slice is fixed to `search_history[:10]`."
-        ),
-    )
     def test_recent_searches_actually_returns_the_most_recent_queries(
         self, client, make_user, auth_headers, csrf_headers
     ):
