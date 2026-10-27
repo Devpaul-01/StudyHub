@@ -78,25 +78,6 @@ class TestToggleBookmarks:
         assert resp.status_code == 200
         assert resp.get_json()["data"]["results"][0]["success"] is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: toggle_bookmarks() organizes bookmarks "
-            "by creating/reusing a BookmarkFolder row and setting the new "
-            "Bookmark's folder_id to it, but never sets Bookmark.folder (the "
-            "plain string column) -- which has its own column-level "
-            "default=\"Saved\" and so silently lands on \"Saved\" regardless "
-            "of the folder_name passed in. get_bookmarked_posts(), however, "
-            "filters and groups purely by the Bookmark.folder STRING column "
-            "(ignoring folder_id entirely), so a bookmark added to e.g. "
-            "\"Exam Prep\" via this endpoint is invisible under "
-            "?folder=Exam+Prep and is instead reported as being in "
-            "\"Saved\" -- the two folder endpoints disagree about which "
-            "folder a bookmark is actually in. strict=True so this flips "
-            "to XPASS once toggle_bookmarks() also sets folder=folder_name "
-            "(or get_bookmarked_posts switches to filtering by folder_id)."
-        ),
-    )
     def test_custom_folder_name_is_reflected_in_the_listing_filter(
         self, client, make_user, make_post, auth_headers, csrf_headers
     ):

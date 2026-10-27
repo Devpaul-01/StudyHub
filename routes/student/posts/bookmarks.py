@@ -158,6 +158,7 @@ def toggle_bookmarks(current_user):
                     post_id=post_id,
                     student_id=current_user.id,
                     folder_id=folder.id,
+                    folder=folder_name,
                     notes=notes,
                     tags=tags
                 )
