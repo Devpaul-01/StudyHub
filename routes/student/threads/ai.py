@@ -57,7 +57,10 @@ def generate_meeting_notes(current_user, thread_id):
         return error_response("Thread not found", 404)
 
     data = request.get_json(silent=True) or {}
-    message_range = min(max(int(data.get("message_range", 50)), 10), 500)
+    try:
+        message_range = min(max(int(data.get("message_range", 50)), 10), 500)
+    except (TypeError, ValueError):
+        return error_response("message_range must be a number", 400)
 
     messages = (ThreadMessage.query
                 .filter_by(thread_id=thread_id, is_deleted=False)

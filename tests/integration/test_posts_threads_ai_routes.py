@@ -275,23 +275,6 @@ class TestGenerateMeetingNotes:
 
         assert resp.get_json()["status"] == "error"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: generate_meeting_notes() computes "
-            "`message_range = min(max(int(data.get('message_range', 50)), "
-            "10), 500)` BEFORE the function's own try/except block starts "
-            "(that block only wraps the AI call and JSON parsing below "
-            "it). A non-numeric message_range in the request body makes "
-            "int(...) raise ValueError, which is never caught anywhere in "
-            "this route -- it propagates as an unhandled exception "
-            "instead of the generic error_response(...) every other "
-            "failure path in this route returns, a 500 in production "
-            "instead of a clean 4xx. strict=True so this flips to XPASS "
-            "once the int(...) conversion is wrapped in its own "
-            "try/except (or moved inside the existing try block)."
-        ),
-    )
     def test_non_numeric_message_range_is_handled_gracefully(
         self, client, make_user, make_thread, make_thread_member,
         make_thread_message, auth_headers, csrf_headers,
