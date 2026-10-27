@@ -95,26 +95,6 @@ class TestGetRecommendedThreads:
 # ============================================================================
 
 class TestGetHelpSuggestions:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: when the viewer has no onboarding "
-            "details, get_help_suggestions() calls "
-            "error_response(\"Complete your onboarding to get help "
-            "suggestions\", data={'redirect': '/student/onboard'}) -- but "
-            "error_response()'s actual signature (routes/student/helpers.py) "
-            "is `error_response(message, status_code=400, errors=None)`, "
-            "with no `data` parameter at all. The call raises TypeError("
-            "\"error_response() got an unexpected keyword argument 'data'\"), "
-            "which the route's own bare `except Exception` catches and "
-            "turns into a generic 'Failed to load help suggestions' 400 -- "
-            "so a user who hasn't onboarded never actually sees the "
-            "intended message or the /student/onboard redirect hint; they "
-            "just see an opaque failure. strict=True so this flips to "
-            "XPASS once the call site is fixed to use `errors=` (or "
-            "error_response() itself gains a `data` parameter)."
-        ),
-    )
     def test_no_onboarding_returns_error_with_redirect(self, client, make_user, auth_headers):
         user = make_user()
 

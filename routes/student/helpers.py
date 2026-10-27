@@ -344,11 +344,17 @@ def success_response(message, data=None, redirect_url=None):
     return jsonify(response)
 
 
-def error_response(message, status_code=400, errors=None):
-    """Standard error JSON response."""
+def error_response(message, status_code=400, errors=None, data=None):
+    """Standard error JSON response.
+
+    ``data`` carries optional machine-readable hints for the client (for
+    example ``{"redirect": "/student/onboard"}``).
+    """
     response = {"status": "error", "message": message}
     if errors:
         response["errors"] = errors
+    if data is not None:
+        response["data"] = data
     return jsonify(response), status_code
 
 

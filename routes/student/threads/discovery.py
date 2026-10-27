@@ -808,7 +808,7 @@ def get_thread(current_user, thread_id):
                             "avatar":   requester.avatar
                         },
                         "message":      req.message,
-                        "requested_at": req.requested_at.isoformat()
+                        "requested_at": req.requested_at.isoformat() if req.requested_at else None
                     })
             thread_data["pending_requests"] = requests_data
 
