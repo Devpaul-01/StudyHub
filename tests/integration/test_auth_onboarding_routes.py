@@ -174,48 +174,15 @@ class TestOnboardRequestAll:
     the repo's main had moved forward since this file was first written
     and added a route that shadows the one these tests target):
 
-    routes/student/auth.py registers BOTH
-      POST /onboard/request-all/<token>   (request_all_by_token)
-      POST /onboard/request-all/<email>   (request_all)
-    as the exact same URL shape (one dynamic string segment after the
-    same static prefix). Werkzeug resolves ambiguous same-shape rules by
-    registration order, and request_all_by_token is defined FIRST in the
-    file -- so EVERY request to this path, regardless of caller intent,
-    is routed to request_all_by_token(token), which immediately tries
-    verify_token(token) on whatever string was in the URL. request_all()
-    -- the session/JWT-ownership-checked route these tests were written
-    against -- is permanently unreachable dead code: _is_request_authorized_for_email()
-    never runs, and every caller instead gets request_all_by_token's
-    "This link is invalid." 400 (since a plain email is never a valid
-    verification JWT).
-
-    Verified directly: POST /student/onboard/request-all/<a real user's
-    email>, with a valid authenticated session, returns
-    {'status': 'error', 'message': 'This link is invalid.'} -- the exact
-    shape of a failed verify_token() call, not anything request_all()
-    itself can produce.
-
-    Each test below documents this via xfail(strict=True) rather than
-    being rewritten to assert the broken (shadowed-route) behavior as if
-    it were correct -- these assertions are what request_all() actually
-    promises and will again pass once the route conflict is resolved
-    (e.g. by giving the token route its own distinct path segment, as
-    its neighbor /onboard/suggestions/<token> already does relative to
-    /onboard/<email>).
+    routes/student/auth.py used to register both
+      POST /onboard/request-all/<token>
+      POST /onboard/request-all/<email>
+as the same URL shape, so the token route shadowed the email route. It is
+now a single route that dispatches on whether the identifier contains "@"
+(emails always do, verification JWTs never do), so these tests exercise
+the email path directly.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: POST /onboard/request-all/<email> is "
-            "permanently shadowed by the identically-shaped "
-            "POST /onboard/request-all/<token> route registered earlier in "
-            "routes/student/auth.py -- every request here is routed to "
-            "request_all_by_token() instead, so _is_request_authorized_for_email()'s "
-            "401 is never reached; an unauthenticated caller gets request_all_by_token's "
-            "'This link is invalid.' 400 instead. See class docstring."
-        ),
-    )
     def test_requires_authorization(self, client, make_user):
         user = make_user(email="reqall1@example.com")
 
@@ -225,16 +192,6 @@ class TestOnboardRequestAll:
 
         assert resp.status_code == 401
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: same route-shadowing bug as "
-            "test_requires_authorization (see class docstring) -- this "
-            "request never reaches request_all()'s connection-creation "
-            "logic at all, so no Connection rows are ever created and the "
-            "response is request_all_by_token's 'This link is invalid.' 400."
-        ),
-    )
     def test_creates_pending_connections_for_given_ids(
         self, client, db_session, make_user
     ):
@@ -258,14 +215,6 @@ class TestOnboardRequestAll:
         assert {c.receiver_id for c in conns} == {target1.id, target2.id}
         assert all(c.status == "pending" for c in conns)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: same route-shadowing bug as "
-            "test_requires_authorization (see class docstring) -- "
-            "request_all()'s existing-connection skip logic never runs."
-        ),
-    )
     def test_skips_ids_with_an_existing_connection_either_direction(
         self, client, db_session, make_user, make_connection
     ):
@@ -293,15 +242,6 @@ class TestOnboardRequestAll:
         assert len(conns) == 1
         assert conns[0].status == "accepted"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: same route-shadowing bug as "
-            "test_requires_authorization (see class docstring) -- an "
-            "empty ids list never reaches request_all()'s no-op success "
-            "path; the response is request_all_by_token's 400 instead."
-        ),
-    )
     def test_empty_ids_list_is_a_no_op_success(self, client, make_user):
         user = make_user(email="reqall4@example.com")
 

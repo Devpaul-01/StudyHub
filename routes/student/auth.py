@@ -542,24 +542,31 @@ def _send_request_all(email):
     return success_response("Connection request sent successfully")
 
 
-@auth_bp.route("/onboard/request-all/<token>", methods=["POST"])
+@auth_bp.route("/onboard/request-all/<identifier>", methods=["POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def request_all_by_token(token):
+def request_all(identifier):
     """
-    Token-based counterpart to request_all() below.
+    Send connection requests to a list of user IDs during onboarding.
 
-    Batch 1 fix: templates/onboarding.html calls
-    POST /onboarding/request-all (wrong prefix, and no identifier at all —
-    see the frontend fix in that file). The onboarding page only ever has
-    a verification *token* in hand (every other call on that page uses
-    /onboard/suggestions/<token> and /onboard/<token> — see
-    onboard_suggestions() just above), never a raw email, and the
-    existing request_all() below requires the email directly in the URL.
-    Rather than have the frontend try to extract or request an email it
-    was never given, this decodes the token the same way
-    onboard_suggestions() does and then runs the exact same
-    "send a connection request to every id, skipping existing
-    connections" logic as request_all().
+    Flask can't tell ``/onboard/request-all/<token>`` and
+    ``/onboard/request-all/<email>`` apart (both are a single string
+    segment), so the first-registered rule used to shadow the second and the
+    email variant was unreachable. One route now dispatches on the shape of
+    the identifier: an email always contains ``@``, a verification JWT never
+    does.
+    """
+    if "@" in identifier:
+        return _request_all_by_email(identifier)
+    return _request_all_by_token(identifier)
+
+
+def _request_all_by_token(token):
+    """
+    Token-based variant (used by templates/onboarding.html, which only ever
+    holds a verification token, never a raw email). Decodes the token the
+    same way onboard_suggestions() does and then runs the shared
+    "send a connection request to every id, skipping existing connections"
+    logic.
     """
     email = verify_token(token)
     if isinstance(email, dict) and "error" in email:
@@ -572,21 +579,15 @@ def request_all_by_token(token):
         return error_response("An error occurred sending connection requests")
 
 
-@auth_bp.route("/onboard/request-all/<email>", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def request_all(email):
-    """Send connection requests to a list of user IDs during onboarding."""
+def _request_all_by_email(email):
+    """Email-based variant: caller must prove they own the email."""
     try:
         if not email:
             return error_response("Email not found")
 
-        # FIX: verify the caller is the owner of this email. This check is
-        # specific to the email-based route: it's the only place that can
-        # prove ownership (session or JWT cookie), since a raw email in a
-        # URL carries no proof on its own. The token-based sibling route
-        # above (request_all_by_token) doesn't need this check — a valid,
-        # correctly-signed verification token *is* the proof, the same way
-        # onboard_suggestions() already treats it a few routes up.
+        # A raw email in a URL carries no proof on its own, so verify the
+        # caller (session or JWT cookie) owns it. The token variant doesn't
+        # need this: a validly signed verification token is the proof.
         if not _is_request_authorized_for_email(email):
             return error_response("Unauthorized", 401)
 
