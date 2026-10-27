@@ -97,23 +97,6 @@ def test_search_users_reputation_min_filters_below_threshold(app, db_session, ma
     assert low_rep.id not in ids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG FOUND BY THIS TEST: the module's own comment claims "
-        "`.contains()` is a 'dialect-portable' filter for the skills "
-        "column (JSONB on Postgres, plain db.JSON on SQLite), but "
-        "User.skills.contains([...]) is a silent no-op on SQLite — it "
-        "matches zero rows even for an exact, present value. Verified "
-        "directly: User.query.filter(User.skills.contains(['python'])) "
-        "returns [] against a row whose skills column is literally "
-        "['python', 'calculus']. Every skills-filtered search_users() "
-        "call against the SQLite test DB (and in SQLite-backed local "
-        "dev) silently returns no results instead of filtering "
-        "correctly. strict=True so this starts failing loudly (XPASS) "
-        "the moment it's fixed, as a reminder to remove this marker."
-    ),
-)
 def test_search_users_skills_filter_matches_contained_skill(app, db_session, make_user):
     viewer = make_user(username="viewer")
     matching = make_user(username="matches", skills=["python", "calculus"])
@@ -229,16 +212,6 @@ def test_search_posts_filters_by_solved_status(app, db_session, make_user, make_
     assert unsolved.id not in ids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Same underlying bug as "
-        "test_search_users_skills_filter_matches_contained_skill: "
-        "Post.tags.contains([...]) is a silent no-op on SQLite's plain "
-        "db.JSON column. strict=True so this flips to XPASS (and must "
-        "have its marker removed) once the underlying filter is fixed."
-    ),
-)
 def test_search_posts_tags_filter_matches_contained_tag(app, db_session, make_user, make_post):
     author = make_user()
     matching = make_post(author, title="Tagged", tags=["exams", "physics"])

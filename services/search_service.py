@@ -46,6 +46,7 @@ from models import (
     User, StudentProfile, Post, Thread, ThreadMember, Connection,
 )
 from extensions import db
+from services.json_filters import json_array_contains
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -186,9 +187,9 @@ def search_users(
 
     if skills:
         skills_list = [s.strip().lower() for s in skills]
-        # H-7: .contains() is dialect-portable; the Postgres-JSONB-only
+        # H-7: json_array_contains() is dialect-portable; the Postgres-JSONB-only
         # '?|' operator is not valid on a plain db.JSON column / SQLite.
-        q = q.filter(or_(*[User.skills.contains([s]) for s in skills_list]))
+        q = q.filter(or_(*[json_array_contains(User.skills, s) for s in skills_list]))
 
     if reputation_min:
         q = q.filter(User.reputation >= reputation_min)
@@ -276,7 +277,7 @@ def search_posts(
     if tags:
         tags_list = [t.strip().lower() for t in tags]
         # H-7: portable .contains() filter, not the Postgres-only '?|' operator.
-        q = q.filter(or_(*[Post.tags.contains([t]) for t in tags_list]))
+        q = q.filter(or_(*[json_array_contains(Post.tags, t) for t in tags_list]))
 
     if solved is not None:
         q = q.filter(Post.is_solved == solved)

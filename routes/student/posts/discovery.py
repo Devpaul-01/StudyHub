@@ -116,11 +116,9 @@ def get_posts_by_tag(current_user, tag):
         page = request.args.get("page", 1, type=int)
         per_page = request.args.get("per_page", 20, type=int)
         
-        # ✅ FIXED: Cast the COLUMN (not just the param) to JSONB, then use the @> operator
-        from sqlalchemy.dialects.postgresql import JSONB
-        from sqlalchemy import cast
-        
-        query = Post.query.filter(cast(Post.tags, JSONB).contains([tag]))
+        from services.json_filters import json_array_contains
+
+        query = Post.query.filter(json_array_contains(Post.tags, tag))
         query = query.order_by(Post.posted_at.desc())
         
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)

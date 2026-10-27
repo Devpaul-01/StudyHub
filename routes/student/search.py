@@ -340,8 +340,12 @@ def unanswered_posts(current_user):
         if department:
             query = query.filter(Post.department == department)
         if tags:
-            tags_list = [t.strip().lower() for t in tags.split(",")]
-            query = query.filter(Post.tags.in_(tags))
+            from services.json_filters import json_array_contains
+            tags_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+            if tags_list:
+                query = query.filter(
+                    or_(*[json_array_contains(Post.tags, t) for t in tags_list])
+                )
         
         # Sort by recent first
         unanswered = query.order_by(Post.posted_at.desc()).limit(limit).all()

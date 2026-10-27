@@ -205,29 +205,6 @@ class TestUnansweredPosts:
         ids = [p["id"] for p in resp.get_json()["data"]["unanswered_posts"]]
         assert resource_post.id not in ids
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: unanswered_posts()'s tag filter "
-            "computes `tags_list = [t.strip().lower() for t in "
-            "tags.split(\",\")]` from the raw `?tags=` query string but "
-            "then never uses it -- the actual filter is "
-            "`query.filter(Post.tags.in_(tags))` with the RAW, unsplit "
-            "query string `tags` (e.g. \"calculus\"), not `tags_list`. "
-            "Post.tags is a JSON list column, and SQLAlchemy's .in_() "
-            "iterates its argument to build the IN(...) list -- iterating "
-            "a plain string yields its individual CHARACTERS "
-            "('c','a','l','c','u','l','u','s'), so the generated query is "
-            "effectively `Post.tags IN ('c','a','l',...)`, comparing each "
-            "post's whole tags array against single letters. This can "
-            "never match a real tags array, so passing ?tags=<anything> "
-            "to this endpoint always filters out every post, even ones "
-            "that are an exact tag match. strict=True so this flips to "
-            "XPASS once the filter uses `Post.tags.op('@>')([...])`-style "
-            "containment (or any check against `tags_list`, not the raw "
-            "string) instead of `.in_(tags)`."
-        ),
-    )
     def test_tags_filter_matches_a_post_with_that_tag(
         self, client, make_user, make_post, auth_headers
     ):

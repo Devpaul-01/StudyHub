@@ -67,27 +67,6 @@ class TestPostResources:
 # ============================================================================
 
 class TestGetPostsByTag:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: get_posts_by_tag() unconditionally "
-            "does `cast(Post.tags, JSONB).contains([tag])`, hardcoding "
-            "sqlalchemy.dialects.postgresql.JSONB regardless of the active "
-            "dialect. models.py's own JSONB_VARIANT (db.JSON().with_variant"
-            "(postgresql.JSONB, 'postgresql')) exists specifically so the "
-            "column behaves as plain JSON outside Postgres -- 'SQLite local "
-            "dev in particular' per that comment -- but this route bypasses "
-            "the variant entirely and casts straight to the Postgres-only "
-            "type. On SQLite this raises "
-            "sqlalchemy.exc.UnsupportedCompilationError (\"Compiler ... "
-            "can't render element of type JSONB\") on every single call, so "
-            "GET /posts/tags/<tag> is completely broken in local dev/test "
-            "and any other non-Postgres environment. strict=True so this "
-            "flips to XPASS once the route drops the explicit JSONB cast "
-            "(e.g. uses Post.tags.contains([tag]) directly, matching the "
-            "dialect-conditional column type)."
-        ),
-    )
     def test_nonmatching_tag_returns_empty(self, client, make_user, make_post, auth_headers):
         author = make_user()
         make_post(author, tags=["python"])
@@ -97,15 +76,6 @@ class TestGetPostsByTag:
         assert resp.status_code == 200
         assert resp.get_json()["data"]["posts"] == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: same hardcoded postgresql.JSONB cast "
-            "as test_nonmatching_tag_returns_empty above -- "
-            "get_posts_by_tag() raises UnsupportedCompilationError on "
-            "SQLite before it ever reaches the pagination logic."
-        ),
-    )
     def test_pagination_fields_present(self, client, make_user, make_post, auth_headers):
         author = make_user()
         make_post(author, tags=["python"])
