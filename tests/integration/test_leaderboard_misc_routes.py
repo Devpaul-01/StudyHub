@@ -113,33 +113,6 @@ class TestCreateSnapshot:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: create_snapshot() is decorated with "
-            "@token_required (not @role_required(\"admin\", \"moderator\") "
-            "or similar), and routes/student/helpers.py defines "
-            "`token_required = role_required(\"student\")` -- so the "
-            "decorator itself rejects every non-student account with a "
-            "403 \"Access denied for this role\" before the route body "
-            "ever runs. The route's own inline check, "
-            "`if current_user.role not in (\"admin\", \"moderator\"): "
-            "return error_response(...)`, can therefore only ever see "
-            "role == \"student\" (every other role was already turned "
-            "away by the decorator) -- which always fails that check too. "
-            "No account, of any role, can ever successfully POST "
-            "/leaderboard/snapshot: students get the decorator's 403, "
-            "and admins/moderators get the decorator's 403 as well, before "
-            "the route's own admin/moderator allowance is ever reached. "
-            "This is the exact unreachable-dead-code pattern this same "
-            "file's own badges.py/reputation.py neighbors were fixed for "
-            "(see those files' '#  POST .../award -- REMOVED' comments) "
-            "-- this one route was missed. strict=True so this flips to "
-            "XPASS once the route is decorated with "
-            "role_required(\"admin\", \"moderator\") (or similar) instead "
-            "of the student-only token_required."
-        ),
-    )
     def test_admin_can_create_weekly_snapshot(
         self, client, make_user, auth_headers, csrf_headers
     ):

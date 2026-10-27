@@ -611,25 +611,6 @@ class TestGetStats:
         assert data["user_quota"]["daily_used"] == 5
         assert data["user_quota"]["remaining"] == 15
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: get_stats() is decorated with "
-            "@token_required, and routes/student/helpers.py defines "
-            "`token_required = role_required(\"student\")` -- so the "
-            "decorator itself rejects every non-student account with a "
-            "403 before the route body (including its own "
-            "`if current_user.role in (\"admin\", \"system\")` branch) "
-            "ever runs. That branch is unreachable dead code: no admin "
-            "or system account can ever successfully GET "
-            "/learnora/api/stats at all, let alone see provider_stats. "
-            "Same root cause already documented for "
-            "leaderboard.py::create_snapshot (Batch 36). strict=True so "
-            "this flips to XPASS once the route is decorated with "
-            "role_required(\"student\", \"admin\", \"system\") (or "
-            "similar) instead."
-        ),
-    )
     def test_admin_sees_provider_stats(self, client, make_user, auth_headers):
         admin = make_user(role="admin")
 

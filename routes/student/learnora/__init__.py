@@ -56,7 +56,7 @@ from extensions import db
 from models import AIConversation, AIUsageQuota, Post, User
 from errors import ValidationError
 from routes.student.helpers import (
-    token_required, success_response, error_response
+    token_required, role_required, success_response, error_response
 )
 
 # Document 1 §2.4: FileHandler moved to its own file within this package.
@@ -1208,7 +1208,7 @@ def upload_post_attachment(current_user):
 
 @learnora_bp.route("/api/stats", methods=["GET"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
+@role_required("student", "admin", "system")
 def get_stats(current_user):
     """
     Fetch provider stats and the current user's daily quota usage.

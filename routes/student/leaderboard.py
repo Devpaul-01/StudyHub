@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from flask import Blueprint, request, jsonify, current_app
 
-from routes.student.helpers import token_required, success_response, error_response
+from routes.student.helpers import token_required, role_required, success_response, error_response
 from services import leaderboard_service
 # Phase 5b (Document 4 §1): PUBLIC_READ-tier limiting on leaderboard reads —
 # this file's own docstring already notes students check leaderboards
@@ -313,7 +313,7 @@ def get_rank_history(current_user):
 
 @leaderboard_bp.route("/leaderboard/snapshot", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
-@token_required
+@role_required("admin", "moderator")
 def create_snapshot(current_user):
     """
     Create a leaderboard snapshot of current all-time rankings.
