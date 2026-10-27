@@ -1,0 +1,1195 @@
+{
+  "metadata": {
+    "experiment": "m1_lock_concurrency",
+    "run_id": "m1_lock_concurrency_20261014T105206Z_cc44c3e8",
+    "timestamp_utc": "2026-10-14T10:52:06.979672+00:00",
+    "repository": {
+      "url": "https://github.com/Devpaul-01/Studyhub",
+      "commit_sha": "a2c2996f632734f4186a289b0876988ff4ddc871",
+      "branch": "main",
+      "working_tree_clean": false
+    },
+    "runtime": {
+      "python_version": "3.13.16 (main, Oct  1 2026, 15:40:24) [GCC 13.3.0]",
+      "python_implementation": "CPython"
+    },
+    "os": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "hostname_hash": null
+    },
+    "hardware": {
+      "cpu_count_logical": 2
+    },
+    "dependency_versions": {
+      "redis": "7.4.1",
+      "requests": "2.34.2",
+      "Flask-SQLAlchemy": "3.1.1",
+      "Flask-Mail": "0.10.0"
+    },
+    "env_notes": {
+      "redis_url_var_set": true
+    }
+  },
+  "status": "completed",
+  "error": null,
+  "duration_seconds": 191.4612638950348,
+  "results": {
+    "server_info": {
+      "redis_version": "7.0.15",
+      "redis_mode": "standalone",
+      "os": "Linux 6.18.44-fc-v114 x86_64",
+      "connected": true
+    },
+    "parameters": {
+      "n_values": [
+        5,
+        10,
+        25
+      ],
+      "trials_per_n": 30,
+      "jitter_ms_max": 5,
+      "lock_ttl_seconds": 30,
+      "concurrency_mechanism": "multiprocessing.Process (genuine OS processes)"
+    },
+    "results_by_n": {
+      "5": {
+        "n_concurrent_processes": 5,
+        "trials": 30,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 5,
+              "workers_expected": 5
+            }
+          ],
+          "total_overlap_violations": 0,
+          "trials_with_dropped_worker_reports": 0,
+          "correctness_assertion": "no two acquirers' held-intervals [acquire_done, release_done] overlap in wall-clock time, across all barrier-synchronized concurrent attempts in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 4,
+              "overlap_violations": 6,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 5,
+              "workers_expected": 5
+            }
+          ],
+          "total_overlap_violations": 296,
+          "trials_with_dropped_worker_reports": 0,
+          "note": "naive GET-then-SET baseline; interval overlaps here are the EXPECTED and DEMONSTRATED result of the GET/SET race window, not a bug in the benchmark"
+        }
+      },
+      "10": {
+        "n_concurrent_processes": 10,
+        "trials": 30,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 10,
+              "workers_expected": 10
+            }
+          ],
+          "total_overlap_violations": 0,
+          "trials_with_dropped_worker_reports": 0,
+          "correctness_assertion": "no two acquirers' held-intervals [acquire_done, release_done] overlap in wall-clock time, across all barrier-synchronized concurrent attempts in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 6,
+              "overlap_violations": 15,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 6,
+              "overlap_violations": 15,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 5,
+              "overlap_violations": 10,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 10,
+              "workers_expected": 10
+            }
+          ],
+          "total_overlap_violations": 1185,
+          "trials_with_dropped_worker_reports": 0,
+          "note": "naive GET-then-SET baseline; interval overlaps here are the EXPECTED and DEMONSTRATED result of the GET/SET race window, not a bug in the benchmark"
+        }
+      },
+      "25": {
+        "n_concurrent_processes": 25,
+        "trials": 30,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 2,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            }
+          ],
+          "total_overlap_violations": 0,
+          "trials_with_dropped_worker_reports": 0,
+          "correctness_assertion": "no two acquirers' held-intervals [acquire_done, release_done] overlap in wall-clock time, across all barrier-synchronized concurrent attempts in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "winners": 16,
+              "overlap_violations": 120,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 20,
+              "overlap_violations": 190,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 16,
+              "overlap_violations": 120,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 11,
+              "overlap_violations": 55,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 11,
+              "overlap_violations": 55,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 6,
+              "overlap_violations": 15,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 18,
+              "overlap_violations": 153,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 23,
+              "overlap_violations": 253,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 13,
+              "overlap_violations": 78,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 6,
+              "overlap_violations": 15,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 4,
+              "overlap_violations": 6,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 3,
+              "overlap_violations": 3,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 20,
+              "overlap_violations": 190,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 13,
+              "overlap_violations": 78,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 21,
+              "overlap_violations": 210,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 14,
+              "overlap_violations": 91,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 12,
+              "overlap_violations": 66,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 10,
+              "overlap_violations": 45,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 1,
+              "overlap_violations": 0,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 17,
+              "overlap_violations": 136,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 19,
+              "overlap_violations": 171,
+              "workers_reported": 25,
+              "workers_expected": 25
+            },
+            {
+              "winners": 25,
+              "overlap_violations": 300,
+              "workers_reported": 25,
+              "workers_expected": 25
+            }
+          ],
+          "total_overlap_violations": 4750,
+          "trials_with_dropped_worker_reports": 0,
+          "note": "naive GET-then-SET baseline; interval overlaps here are the EXPECTED and DEMONSTRATED result of the GET/SET race window, not a bug in the benchmark"
+        }
+      }
+    }
+  }
+}

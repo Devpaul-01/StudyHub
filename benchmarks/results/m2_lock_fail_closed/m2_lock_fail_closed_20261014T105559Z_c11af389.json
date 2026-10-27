@@ -1,0 +1,266 @@
+{
+  "metadata": {
+    "experiment": "m2_lock_fail_closed",
+    "run_id": "m2_lock_fail_closed_20261014T105559Z_c11af389",
+    "timestamp_utc": "2026-10-14T10:55:59.460916+00:00",
+    "repository": {
+      "url": "https://github.com/Devpaul-01/Studyhub",
+      "commit_sha": "a2c2996f632734f4186a289b0876988ff4ddc871",
+      "branch": "main",
+      "working_tree_clean": false
+    },
+    "runtime": {
+      "python_version": "3.13.16 (main, Oct  1 2026, 15:40:24) [GCC 13.3.0]",
+      "python_implementation": "CPython"
+    },
+    "os": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "hostname_hash": null
+    },
+    "hardware": {
+      "cpu_count_logical": 2
+    },
+    "dependency_versions": {
+      "redis": "7.4.1",
+      "requests": "2.34.2",
+      "Flask-SQLAlchemy": "3.1.1",
+      "Flask-Mail": "0.10.0"
+    },
+    "env_notes": {
+      "redis_url_var_set": true
+    }
+  },
+  "status": "completed",
+  "error": null,
+  "duration_seconds": 5.189476728439331,
+  "results": {
+    "parameters": {
+      "repetitions_per_case": 10
+    },
+    "results": {
+      "dead_port": {
+        "case": "dead_port",
+        "dead_port_used": 1,
+        "repetitions": [
+          {
+            "repetition": 0,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:0 owner=vm:5563:764d7a8b2348 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 1,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:1 owner=vm:5564:60530af34be9 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 2,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:2 owner=vm:5565:5b70df96f6f6 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 3,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:3 owner=vm:5566:255245cb1081 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 4,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:4 owner=vm:5567:46d1ea753c17 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 5,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:5 owner=vm:5568:d2427a8ffbc7 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 6,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:6 owner=vm:5569:97790ec1c18a reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 7,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:7 owner=vm:5570:757905b02392 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 8,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:8 owner=vm:5571:d8c29574aa49 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          },
+          {
+            "repetition": 9,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false,
+            "stdout_tail": " Connection refused.\n[Redis] Please check:\n  1. REDIS_URL is correct in .env\n  2. Redis server is running\n  3. Network/firewall allows access\n[Redis] \u26a0\ufe0f Redis client is None \u2014 caching will be disabled\n[Redis] All cache_service calls will treat Redis as a cache miss (fail-open behavior)\nRESULT:False\n",
+            "stderr_tail": "[LOCK_ACQUIRE_FAILED] key=benchmark:m2:deadport:9 owner=vm:5572:94f7112b02e5 reason=redis_error \u2014 failing CLOSED (job will not run this cycle)\nTraceback (most recent call last):\n  File \"/tmp/work/Studyhub/services/distributed_lock.py\", line 119, in acquire\n    got = redis_client.set(\n          ^^^^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'set'\n",
+            "returncode": 0
+          }
+        ]
+      },
+      "connection_error_monkeypatch": {
+        "case": "ConnectionError",
+        "repetitions": [
+          {
+            "repetition": 0,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 1,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 2,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 3,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 4,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 5,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 6,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 7,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 8,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 9,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          }
+        ]
+      },
+      "timeout_error_monkeypatch": {
+        "case": "TimeoutError",
+        "repetitions": [
+          {
+            "repetition": 0,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 1,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 2,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 3,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 4,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 5,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 6,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 7,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 8,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          },
+          {
+            "repetition": 9,
+            "outcome": "correctly_failed_closed",
+            "acquired_value": false
+          }
+        ]
+      }
+    },
+    "summary": {
+      "dead_port": {
+        "total": 10,
+        "correctly_failed_closed": 10,
+        "incorrectly_granted_lock": 0,
+        "raised_exception": 0,
+        "other_unexpected": 0,
+        "assertion_held": true
+      },
+      "connection_error_monkeypatch": {
+        "total": 10,
+        "correctly_failed_closed": 10,
+        "incorrectly_granted_lock": 0,
+        "raised_exception": 0,
+        "other_unexpected": 0,
+        "assertion_held": true
+      },
+      "timeout_error_monkeypatch": {
+        "total": 10,
+        "correctly_failed_closed": 10,
+        "incorrectly_granted_lock": 0,
+        "raised_exception": 0,
+        "other_unexpected": 0,
+        "assertion_held": true
+      }
+    }
+  }
+}
