@@ -1,0 +1,318 @@
+{
+  "metadata": {
+    "experiment": "m3_ai_classification",
+    "run_id": "m3_ai_classification_20261014T172041Z_bd05e5f3",
+    "timestamp_utc": "2026-10-14T17:20:41.684055+00:00",
+    "repository": {
+      "url": "https://github.com/Devpaul-01/Studyhub",
+      "commit_sha": "a2c2996f632734f4186a289b0876988ff4ddc871",
+      "branch": "main",
+      "working_tree_clean": false
+    },
+    "runtime": {
+      "python_version": "3.13.16 (main, Oct  1 2026, 15:40:24) [GCC 13.3.0]",
+      "python_implementation": "CPython"
+    },
+    "os": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "hostname_hash": null
+    },
+    "hardware": {
+      "cpu_count_logical": 2
+    },
+    "dependency_versions": {
+      "redis": "7.4.1",
+      "requests": "2.34.2",
+      "Flask-SQLAlchemy": "3.1.1",
+      "Flask-Mail": "0.10.0"
+    },
+    "env_notes": {
+      "redis_url_var_set": true
+    }
+  },
+  "status": "completed",
+  "error": null,
+  "duration_seconds": 0.708050012588501,
+  "results": {
+    "cases_run": 37,
+    "pass_count": 36,
+    "fail_count": 1,
+    "all_passed": false,
+    "results": [
+      {
+        "case_id": "key_fault_status_401",
+        "description": "status 401 alone, no body",
+        "expected": "KEY_FAULT",
+        "actual": "KEY_FAULT",
+        "passed": true
+      },
+      {
+        "case_id": "key_fault_status_402",
+        "description": "status 402 alone, no body",
+        "expected": "KEY_FAULT",
+        "actual": "KEY_FAULT",
+        "passed": true
+      },
+      {
+        "case_id": "key_fault_status_403",
+        "description": "status 403 alone, no body",
+        "expected": "KEY_FAULT",
+        "actual": "KEY_FAULT",
+        "passed": true
+      },
+      {
+        "case_id": "key_fault_status_429",
+        "description": "status 429 alone, no body",
+        "expected": "KEY_FAULT",
+        "actual": "KEY_FAULT",
+        "passed": true
+      },
+      {
+        "case_id": "provider_transient_status_500",
+        "description": "status 500 alone, no body",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "provider_transient_status_502",
+        "description": "status 502 alone, no body",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "provider_transient_status_503",
+        "description": "status 503 alone, no body",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "provider_transient_status_504",
+        "description": "status 504 alone, no body",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "network_code_ECONNREFUSED",
+        "description": "status=None, network_error_code=ECONNREFUSED",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "network_code_ETIMEDOUT",
+        "description": "status=None, network_error_code=ETIMEDOUT",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "network_code_ENOTFOUND",
+        "description": "status=None, network_error_code=ENOTFOUND",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "network_code_ECONNRESET",
+        "description": "status=None, network_error_code=ECONNRESET",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_5845",
+        "description": "status=None, no network_error_code, raw_message='Connection refused by remote host'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_7769",
+        "description": "status=None, no network_error_code, raw_message='Request timed out after 30s'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_3265",
+        "description": "status=None, no network_error_code, raw_message='name or service not known'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_3498",
+        "description": "status=None, no network_error_code, raw_message='Connection reset by peer'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_8805",
+        "description": "status=None, no network_error_code, raw_message='ECONNREFUSED: could not connect'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_fallback_4900",
+        "description": "status=None, no network_error_code, raw_message='ETIMEDOUT while waiting for response'",
+        "expected": "PROVIDER_TRANSIENT",
+        "actual": "PROVIDER_TRANSIENT",
+        "passed": true
+      },
+      {
+        "case_id": "raw_message_no_match",
+        "description": "status=None, no network_error_code, unrelated message",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "bad_model_signal_0",
+        "description": "status=400, structured body={'error': {'message': \"model 'gpt-9' not found\"}}",
+        "expected": "BAD_MODEL",
+        "actual": "BAD_MODEL",
+        "passed": true
+      },
+      {
+        "case_id": "bad_model_signal_1",
+        "description": "status=400, structured body={'error': {'type': 'invalid_request_error', 'message': 'The model does not exist'}}",
+        "expected": "BAD_MODEL",
+        "actual": "BAD_MODEL",
+        "passed": true
+      },
+      {
+        "case_id": "bad_model_signal_2",
+        "description": "status=400, structured body={'error': {'code': 'model_not_found'}}",
+        "expected": "BAD_MODEL",
+        "actual": "NON_RETRYABLE",
+        "passed": false
+      },
+      {
+        "case_id": "bad_model_signal_3",
+        "description": "status=400, structured body={'error': {'message': 'this model has been decommissioned'}}",
+        "expected": "BAD_MODEL",
+        "actual": "BAD_MODEL",
+        "passed": true
+      },
+      {
+        "case_id": "bad_model_signal_4",
+        "description": "status=400, structured body={'error': {'message': 'unknown model requested'}}",
+        "expected": "BAD_MODEL",
+        "actual": "BAD_MODEL",
+        "passed": true
+      },
+      {
+        "case_id": "bad_model_signal_5",
+        "description": "status=400, structured body={'error': {'message': 'unsupported model for this endpoint'}}",
+        "expected": "BAD_MODEL",
+        "actual": "BAD_MODEL",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_model_word_present_not_a_failure",
+        "description": "status=400, body mentions 'model' but describes success/unrelated issue",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_model_word_in_unrelated_400",
+        "description": "status=400, body mentions 'model' in a field-validation context, no failure phrase",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_failure_phrase_no_model_word",
+        "description": "status=400, 'not found' present but refers to an endpoint, not a model",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_400_empty_body",
+        "description": "status=400, parsed_body=None",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_400_malformed_body",
+        "description": "status=400, parsed_body is a string, not a dict (malformed provider response)",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "boundary_400_body_no_error_key",
+        "description": "status=400, body is a dict but has no 'error' key",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "unmatched_status_418",
+        "description": "status 418, no special handling defined",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "unmatched_status_451",
+        "description": "status 451, no special handling defined",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "unmatched_status_200",
+        "description": "status 200, no special handling defined",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "unmatched_status_301",
+        "description": "status 301, no special handling defined",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "unmatched_status_404",
+        "description": "status 404, no special handling defined",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      },
+      {
+        "case_id": "non_provider_call_error_input",
+        "description": "a plain Exception, not wrapped as ProviderCallError",
+        "expected": "NON_RETRYABLE",
+        "actual": "NON_RETRYABLE",
+        "passed": true
+      }
+    ],
+    "gap_analysis": {
+      "method": "textual substring heuristic against the existing pytest file's source (tests/unit/services/ai_provider_service/test_error_classification.py), not a coverage-tool measurement \u2014 approximate, stated as such",
+      "existing_test_file_found": true,
+      "existing_test_file_path": "/tmp/work/Studyhub/tests/unit/services/ai_provider_service/test_error_classification.py",
+      "boundary_scenarios_already_covered_by_existing_tests": [
+        "boundary_model_word_present_not_a_failure",
+        "boundary_400_body_no_error_key",
+        "raw_message_fallback (regex path generally)"
+      ],
+      "boundary_scenarios_NOT_found_in_existing_tests": [
+        "boundary_model_word_in_unrelated_400",
+        "boundary_400_malformed_body"
+      ]
+    }
+  }
+}

@@ -1,0 +1,362 @@
+{
+  "metadata": {
+    "experiment": "m7_atomic_counter",
+    "run_id": "m7_atomic_counter_20261015T062138Z_28127ea1",
+    "timestamp_utc": "2026-10-15T06:21:38.795537+00:00",
+    "repository": {
+      "url": "https://github.com/Devpaul-01/Studyhub",
+      "commit_sha": "a2c2996f632734f4186a289b0876988ff4ddc871",
+      "branch": "main",
+      "working_tree_clean": false
+    },
+    "runtime": {
+      "python_version": "3.13.16 (main, Oct  1 2026, 15:40:24) [GCC 13.3.0]",
+      "python_implementation": "CPython"
+    },
+    "os": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "hostname_hash": null
+    },
+    "hardware": {
+      "cpu_count_logical": 2
+    },
+    "dependency_versions": {
+      "redis": "7.4.1",
+      "requests": "2.34.2",
+      "Flask-SQLAlchemy": "3.1.1",
+      "Flask-Mail": "0.10.0"
+    },
+    "env_notes": {
+      "redis_url_var_set": true
+    }
+  },
+  "status": "completed",
+  "error": null,
+  "duration_seconds": 161.0990858078003,
+  "results": {
+    "server_info": {
+      "redis_version": "7.0.15",
+      "redis_mode": "standalone",
+      "os": "Linux 6.18.44-fc-v114 x86_64",
+      "connected": true
+    },
+    "parameters": {
+      "n_values": [
+        25,
+        50,
+        100
+      ],
+      "trials_per_n": 5,
+      "concurrency_mechanism": "multiprocessing.Process (genuine OS processes) + Barrier synchronization"
+    },
+    "results_by_n": {
+      "25": {
+        "n_concurrent_increments": 25,
+        "trials": 5,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 25,
+              "expected": 25,
+              "actual": 25,
+              "lost_updates": 0,
+              "elapsed_seconds": 4.548168659210205
+            },
+            {
+              "trial": 1,
+              "n": 25,
+              "expected": 25,
+              "actual": 25,
+              "lost_updates": 0,
+              "elapsed_seconds": 4.206782817840576
+            },
+            {
+              "trial": 2,
+              "n": 25,
+              "expected": 25,
+              "actual": 25,
+              "lost_updates": 0,
+              "elapsed_seconds": 4.78951096534729
+            },
+            {
+              "trial": 3,
+              "n": 25,
+              "expected": 25,
+              "actual": 25,
+              "lost_updates": 0,
+              "elapsed_seconds": 4.442320108413696
+            },
+            {
+              "trial": 4,
+              "n": 25,
+              "expected": 25,
+              "actual": 25,
+              "lost_updates": 0,
+              "elapsed_seconds": 4.099738121032715
+            }
+          ],
+          "total_lost_updates_across_trials": 0,
+          "trials_with_any_lost_update": 0,
+          "correctness_assertion": "final_count == n (zero lost updates) in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 25,
+              "expected": 25,
+              "actual": 7,
+              "lost_updates": 18,
+              "elapsed_seconds": 0.11066627502441406
+            },
+            {
+              "trial": 1,
+              "n": 25,
+              "expected": 25,
+              "actual": 10,
+              "lost_updates": 15,
+              "elapsed_seconds": 0.10213351249694824
+            },
+            {
+              "trial": 2,
+              "n": 25,
+              "expected": 25,
+              "actual": 8,
+              "lost_updates": 17,
+              "elapsed_seconds": 0.1055600643157959
+            },
+            {
+              "trial": 3,
+              "n": 25,
+              "expected": 25,
+              "actual": 7,
+              "lost_updates": 18,
+              "elapsed_seconds": 0.10835480690002441
+            },
+            {
+              "trial": 4,
+              "n": 25,
+              "expected": 25,
+              "actual": 9,
+              "lost_updates": 16,
+              "elapsed_seconds": 0.10992002487182617
+            }
+          ],
+          "total_lost_updates_across_trials": 84,
+          "trials_with_any_lost_update": 5,
+          "median_lost_updates": 17,
+          "min_lost_updates": 15,
+          "max_lost_updates": 18,
+          "note": "naive GET-then-SET baseline; lost updates here are the EXPECTED and DEMONSTRATED result of the read-modify-write race, not a bug in the benchmark"
+        }
+      },
+      "50": {
+        "n_concurrent_increments": 50,
+        "trials": 5,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 50,
+              "expected": 50,
+              "actual": 50,
+              "lost_updates": 0,
+              "elapsed_seconds": 8.85266923904419
+            },
+            {
+              "trial": 1,
+              "n": 50,
+              "expected": 50,
+              "actual": 50,
+              "lost_updates": 0,
+              "elapsed_seconds": 9.52153730392456
+            },
+            {
+              "trial": 2,
+              "n": 50,
+              "expected": 50,
+              "actual": 50,
+              "lost_updates": 0,
+              "elapsed_seconds": 9.044179201126099
+            },
+            {
+              "trial": 3,
+              "n": 50,
+              "expected": 50,
+              "actual": 50,
+              "lost_updates": 0,
+              "elapsed_seconds": 9.117079019546509
+            },
+            {
+              "trial": 4,
+              "n": 50,
+              "expected": 50,
+              "actual": 50,
+              "lost_updates": 0,
+              "elapsed_seconds": 9.313573122024536
+            }
+          ],
+          "total_lost_updates_across_trials": 0,
+          "trials_with_any_lost_update": 0,
+          "correctness_assertion": "final_count == n (zero lost updates) in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 50,
+              "expected": 50,
+              "actual": 18,
+              "lost_updates": 32,
+              "elapsed_seconds": 0.23822975158691406
+            },
+            {
+              "trial": 1,
+              "n": 50,
+              "expected": 50,
+              "actual": 15,
+              "lost_updates": 35,
+              "elapsed_seconds": 0.1958608627319336
+            },
+            {
+              "trial": 2,
+              "n": 50,
+              "expected": 50,
+              "actual": 17,
+              "lost_updates": 33,
+              "elapsed_seconds": 0.19634699821472168
+            },
+            {
+              "trial": 3,
+              "n": 50,
+              "expected": 50,
+              "actual": 14,
+              "lost_updates": 36,
+              "elapsed_seconds": 0.23413586616516113
+            },
+            {
+              "trial": 4,
+              "n": 50,
+              "expected": 50,
+              "actual": 17,
+              "lost_updates": 33,
+              "elapsed_seconds": 0.2177114486694336
+            }
+          ],
+          "total_lost_updates_across_trials": 169,
+          "trials_with_any_lost_update": 5,
+          "median_lost_updates": 33,
+          "min_lost_updates": 32,
+          "max_lost_updates": 36,
+          "note": "naive GET-then-SET baseline; lost updates here are the EXPECTED and DEMONSTRATED result of the read-modify-write race, not a bug in the benchmark"
+        }
+      },
+      "100": {
+        "n_concurrent_increments": 100,
+        "trials": 5,
+        "real_implementation": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 100,
+              "expected": 100,
+              "actual": 100,
+              "lost_updates": 0,
+              "elapsed_seconds": 17.739262342453003
+            },
+            {
+              "trial": 1,
+              "n": 100,
+              "expected": 100,
+              "actual": 100,
+              "lost_updates": 0,
+              "elapsed_seconds": 19.265501499176025
+            },
+            {
+              "trial": 2,
+              "n": 100,
+              "expected": 100,
+              "actual": 100,
+              "lost_updates": 0,
+              "elapsed_seconds": 17.621578216552734
+            },
+            {
+              "trial": 3,
+              "n": 100,
+              "expected": 100,
+              "actual": 100,
+              "lost_updates": 0,
+              "elapsed_seconds": 17.950031042099
+            },
+            {
+              "trial": 4,
+              "n": 100,
+              "expected": 100,
+              "actual": 100,
+              "lost_updates": 0,
+              "elapsed_seconds": 16.600006580352783
+            }
+          ],
+          "total_lost_updates_across_trials": 0,
+          "trials_with_any_lost_update": 0,
+          "correctness_assertion": "final_count == n (zero lost updates) in every trial",
+          "assertion_held": true
+        },
+        "naive_baseline": {
+          "per_trial": [
+            {
+              "trial": 0,
+              "n": 100,
+              "expected": 100,
+              "actual": 34,
+              "lost_updates": 66,
+              "elapsed_seconds": 0.4430365562438965
+            },
+            {
+              "trial": 1,
+              "n": 100,
+              "expected": 100,
+              "actual": 39,
+              "lost_updates": 61,
+              "elapsed_seconds": 0.4687330722808838
+            },
+            {
+              "trial": 2,
+              "n": 100,
+              "expected": 100,
+              "actual": 37,
+              "lost_updates": 63,
+              "elapsed_seconds": 0.44454479217529297
+            },
+            {
+              "trial": 3,
+              "n": 100,
+              "expected": 100,
+              "actual": 37,
+              "lost_updates": 63,
+              "elapsed_seconds": 0.4438145160675049
+            },
+            {
+              "trial": 4,
+              "n": 100,
+              "expected": 100,
+              "actual": 35,
+              "lost_updates": 65,
+              "elapsed_seconds": 0.4360816478729248
+            }
+          ],
+          "total_lost_updates_across_trials": 318,
+          "trials_with_any_lost_update": 5,
+          "median_lost_updates": 63,
+          "min_lost_updates": 61,
+          "max_lost_updates": 66,
+          "note": "naive GET-then-SET baseline; lost updates here are the EXPECTED and DEMONSTRATED result of the read-modify-write race, not a bug in the benchmark"
+        }
+      }
+    }
+  }
+}
