@@ -500,7 +500,7 @@ def send_request(current_user, user_id):
             receiver_id=user_id,
             message=message if message else "Let's study together!",
             subjects=subjects,
-            availability=prefs.get("available_days", []),
+            availability={"days": list(prefs.get("available_days", []) or [])},
             status="pending",
         )
         db.session.add(buddy_request)
@@ -796,7 +796,7 @@ def get_received_requests(current_user):
                 },
                 "subjects":     req.subjects,
                 "message":      req.message,
-                "availability": req.availability,
+                "availability": (req.availability or {}).get("days", []),
                 "match_score":  match_score,
                 "requested_at": req.requested_at.isoformat(),
             })

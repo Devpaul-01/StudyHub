@@ -137,25 +137,6 @@ def _make_request(db_session, requester, receiver, **overrides):
 
 
 class TestSendAndCancelRequest:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: send_request() always builds the new "
-            "StudyBuddyRequest with `availability=prefs.get(\"available_days\", [])` "
-            "-- a LIST -- but StudyBuddyRequest.availability is declared as "
-            "`MutableDict.as_mutable(db.JSON)`, which rejects non-dict "
-            "values at assignment time with "
-            "\"Attribute 'availability' does not accept objects of type "
-            "list\". There is no code path that makes `prefs.get(\"available_days\", [])` "
-            "return a dict (set_preferences/update_preferences always store "
-            "it as a list too), so POST /study-buddy/request/<id> can never "
-            "succeed -- every call hits the bare except and returns a "
-            "generic 400 'Failed to send request', even for a perfectly "
-            "valid request. strict=True so this flips to XPASS the moment "
-            "the field is fixed (either store availability as a dict, or "
-            "change the model column to a list-accepting JSON type)."
-        ),
-    )
     def test_send_request_creates_a_pending_request(
         self, client, make_user, auth_headers, csrf_headers
     ):
