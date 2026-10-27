@@ -263,7 +263,7 @@ def get_pending_requests(current_user):
                         "avatar":   requester.avatar
                     },
                     "message":      req.message,
-                    "requested_at": req.requested_at.isoformat()
+                    "requested_at": req.requested_at.isoformat() if req.requested_at else None
                 })
 
         return jsonify({
@@ -299,7 +299,7 @@ def get_my_join_requests(current_user):
                         "max_members":  thread.max_members,
                         "is_full":      thread.member_count >= thread.max_members
                     },
-                    "requested_at": req.requested_at.isoformat()
+                    "requested_at": req.requested_at.isoformat() if req.requested_at else None
                 })
 
         return jsonify({
@@ -779,7 +779,7 @@ def get_my_invites(current_user):
                         "avatar":   inviter.avatar
                     } if inviter else None,
                     "message":    invite.message,
-                    "invited_at": invite.requested_at.isoformat()
+                    "invited_at": invite.requested_at.isoformat() if invite.requested_at else None
                 })
 
         return jsonify({

@@ -293,23 +293,6 @@ class TestJoinRequestWorkflow:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: ThreadJoinRequest.requested_at has no "
-            "column default, and request_join_thread()'s fresh-request "
-            "branch never sets it (only the re-request-after-rejection "
-            "branch does). get_pending_requests() then unconditionally "
-            "calls `req.requested_at.isoformat()` on every pending row, "
-            "which raises AttributeError on None for any freshly-created "
-            "request -- the bare except turns that into a generic 400 "
-            "'Failed to load pending requests'. GET /threads/pending-"
-            "requests can therefore never successfully list a brand-new "
-            "join request. strict=True so this flips to XPASS once "
-            "request_join_thread() sets requested_at on creation (or the "
-            "route guards against None)."
-        ),
-    )
     def test_pending_requests_lists_requests_for_threads_i_created(
         self, client, db_session, make_user, make_thread, make_thread_member, auth_headers, csrf_headers
     ):
@@ -326,18 +309,6 @@ class TestJoinRequestWorkflow:
         assert data["total"] == 1
         assert data["pending_requests"][0]["requester"]["id"] == requester.id
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Same root cause as test_pending_requests_lists_requests_for_"
-            "threads_i_created: get_my_join_requests() also calls "
-            "`req.requested_at.isoformat()` on a freshly-created request "
-            "whose requested_at was never set, so GET /threads/my-requests "
-            "500/400s (caught generically) right after a successful "
-            "POST /threads/<id>/join. strict=True so this flips to XPASS "
-            "once requested_at is set at creation."
-        ),
-    )
     def test_my_requests_lists_what_i_sent(
         self, client, db_session, make_user, make_thread, make_thread_member, auth_headers, csrf_headers
     ):
@@ -459,19 +430,6 @@ class TestInviteWorkflow:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: same root cause as the two xfails in "
-            "TestJoinRequestWorkflow -- ThreadJoinRequest.requested_at has "
-            "no column default and invite_to_thread()'s fresh-invite "
-            "branch never sets it either. get_my_invites() then calls "
-            "`invite.requested_at.isoformat()` unconditionally, so GET "
-            "/threads/invites 400s right after a successful "
-            "POST /threads/<id>/invite/<user_id>. strict=True so this "
-            "flips to XPASS once requested_at is set at creation."
-        ),
-    )
     def test_my_invites_lists_pending_invites(
         self, client, db_session, make_user, make_thread, make_thread_member, auth_headers, csrf_headers
     ):
