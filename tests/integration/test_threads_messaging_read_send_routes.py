@@ -30,28 +30,6 @@ class TestGetThreadMessages:
 
         assert resp.status_code == 403
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG FOUND BY THIS TEST: get_thread_messages() checks "
-            "membership before checking whether the thread exists at "
-            "all -- 'ThreadMember.query.filter_by(thread_id=thread_id, "
-            "student_id=current_user.id).first()' is run first, and only "
-            "if that membership row exists does the code go on to do "
-            "'Thread.query.get(thread_id)' and return the dedicated "
-            "'Thread not found' 404. But nobody can ever hold a "
-            "ThreadMember row for a thread_id that doesn't exist, so for "
-            "any nonexistent thread the membership lookup always misses "
-            "first and the route always returns 403 'You are not a "
-            "member of this thread' -- the 404 branch right below it is "
-            "dead code, unreachable from this route. A caller asking "
-            "about a thread that was deleted or never existed gets a "
-            "misleading 'you're not a member' instead of 'not found'. "
-            "strict=True so this flips to XPASS once the existence check "
-            "is moved before the membership check (matching get_thread() "
-            "in discovery.py, which checks 404 first)."
-        ),
-    )
     def test_nonexistent_thread_returns_404(self, client, make_user, auth_headers):
         user = make_user()
 

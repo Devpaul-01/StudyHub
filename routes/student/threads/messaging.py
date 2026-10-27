@@ -124,15 +124,18 @@ def get_thread_messages(current_user, thread_id):
       limit       int   — max results, default 30, max 50
     """
     try:
+        # Check existence first: nobody can be a member of a thread that
+        # doesn't exist, so checking membership first made this 404 branch
+        # unreachable (callers always got a misleading 403).
+        thread = Thread.query.get(thread_id)
+        if not thread:
+            return error_response("Thread not found", 404)
+
         membership = ThreadMember.query.filter_by(
             thread_id=thread_id, student_id=current_user.id
         ).first()
         if not membership:
             return error_response("You are not a member of this thread", 403)
-
-        thread = Thread.query.get(thread_id)
-        if not thread:
-            return error_response("Thread not found", 404)
 
         before_id = request.args.get("before_id", type=int)
         after_id  = request.args.get("after_id",  type=int)
