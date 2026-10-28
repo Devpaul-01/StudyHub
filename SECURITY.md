@@ -203,7 +203,7 @@ cookie (header checked first), decodes and validates the JWT, loads the `User`, 
 `user.role` against the allowed set.
 
 `token_required` is just `role_required("student")` under another name. It's kept as its own alias
-specifically so the roughly 250 existing `@token_required` routes kept working unchanged when the
+specifically so the roughly 280 existing `@token_required` routes kept working unchanged when the
 role check got generalized — the fix went into how the decorator's defined, not into touching
 every call site. `admin_required = role_required("admin", "system")` is the parameterized version
 for the handful of privileged routes.

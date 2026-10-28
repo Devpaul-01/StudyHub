@@ -1,6 +1,6 @@
 # M3 — AI Provider Error Classification Boundary Correctness
 
-**Status: executed successfully — found one genuine correctness gap.**
+**Status: executed successfully — found one genuine correctness gap. Update: the gap has since been fixed (see "Resolution" at the end); the 36/37 result below is the original run and is preserved as the historical record.**
 **Script:** `benchmarks/m3_ai_classification.py`
 **Result file:** `benchmarks/results/m3_ai_classification/m3_ai_classification_20261014T172041Z_bd05e5f3.json`
 **Run ID:** `m3_ai_classification_20261014T172041Z_bd05e5f3`
@@ -76,3 +76,7 @@ Not applicable in the traditional sense — M3 is a correctness-against-specific
 **The 36/37 pass rate and the methodology: resume-ready** as a correctness-testing claim ("built an exhaustive boundary-case test suite for a 4-category error classifier, independently discovering a classification gap in production code").
 
 **The specific discovered bug: useful for engineering discussion, not a standalone resume bullet.** It's excellent interview material — it demonstrates the kind of edge-case thinking that finds real bugs — but it describes a gap in the *project's* code, not an achievement to claim credit for as a shipped fix (it wasn't fixed here). Frame it in an interview as "while auditing my own code for a resume claim, I found and could reproduce a classification gap in how structured error codes are matched" — honest, and arguably more impressive than a clean pass rate alone would have been.
+
+## Resolution
+
+The gap was in `_is_bad_model_signal` (`services/ai_provider_service.py`): its pattern matched "not found" / "does not exist" with a literal space, so structured codes that join words with `_` or `-` (`model_not_found`, `model-not-found`, `model_does_not_exist`) were missed. The pattern now accepts `[\s_-]?` between those words. Regression tests were added to `tests/unit/services/ai_provider_service/test_error_classification.py`, including a guard that `resource_not_found` still classifies as `NON_RETRYABLE`. Re-running `python benchmarks/m3_ai_classification.py` after the fix passes 37/37. The original 36/37 result JSON in `results/m3_ai_classification/` is left untouched.

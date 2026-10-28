@@ -618,20 +618,22 @@ paths:
         '400':
           $ref: '#/components/responses/ErrorGeneric'
 
-  /student/onboard/request-all/{email}:
+  /student/onboard/request-all/{identifier}:
     post:
       tags: [Onboarding]
       summary: Send connection requests to multiple users during onboarding
       description: |
-        Pre-auth (no JWT yet). Authorized instead by matching `email` against the caller's
-        Google OAuth session or an existing `access_token` cookie for that email
-        (`_is_request_authorized_for_email`). SENSITIVE_AUTH rate tier, per IP.
+        Pre-auth (no JWT yet). `identifier` is either an email or the onboarding verification
+        token; one route dispatches on its shape (an email contains `@`, a token never does).
+        For an email, the caller is authorized by matching it against their Google OAuth session
+        or an existing `access_token` cookie (`_is_request_authorized_for_email`; 401 otherwise).
+        For a token, the signed token is itself the proof. SENSITIVE_AUTH rate tier, per IP.
       security: []
       parameters:
-        - name: email
+        - name: identifier
           in: path
           required: true
-          schema: { type: string, format: email }
+          schema: { type: string, description: An email address or an onboarding verification token. }
       requestBody:
         required: true
         content:
@@ -1138,6 +1140,7 @@ paths:
     post:
       tags: [Auth]
       summary: Log out
+      security: []
       description: |
         Disconnects any live WebSocket session, revokes the entire refresh-token family, and
         clears all three auth cookies. Each step is best-effort — a failure in one never blocks
@@ -3410,6 +3413,29 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /student/threads/{thread_id}:
+    get:
+      tags: [Threads]
+      summary: Get a single thread
+      description: |
+        Members get the full member list; creators/moderators additionally get pending join
+        requests. Non-members get basic info plus their own membership/join status.
+      parameters: [{ name: thread_id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+                  data:
+                    type: object
+                    properties:
+                      thread: { $ref: '#/components/schemas/Thread' }
+                      user_status: { type: object }
+        '404':
+          $ref: '#/components/responses/NotFound'
     patch:
       tags: [Threads]
       summary: Update thread details
@@ -4372,31 +4398,6 @@ paths:
                 properties:
                   status: { type: string, enum: [success] }
                   data: { type: array, items: { type: object } }
-
-  /student/threads/{thread_id}:
-    get:
-      tags: [Threads]
-      summary: Get a single thread
-      description: |
-        Members get the full member list; creators/moderators additionally get pending join
-        requests. Non-members get basic info plus their own membership/join status.
-      parameters: [{ name: thread_id, in: path, required: true, schema: { type: integer } }]
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  data:
-                    type: object
-                    properties:
-                      thread: { $ref: '#/components/schemas/Thread' }
-                      user_status: { type: object }
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   /student/threads/{thread_id}/meeting-notes:
     post:
@@ -5537,6 +5538,34 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /student/posts/{post_id}/refine:
+    post:
+      tags: [Posts]
+      summary: Stream an AI-refined title and body for your post
+      description: |
+        Author-only. Streams Server-Sent Events: `{type: start}`, then `{content: ...}` fragments, then a
+        final `{type: done, success, refined: {title, content}}`. Nothing is saved — call
+        `PATCH /student/posts/{post_id}/apply-refinement` to apply the result. Rate limit: `AI_EXPENSIVE`.
+      parameters: [{ name: post_id, in: path, required: true, schema: { type: integer } }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instructions: { type: string, description: "Optional extra guidance, e.g. 'make it more concise'." }
+      responses:
+        '200':
+          description: Server-Sent Events stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /student/posts/{post_id}/apply-refinement:
     patch:
       tags: [Learnora (AI)]
@@ -6218,16 +6247,15 @@ paths:
                         additionalProperties: { type: boolean }
     post:
       tags: [Notifications]
-      summary: Update notification preferences
+      summary: Toggle a notification setting
       requestBody:
         content:
           application/json:
             schema:
               type: object
+              required: [setting]
               properties:
-                email_notifications: { type: boolean }
-                push_notifications: { type: boolean }
-                notification_types: { type: object, additionalProperties: { type: boolean } }
+                setting: { type: string, enum: [enable_notification, enable_notification_sound], description: "The named setting is toggled (flipped), not set to a supplied value." }
       responses:
         '200':
           description: Updated.
@@ -6246,9 +6274,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [goal]
               properties:
-                goal: { type: string }
+                session_goal: { type: string }
+                target_count: { type: integer, default: 0 }
+                assignment_id: { type: integer, nullable: true }
       responses:
         '200':
           description: OK.
@@ -6263,7 +6292,7 @@ paths:
   /student/live-session/{session_id}/update-progress:
     post:
       tags: [Study Sessions]
-      summary: Update session progress percentage
+      summary: Update live-session progress (completed count and optional quick note)
       parameters: [{ name: session_id, in: path, required: true, schema: { type: integer } }]
       requestBody:
         required: true
@@ -6271,9 +6300,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [progress]
               properties:
-                progress: { type: integer, minimum: 0, maximum: 100 }
+                completed_count: { type: integer, description: "Items completed so far; progress % is derived from the session's target_count." }
+                quick_note: { type: string, description: "Appended to the session's quick notes with an HH:MM timestamp." }
       responses:
         '200':
           description: OK.
@@ -6281,7 +6310,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '400':
-          description: Progress out of range.
+          description: Session is not active.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -6303,8 +6332,7 @@ paths:
               type: object
               required: [rating]
               properties:
-                rating: { type: integer, minimum: 1, maximum: 5 }
-                feedback: { type: string }
+                rating: { type: string, enum: [thumbs_up, thumbs_down] }
       responses:
         '200':
           description: OK.
@@ -6312,7 +6340,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '400':
-          description: Session not yet ended, or invalid rating.
+          description: Session not yet ended, or rating isn't `thumbs_up`/`thumbs_down`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -6400,11 +6428,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [template_id, partner_id, scheduled_time]
+              required: [template_id, partner_id, proposed_times]
               properties:
-                template_id: { type: string }
+                template_id: { type: string, enum: [exam_prep, homework_help, concept_review, quick_study] }
                 partner_id: { type: integer }
-                scheduled_time: { type: string, format: date-time }
+                proposed_times: { type: array, minItems: 1, maxItems: 10, items: { type: string, format: date-time } }
+                title: { type: string, description: "Defaults to the template name." }
+                subject: { type: string }
       responses:
         '201':
           description: Scheduled.
@@ -6478,7 +6508,7 @@ paths:
   /student/study-session/{session_id}/reschedule:
     post:
       tags: [Study Sessions]
-      summary: Reschedule a session
+      summary: Edit/reschedule a session (requester only)
       parameters: [{ name: session_id, in: path, required: true, schema: { type: integer } }]
       requestBody:
         required: true
@@ -6486,9 +6516,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [scheduled_time]
               properties:
-                scheduled_time: { type: string, format: date-time }
+                proposed_times: { type: array, minItems: 1, maxItems: 10, items: { type: string, format: date-time }, description: "A changed set flips a confirmed session to `rescheduled`." }
+                title: { type: string }
+                subject: { type: string }
+                description: { type: string }
+                duration_minutes: { type: integer }
+                requester_notes: { type: string }
+                requester_resources: { type: array, items: { type: object } }
+                receiver_resources: { type: array, items: { type: object } }
       responses:
         '200':
           description: Rescheduled — resets to pending, needs re-confirmation.
@@ -6547,12 +6583,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [partner_id, scheduled_time]
+              required: [receiver_id, proposed_times]
               properties:
-                partner_id: { type: integer }
-                scheduled_time: { type: string, format: date-time }
+                receiver_id: { type: integer }
+                proposed_times: { type: array, minItems: 1, maxItems: 10, items: { type: string, format: date-time }, description: "Unparseable entries are dropped; an empty or entirely unparseable list is a 400." }
+                title: { type: string, default: Study Session }
                 subject: { type: string }
-                duration_minutes: { type: integer, default: 60 }
+                description: { type: string }
+                duration_minutes: { type: integer, default: 30 }
+                resources: { type: array, items: { type: object } }
                 notes: { type: string }
       responses:
         '201':
@@ -6637,6 +6676,7 @@ paths:
               required: [partner_id]
               properties:
                 partner_id: { type: integer }
+                title: { type: string, default: Study Session }
                 subject: { type: string }
       responses:
         '201':
@@ -6805,11 +6845,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [url, type]
+              required: [url]
               properties:
                 url: { type: string }
                 type: { type: string }
                 name: { type: string }
+                size_bytes: { type: integer }
       responses:
         '201':
           description: Added.
@@ -6984,11 +7025,45 @@ paths:
                   status: { type: string, enum: [success] }
                   data: { type: object }
 
+  /student/leaderboard/breakdown:
+    get:
+      tags: [Leaderboard]
+      summary: Transparent breakdown of how your score is composed
+      description: |
+        Aggregates the caller's 50 most recent reputation-history events in the period by action,
+        with positive/negative totals, the 10 latest events, all-time reputation, level and streaks.
+      parameters:
+        - { name: period, in: query, required: false, schema: { type: string, enum: [weekly, monthly, all_time], default: weekly } }
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+                  data:
+                    type: object
+                    properties:
+                      period: { type: string }
+                      total_period_score: { type: integer }
+                      total_positive: { type: integer }
+                      total_negative: { type: integer }
+                      by_action: { type: object, additionalProperties: { type: object, properties: { count: { type: integer }, total_points: { type: integer } } } }
+                      recent_events: { type: array, items: { type: object } }
+                      all_time_rep: { type: integer }
+                      level: { type: string }
+                      streaks: { type: object }
+        '400':
+          $ref: '#/components/responses/ErrorGeneric'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /student/leaderboard/filters:
     get:
       tags: [Leaderboard]
       summary: Available leaderboard filter options
-      security: []
       responses:
         '200':
           description: OK.
@@ -7042,7 +7117,6 @@ paths:
     get:
       tags: [Badges]
       summary: List all available badges
-      security: []
       parameters:
         - { name: category, in: query, schema: { type: string } }
       responses:
@@ -7090,7 +7164,6 @@ paths:
     get:
       tags: [Badges]
       summary: Get badge detail (criteria, your progress, earners)
-      security: []
       parameters: [{ name: badge_id, in: path, required: true, schema: { type: integer } }]
       responses:
         '200':
@@ -7127,7 +7200,6 @@ paths:
     get:
       tags: [Badges]
       summary: Users with the most badges
-      security: []
       parameters:
         - { name: limit, in: query, schema: { type: integer, default: 10, maximum: 50 } }
       responses:
@@ -7161,7 +7233,6 @@ paths:
     get:
       tags: [Badges]
       summary: List another user's earned badges
-      security: []
       parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
       responses:
         '200':
@@ -7751,7 +7822,7 @@ paths:
   /student/study-buddy/preferences:
     post:
       tags: [Study Buddy]
-      summary: Create study-buddy matching preferences
+      summary: Save study-buddy matching preferences (replaces any existing)
       requestBody:
         required: true
         content:
@@ -7759,10 +7830,12 @@ paths:
             schema:
               type: object
               properties:
-                subjects: { type: array, items: { type: string } }
-                learning_style: { type: string }
-                availability: { type: object }
-                preferred_group_size: { type: string }
+                needs_help: { type: array, maxItems: 10, items: { type: string } }
+                good_at: { type: array, maxItems: 10, items: { type: string } }
+                available_days: { type: array, items: { type: string } }
+                available_times: { type: array, items: { type: string } }
+                study_style: { type: array, items: { type: string } }
+                goals: { type: string, maxLength: 500 }
       responses:
         '201':
           description: Created.
@@ -7770,7 +7843,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '400':
-          description: Preferences already exist — use PATCH instead.
+          description: Neither `needs_help` nor `good_at` supplied, or either isn't an array.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -7796,21 +7869,18 @@ paths:
             schema:
               type: object
               properties:
-                subjects: { type: array, items: { type: string } }
-                learning_style: { type: string }
-                availability: { type: object }
-                preferred_group_size: { type: string }
+                needs_help: { type: array, maxItems: 10, items: { type: string } }
+                good_at: { type: array, maxItems: 10, items: { type: string } }
+                available_days: { type: array, items: { type: string } }
+                available_times: { type: array, items: { type: string } }
+                study_style: { type: array, items: { type: string } }
+                goals: { type: string, maxLength: 500 }
       responses:
         '200':
           description: Updated.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
-        '404':
-          description: No preferences to update yet — use POST first.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /student/study-buddy/suggestions:
     get:
@@ -7905,18 +7975,19 @@ paths:
   /student/study-buddy/session:
     post:
       tags: [Study Buddy]
-      summary: Schedule a study-buddy session
+      summary: Log a completed study-buddy session
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [match_id, scheduled_time]
+              required: [match_id]
               properties:
                 match_id: { type: integer }
-                scheduled_time: { type: string, format: date-time }
-                subject: { type: string }
+                duration_minutes: { type: integer, default: 60 }
+                subjects_covered: { type: array, items: { type: string } }
+                notes: { type: string }
       responses:
         '201':
           description: Scheduled.
@@ -8028,7 +8099,6 @@ paths:
     get:
       tags: [Study Buddy]
       summary: List featured study-buddy success stories
-      security: []
       responses:
         '200':
           description: OK.

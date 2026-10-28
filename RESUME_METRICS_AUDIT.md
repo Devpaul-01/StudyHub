@@ -1,5 +1,7 @@
 # StudyHub — Resume Claims Audit
 
+> **Update (2026-10-27) — some figures below are superseded.** This document is a point-in-time record at the commit it names; the codebase has moved on. Current verified figures: **53** SQLAlchemy models (an earlier count of 52 missed `User`, whose bases are `UserMixin, db.Model`); **29** inbound Socket.IO handlers (14 in `websocket_messages.py` + 15 in `websocket_threads.py`; `websocket_events.py` is unused); about **325** route handlers; **1,490** passing tests (672 unit, 818 integration), 2 skipped, no remaining xfails; and the M3 classifier gap is fixed (37/37). Counts quoted further down are left as originally recorded.
+
 **Status: blocked on input.** The mission brief for this audit (supplied as the task instructions) says a resume would be provided alongside the repository URL. Only the repository URL and the audit instructions were actually supplied in this conversation — no resume file or resume text was attached. This document cannot responsibly invent resume line items to audit against; doing so would defeat the point of the exercise (auditing *your* actual claims, not a guess at what they might be).
 
 What's here instead:

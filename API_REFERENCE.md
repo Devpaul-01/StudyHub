@@ -333,6 +333,8 @@ should try `/student/refresh-token` before giving up.
 ### `POST /student/logout`
 Disconnects any live WebSocket session, revokes the whole refresh-token family, clears all three
 auth cookies. Each step is best-effort — one failing doesn't block the others.
+**Auth:** none required — it reads the `access_token` cookie if present, so logging out with an
+expired session still clears the cookies.
 
 **Auth:** required. **Rate limit:** `BURST_OK`. **CSRF:** required (not in `CSRF_EXEMPT_PATHS`).
 
@@ -348,12 +350,14 @@ Match suggestions for someone about to onboard, keyed by raw email in the path. 
 generic top-reputation list if nothing scores highly. **Auth:** none. **Rate limit:**
 `SENSITIVE_AUTH` per IP.
 
-### `POST /student/onboard/request-all/{email}`
+### `POST /student/onboard/request-all/{identifier}`
 Sends pending connection requests to a batch of user IDs during onboarding. Existing connections
-in either direction are silently skipped.
+in either direction are silently skipped. `{identifier}` is either the user's email or the
+onboarding verification token; a single route dispatches on its shape (an email always contains
+`@`, a token never does).
 
-**Auth:** caller must own `email` (matching Google session or JWT). **Rate limit:**
-`SENSITIVE_AUTH`.
+**Auth:** with an email, the caller must own it (matching Google session or JWT; **401**
+otherwise). With a token, the signed token is itself the proof. **Rate limit:** `SENSITIVE_AUTH`.
 
 **Request:** `{ "ids": [12, 45, 88] }`
 
@@ -487,7 +491,7 @@ is a map of lowercase day name → array of `morning`/`afternoon`/`evening`/`nig
 **Auth:** required. **400** on an unrecognized day name or time slot.
 
 ### `GET /student/skills/popular`
-Top 50 skills across all users, with counts. **Auth:** required.
+Top 50 skills across all users, with counts. **Auth:** none.
 
 ---
 
@@ -842,7 +846,8 @@ AI-generated meeting notes summarizing the thread's recent messages (configurabl
 10–500, default 50) into topics/decisions/action items/open questions. Needs at least 3 messages
 to summarize. Members-only.
 
-**Auth:** required. **Rate limit:** `AI_EXPENSIVE`. **400** — fewer than 3 messages. **503** — AI
+**Auth:** required. **Rate limit:** `AI_EXPENSIVE`. **400** — fewer than 3 messages, or a
+non-numeric `message_range`. **503** — AI
 unavailable.
 
 ### `GET /student/threads/{thread_id}/meeting-notes?limit=5`
@@ -1015,6 +1020,17 @@ POST lets you supply `{"question": "..."}`.
 
 **Auth:** required. **Rate limit:** `AI_EXPENSIVE`. **503** if no AI provider is available.
 
+### `POST /student/posts/{post_id}/refine`
+Stream an AI-refined title and body for your own post. Author-only (**403** otherwise). Nothing is
+saved — review the result, then call `apply-refinement` below. **Auth:** required.
+**Rate limit:** `AI_EXPENSIVE`.
+
+**Request (optional):** `{ "instructions": "make it more concise" }`
+
+**Response:** `text/event-stream`. `{"type": "start"}`, then `{"content": "..."}` fragments, then a
+final `{"type": "done", "success": true, "refined": {"title": "...", "content": "..."}}`. On a
+provider failure or unparseable output the final event is `{"type": "done", "success": false}`.
+
 ### `PATCH /student/posts/{post_id}/apply-refinement`
 Apply an AI-suggested title/content rewrite back onto the post. Author-only. Re-runs @mention
 detection against the new content.
@@ -1129,22 +1145,33 @@ need confirmation) and **live** sessions (`live-session/*` — in-progress, real
 pomodoro timers, shared resources, and an AI assistant scoped to the session).
 
 ### `POST /student/live-session/{session_id}/set-goal` / `.../update-progress` / `.../rate`
-Set the session's stated goal, update a 0–100 progress percentage, or rate it 1–5 after it ends.
-**Auth:** required, must be a session participant.
+Participant-only. **Auth:** required.
+
+- `set-goal` — `{ "session_goal": "Finish problems 1–10", "target_count": 10, "assignment_id": 7 }`.
+  All optional; `target_count` defaults to 0.
+- `update-progress` — `{ "completed_count": 4, "quick_note": "stuck on #3" }`. Both optional;
+  `quick_note` is appended to the session's notes with an `HH:MM` stamp, and a progress percentage
+  is derived from `target_count`. **400** if the session isn't active.
+- `rate` — `{ "rating": "thumbs_up" | "thumbs_down" }`. Only after the session has ended; **400**
+  otherwise, or for any other value. Each participant's rating is stored separately.
 
 ### `POST /student/live-session/{session_id}/pomodoro/start` / `.../pomodoro/break`
-Start a focus or break timer within a session (`duration_minutes`, defaults 25/5). **Auth:**
-required, participant-only.
+Start a fixed 25-minute focus cycle, or a fixed 5-minute break (no duration parameter). A break
+requires a focus cycle to be running (**400** otherwise) and increments the completed-cycle count.
+**Auth:** required, participant-only. **400** if the session isn't active.
 
 ### `GET /student/study-session/templates`
 Pre-built session templates (subject/duration/structure presets). **Auth:** required.
 
 ### `POST /student/study-session/schedule-with-template`
-Schedule using a template ID instead of specifying everything manually.
+Schedule using a template instead of specifying everything manually. `template_id` is one of
+`exam_prep`, `homework_help`, `concept_review`, `quick_study`.
 
-**Request:** `{ "template_id": "pomodoro-2hr", "partner_id": 45, "scheduled_time": "2026-09-25T18:00:00Z" }`
+**Request:** `{ "template_id": "exam_prep", "partner_id": 45, "proposed_times": ["2026-09-25T18:00:00Z"], "title": "...", "subject": "..." }`
+(`title` defaults to the template name; `subject` is optional).
 
-**Auth:** required. **403** if `partner_id` isn't an accepted connection.
+**Auth:** required. **403** if `partner_id` isn't an accepted connection. **400** on a missing or
+unknown `template_id`/`partner_id`, or if no `proposed_times` parse.
 
 ### `POST /student/live-session/{session_id}/link-assignment`
 Attach a homework assignment to a live session for context. **Auth:** required, participant-only.
@@ -1153,27 +1180,46 @@ Attach a homework assignment to a live session for context. **Auth:** required, 
 **Auth:** required, participant-only.
 
 ### `POST /student/study-session/{session_id}/reschedule`
-Resets the session back to `pending` — needs re-confirmation from the other party. **Auth:**
-required, participant-only. **400** if the new time is in the past.
+Edit a session you requested: `title`, `subject`, `description`, `duration_minutes`,
+`requester_notes`, `requester_resources`, `receiver_resources`, and/or `proposed_times` (1–10 ISO 8601
+times). Changing the set of proposed times flips a `confirmed` session to `rescheduled`, which needs
+the other party's re-confirmation; the response reports `times_changed` and the new `status`.
+
+**Auth:** required, requester-only (**403** otherwise). **400** if the session isn't `pending`,
+`confirmed` or `rescheduled`.
 
 ### `POST /student/study-session/{session_id}/cancel` / `.../decline`
-**Auth:** required, participant-only.
+`cancel` — requester-only (**403** otherwise); optional `{ "reason": "..." }`. `decline` — receiver-only;
+optional `{ "reason": "..." }`, and on an already-`confirmed` session it acts as a withdrawal. Both
+**400** unless the session is `pending`, `confirmed` or `rescheduled`. **Auth:** required.
 
 ### `POST /student/study-session/request`
-**Request:** `{ "partner_id": 45, "scheduled_time": "2026-09-25T18:00:00Z", "subject": "Calculus", "duration_minutes": 60 }`
+**Request:**
+```json
+{
+  "receiver_id": 45,
+  "proposed_times": ["2026-09-25T18:00:00Z", "2026-09-26T18:00:00Z"],
+  "title": "Calculus review", "subject": "Calculus", "description": "",
+  "duration_minutes": 30, "resources": [], "notes": ""
+}
+```
+`receiver_id` and at least one parseable entry in `proposed_times` (max 10; unparseable entries are
+silently dropped) are required; `duration_minutes` defaults to 30.
 
-**Auth:** required. **403** if `partner_id` isn't an accepted connection. **400** if the time's in
-the past.
+**Auth:** required. **403** if `receiver_id` isn't an accepted connection. **400** on a missing
+`receiver_id` or no valid times.
 
 ### `POST /student/study-session/{session_id}/confirm`
-**Auth:** required, participant-only.
+Receiver-only (**403** otherwise). **Request:** `{ "confirmed_time": "2026-09-25T18:00:00Z" }` — required,
+ISO 8601. **400** unless the session is `pending` or `rescheduled`. **Auth:** required.
 
 ### `GET /student/study-session/upcoming` / `GET /student/study-session/all?status=...`
 Unpaginated lists. **Auth:** required.
 
 ### `POST /student/live-session/start`
-Start an instant ad-hoc session with a connection, no scheduling. **Auth:** required. **403** if
-not connected. **409** if you're already in an active session.
+Start an instant ad-hoc session with a connection, no scheduling. **Request:**
+`{ "partner_id": 45, "title": "Study Session", "subject": "Calculus" }` (`partner_id` required).
+**Auth:** required. **403** if not connected. **409** if you're already in an active session.
 
 ### `GET /student/live-session/{session_id}` / `POST /student/live-session/{session_id}/end` / `.../cancel`
 **Auth:** required, participant-only.
@@ -1189,7 +1235,8 @@ Ask the AI a question scoped to the live session context. **Auth:** required, pa
 **Auth:** required, participant-only.
 
 ### `POST /student/live-session/{session_id}/resource/add` / `DELETE /student/live-session/{session_id}/resource/{resource_id}`
-Shared links/files within a live session. **Auth:** required, participant-only.
+Shared links/files within a live session. **Request:** `{ "url": "...", "name": "...", "type": "...", "size_bytes": 1024 }`
+— only `url` is required. **Auth:** required, participant-only.
 
 ---
 
@@ -1199,10 +1246,12 @@ A separate, preference-driven matching system from Connections — oriented arou
 partnerships rather than general networking.
 
 ### `POST /student/study-buddy/preferences` / `GET .../preferences` / `PATCH .../preferences`
-Subjects, learning style, availability, preferred group size. POST creates (fails `400` if you
-already have preferences — use PATCH); PATCH updates (fails `404` if you haven't created any yet).
+Matching preferences, stored on the user's metadata. Fields: `needs_help` and `good_at` (arrays, max 10
+each), `available_days`, `available_times`, `study_style` (arrays), and `goals` (string, max 500).
 
-**Auth:** required.
+`POST` saves a full set (replacing any existing one) and requires at least one of `needs_help` /
+`good_at` (**400** otherwise, or if either isn't an array); returns **201**. `PATCH` merges only the
+fields you send. `GET` returns `{}` if nothing is saved yet. **Auth:** required.
 
 ### `GET /student/study-buddy/suggestions?limit=10`
 **Auth:** required. **400** if preferences aren't set.
@@ -1217,9 +1266,12 @@ Detailed match breakdown for one suggested user. **Auth:** required.
 **Auth:** required, must be a party to the match.
 
 ### `POST /student/study-buddy/session`
-Schedule a session tied to an existing match.
+Log a completed study session against an existing match — this records history and increments the
+match's session count; it does not schedule anything.
 
-**Request:** `{ "match_id": 12, "scheduled_time": "2026-09-25T18:00:00Z", "subject": "Physics" }`
+**Request:** `{ "match_id": 12, "duration_minutes": 60, "subjects_covered": ["Physics"], "notes": "..." }`
+(`match_id` required; `duration_minutes` defaults to 60). **Auth:** required, must be a party to the
+match (**403** otherwise, **404** if it doesn't exist).
 
 ### `GET /student/study-buddy/sessions`
 **Auth:** required.
@@ -1228,13 +1280,15 @@ Schedule a session tied to an existing match.
 End an active match. **Auth:** required, must be a party.
 
 ### `GET /student/study-buddy/requests/sent` / `.../received` / `.../connected`
-Sent requests, received requests, and currently-active matches, respectively. **Auth:** required.
+Sent requests, pending received requests (`{ "received_requests": [...], "total": N }`, each with the
+requester, `subjects`, `message`, `availability` (the requested days, as a list) and a computed `match_score`), and your matches
+(active first, then by match date), respectively. **Auth:** required.
 
 ### `DELETE /student/study-buddy/cancel/{request_id}`
 Cancel a request you sent. **Auth:** required.
 
 ### `GET /student/study-buddy/success-stories`
-Featured pairings — public, no auth needed. **Auth:** none.
+Featured pairings. **Auth:** required.
 
 ### `GET /student/study-buddy/stats`
 Program-wide stats. **Auth:** required.
@@ -1267,15 +1321,25 @@ Biggest rank improvements. **Auth:** required.
 Aggregate stats across the leaderboard. **Auth:** required.
 
 ### `GET /student/leaderboard/filters`
-Available period/department filter options — public. **Auth:** none.
+Available period/department filter options plus your own defaults. **Auth:** required.
+
+### `GET /student/leaderboard/breakdown?period=weekly`
+How your score is composed: positive/negative totals and a per-action count/points map, built from
+your **50 most recent** reputation-history events in the period (so totals cap at those 50), plus
+your 10 latest events, all-time reputation, level, and login/help streaks. `period`:
+`weekly` (default)/`monthly`/`all_time`. Cached ~120s and invalidated whenever your own reputation
+changes. **Auth:** required. **400** on a bad `period`.
 
 ### `GET /student/leaderboard/rank-history?days=30`
 Your rank/score over time, max 90 days. **Auth:** required.
 
 ### `POST /student/leaderboard/snapshot`
-Manually trigger a rank snapshot for yourself. Normally this runs automatically via the daily
-scheduled job (see `BACKGROUND_JOBS.md`); this endpoint just lets the client force one on demand.
-**Auth:** required.
+Take a leaderboard snapshot on demand — the same `take_snapshot()` the weekly (Sunday 00:05 UTC) and
+monthly (1st, 00:10 UTC) scheduled jobs run (see `BACKGROUND_JOBS.md`). **Auth:** required, and the
+caller must be an `admin` or `moderator` (**403** otherwise).
+
+**Request:** `{ "type": "weekly" | "monthly" }` (defaults to `weekly`). **400** on any other value.
+Returns **201** with `{ "created": 120, "skipped": 0, "total_ranked": 120 }`.
 
 ---
 
@@ -1302,7 +1366,7 @@ Public — no auth needed, since it's reference data. **Auth:** none.
 ## Badges
 
 ### `GET /student/badges/available?category=...`
-All badges that exist, optionally filtered by category. **Auth:** none.
+All badges that exist, optionally filtered by category. **Auth:** required.
 
 ### `GET /student/badges/my-badges`
 **Auth:** required.
@@ -1311,14 +1375,14 @@ All badges that exist, optionally filtered by category. **Auth:** none.
 Your progress toward badges you haven't earned yet. **Auth:** required.
 
 ### `GET /student/badges/{badge_id}/details`
-Criteria, your current progress, and who else has earned it. **Auth:** none.
+Criteria, your current progress, and who else has earned it. **Auth:** required.
 
 ### `POST /student/badges/feature/{badge_id}`
 Feature/unfeature an earned badge on your profile — max 3 featured at once. **Auth:** required.
 **400** if not earned or already at the cap.
 
 ### `GET /student/badges/top-earners?limit=10`
-**Auth:** none.
+**Auth:** required.
 
 ### `POST /student/badges/check-all`
 Manually re-run badge-qualification checks and award anything newly earned (normally this
@@ -1326,7 +1390,7 @@ happens as a side effect of the actions that trigger badges — this is a manual
 **Auth:** required.
 
 ### `GET /student/badges/user-badges/{id}`
-Another user's earned badges. **Auth:** none.
+Another user's earned badges. **Auth:** required.
 
 ---
 
@@ -1429,7 +1493,9 @@ Your recent search queries — view, save one, or clear all. **Auth:** required.
 **Auth:** required.
 
 ### `GET /student/profile/notifications/settings` / `POST /student/profile/notifications/settings`
-Email/push toggles plus a per-type map. **Auth:** required.
+`GET` returns your settings (`enable_notification`, `notification_category`, ...). `POST` **toggles**
+one named setting rather than assigning a value: `{ "setting": "enable_notification" }` or
+`{ "setting": "enable_notification_sound" }`; any other name is a **400**. **Auth:** required.
 
 ---
 
@@ -1506,15 +1572,62 @@ checked, how many drifts were found, and how many were auto-corrected vs. just f
 
 ## WebSocket Events
 
-Real-time delivery (thread messages, typing indicators, presence/online status, live-session
-timer sync, direct-message delivery receipts) runs over Socket.IO, not plain HTTP, so it isn't
-part of this REST reference or `openapi.yml`. The REST endpoints above cover the same underlying
-data with a request/response fallback (e.g. `POST /student/threads/{thread_id}/messages` sends a
-message even without a socket connection open), but the primary, lower-latency path for anything
-live is the WebSocket layer.
+Real-time delivery runs over Socket.IO, not plain HTTP, so it isn't part of `openapi.yml`. The REST
+endpoints above cover the same data as a fallback (e.g. `POST /student/threads/{thread_id}/messages`
+sends a message with no socket open), but the WebSocket layer is the primary low-latency path.
 
-For the actual event names, payload shapes, and connection/auth handshake, see `ARCHITECTURE.md`
-and the `websocket_*.py` modules (`websocket_events.py`, `websocket_messages.py`,
-`websocket_threads.py`, `websocket_config.py`, `websocket_rate_limiter.py`) — that's the source of
-truth for the real-time layer, and it's substantial enough to warrant its own document rather than
-being squeezed into this one.
+Handlers live in `services/websocket_messages.py` (direct messages, presence, sync) and
+`services/websocket_threads.py` (group threads, receipts, Learnora). `services/websocket_events.py`
+is an older, unused manager and is not registered by the app. Direct-message handlers other than
+`connect`, `disconnect`, `authenticate` and `ping` are wrapped in an `auth_required` decorator; the thread
+handlers resolve the socket's user themselves.
+
+### Direct messages and presence (14 events)
+
+| Event (client → server) | Payload | Server emits |
+|---|---|---|
+| `connect` | — (reads the `access_token` cookie from the handshake, falling back to a token in the `auth` payload) | `authenticated`; a `user_status_changed` presence broadcast |
+| `authenticate` | `{ token }` — secondary path | `authenticated` or `auth_error` |
+| `disconnect` | — | `user_status_changed` |
+| `send_message` | `{ receiver_id, body, client_temp_id, resources }` | `message_sent` (ack to sender), `new_message` (to receiver), `message_error` |
+| `typing` | `{ receiver_id, is_typing }` | `typing_started` / `typing_stopped` |
+| `mark_read` | `{ message_ids }` | — |
+| `delete_message_for_me` | `{ message_id }` | `message_deleted_for_you` |
+| `delete_message_for_everyone` | `{ message_id }` — within a 5-minute window | `message_deleted_for_everyone` |
+| `add_message_reaction` / `remove_message_reaction` | `{ message_id, emoji }` / `{ message_id }` | `reaction_added` / `reaction_removed` |
+| `get_online_status` | `{ user_ids }` | `online_statuses` |
+| `request_unread_count` | — | `unread_count` |
+| `sync_state` | `{ last_sync }` — ISO 8601 timestamp the client last saw | `sync_complete` |
+| `ping` | — | `pong` `{ timestamp }` |
+
+`sync_state` is the reconnect path: the server replies with up to 100 missed direct messages plus up to
+100 missed messages from the threads you belong to, oldest first, as
+`{ messages: [{ type: "direct" | "thread", ... }], count, current_timestamp }`. With no `last_sync` it
+returns an empty list and the current timestamp.
+
+### Threads (15 events)
+
+| Event (client → server) | Payload | Server emits |
+|---|---|---|
+| `join_thread_room` / `leave_thread_room` | `{ thread_id }` | `thread_room_joined` |
+| `send_thread_message` | `{ thread_id, text_content, attachment_url, attachment_name, attachment_type, attachment_size, attachments, reply_to_id, client_temp_id }` | `new_thread_message` to the room; `thread_error` on failure |
+| `thread_typing` / `thread_typing_stop` | `{ thread_id }` | `thread_typing_started` / `thread_typing_stopped` (everyone but the sender) |
+| `add_thread_reaction` / `remove_thread_reaction` | `{ message_id, emoji }` / `{ message_id }` — re-sending the same emoji toggles it off | `thread_reactions_updated` |
+| `edit_thread_message` | `{ message_id, text_content }` — 15-minute edit window | `thread_message_edited` |
+| `delete_thread_message` | `{ message_id }` — sender, or the thread's creator/moderators | `thread_message_deleted` |
+| `pin_thread_message` / `unpin_thread_message` | `{ message_id }` — creator/moderator only, max 5 pins | `thread_message_pinned` / `thread_message_unpinned` |
+| `mark_thread_read` | `{ thread_id }` | `message_status_updated` to each sender (read receipts) |
+| `message_delivered` | `{ message_id }` — sent when a client first renders another user's message | `message_status_updated` to the sender |
+| `request_ai_response` | `{ thread_id, question, mode }` — `mode`: `summarize`, `quiz`, or default | `learnora_thinking`, then `new_thread_message` with the reply |
+| `thread_ai_action` | `{ thread_id, action, message_id, target_lang }` | `learnora_thinking`, then the result |
+
+### Server pushes triggered by REST calls
+
+Some events are emitted by HTTP handlers rather than socket handlers: `thread_updated`,
+`thread_deleted` and `thread_joined` (thread edits, deletion and member adds), plus live-session
+events `session_goal_set`, `session_progress_updated`, `pomodoro_break_started`, `session_cancelled`
+(to the `live_session_{id}` room) and `study_session_declined` (to the requester's personal
+`user_{id}` room).
+
+Rate limits: thread messages default to 30 per 60s and thread AI actions to 10 per 300s per user, both
+tunable (see `THREAD_MSG_RATE_*` and `THREAD_AI_ACTION_RATE_*` in the README's environment table).
