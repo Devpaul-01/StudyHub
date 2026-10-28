@@ -10,6 +10,8 @@ All four P0 experiments from `MEASUREMENT_PLAN.md` were implemented, validated, 
 | M3 | AI error classifier boundary correctness | Executed | 36/37 constructed cases passed; **found a genuine, reproducible gap**: `error.code: "model_not_found"` (underscore) misclassifies as `NON_RETRYABLE` instead of `BAD_MODEL` | Methodology: resume-ready. The discovered bug: interview material, not a resume bullet (it describes an unfixed gap, not a shipped achievement) |
 | M7 | Atomic counter vs. naive read-modify-write | Executed, at reduced N (25/50/100 instead of planned 50/200/1000) | 0 lost updates / 15 trials; naive baseline lost a median 63% of updates at N=100 | Resume-ready, with the N-ceiling stated honestly |
 
+> **Update (2026-10-27):** the M3 gap in the table below has been fixed and covered by regression tests; M3 now passes 37/37. See "Resolution" in `M3_ai_classification.md`. The table is left as originally recorded, since it describes the run at commit `a2c2996`.
+
 ## What changed from the original measurement plan, and why
 
 1. **M1's correctness assertion was redesigned mid-implementation.** The plan's original "exactly 1 winner per trial" assertion was discovered, via a failing smoke test, to be wrong for a reusable lock under wide jitter — a lock can be legitimately re-acquired in sequence within one trial. Fixed by adding barrier synchronization and testing the real invariant (no overlapping held-intervals). Documented in `M1_lock_concurrency.md` rather than silently corrected, since catching this was itself part of validating the harness.

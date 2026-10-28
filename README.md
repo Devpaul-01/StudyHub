@@ -138,7 +138,8 @@ Learnora is one AI infrastructure layer surfaced through five product moments (s
 pip install -r requirements.txt
 
 # Set required environment variables (see below)
-cp .env.example .env  # if present — otherwise set the variables listed below directly
+# No .env.example is checked in. config.py loads a .env file automatically, or export the
+# variables listed below in your shell.
 
 # Start the API (Flask + Socket.IO)
 python app.py
@@ -163,8 +164,16 @@ The scheduler runs in-process inside `app.py`/`start-all.py` whenever `SCHEDULER
 | `SCHEDULER_ENABLED` | Whether this process runs the APScheduler cron jobs |
 | `RATE_LIMIT_ENABLED` | Toggles Flask-Limiter enforcement |
 | `AI_PROVIDER_REDIS_STATE_ENABLED` | Kill switch for Redis-shared AI provider failover state — falls back to per-process in-memory state |
+| `FLASK_ENV` / `APP_ENV` | Selects the config class (checked in that order); defaults to `production` |
 | `ACCESS_TOKEN_HTTPONLY` | Whether the access-token cookie is JS-readable; governs whether a separate CSRF cookie is issued |
 | `CORS_ALLOWED_ORIGINS` | Required to be the real frontend origin(s) — `Access-Control-Allow-Credentials` cannot pair with a wildcard origin |
+| `SESSION_COOKIE_SECURE` | Whether auth cookies are marked `Secure` (default `False`; set `true` behind HTTPS) |
+| `RATE_LIMIT_STORAGE_URI` | Flask-Limiter storage. Defaults to `memory://` in development; in production it falls back to `REDIS_URL` when unset |
+| `LEARNORA_BOT_USER_ID` | User ID of the Learnora bot account. Thread AI replies are disabled while it is `0` or unset |
+| `THREAD_MSG_RATE_MAX` / `THREAD_MSG_RATE_WINDOW` | Per-user thread-message cap over a window in seconds (defaults 30 / 60) |
+| `THREAD_AI_ACTION_RATE_MAX` / `THREAD_AI_ACTION_RATE_WINDOW` | Per-user thread AI-action cap over a window in seconds (defaults 10 / 300) |
+| `SENTRY_RELEASE` | Optional release tag (e.g. a git SHA) attached to Sentry events |
+| `CURRENT_URL` / `PORT` | Public base URL used in emailed links (default `http://127.0.0.1:5001/`) and the listen port (default 5001) |
 | `SENTRY_DSN` | Optional — error tracking is fully fail-open if unset |
 | Provider API keys (Gemini, Groq, Cohere, Cloudflare, Mistral, OpenRouter) | Multiple keys per provider supported for rotation |
 | Cloudinary / Flask-Mail / Firebase credentials | Media storage, email, and push notification integrations |
@@ -176,7 +185,7 @@ pip install -r requirements-test.txt
 pytest
 ```
 
-`pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (498 tests as of this writing: 456 unit, 42 integration). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
+`pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (1,490 passing as of this writing: 672 unit and 818 integration, plus 2 skipped). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
 Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
 
@@ -192,7 +201,20 @@ The integration suite exercises flows across real service boundaries rather than
 
 ### CI
 
-Both suites run automatically on every push and pull request to `main` via GitHub Actions — two independent workflows, `.github/workflows/unit-tests.yml` and `.github/workflows/integration-tests.yml`, each installing its own dependencies and running against SQLite + fakeredis exactly as described above. Each workflow also runs `scripts/check_layering.py` as its first step, before dependencies are even installed, so a services/ → routes/ layering violation fails the build immediately rather than surfacing later as a test failure. No Postgres or Redis service containers, no real AI provider calls, no real RQ worker process. Coverage is reported for both jobs; the integration job additionally uploads a `coverage.xml` artifact. See the badges at the top of this file for current build status.
+Both suites run automatically on every push and pull request to `main` via GitHub Actions — two independent workflows, `.github/workflows/unit-tests.yml` and `.github/workflows/integration-tests.yml`, each installing its own dependencies and running against SQLite + fakeredis exactly as described above (the unit job on Python 3.12, the integration job on 3.11). Each workflow also runs `scripts/check_layering.py` as its first step, before dependencies are even installed, so a services/ → routes/ layering violation fails the build immediately rather than surfacing later as a test failure. No Postgres or Redis service containers, no real AI provider calls, no real RQ worker process. Coverage is reported for both jobs; the integration job additionally uploads a `coverage.xml` artifact. See the badges at the top of this file for current build status.
+
+### Measured behavior
+
+`benchmarks/` holds standalone harnesses that run against the real source (not reimplementations) and write raw JSON for every run; `benchmarks/reports/SUMMARY.md` is the entry point. Each concurrency experiment includes a deliberately naive control, which is what shows the harness can detect the race it is looking for.
+
+| Experiment | Result |
+|---|---|
+| Distributed lock mutual exclusion | 0 overlapping holders across 90 trials at up to 25 processes; the naive GET-then-SET control produced up to 4,750 |
+| Lock fail-closed under Redis outage | 30/30 correctly refused the lock across 3 failure shapes (dead port, `ConnectionError`, `TimeoutError`) |
+| AI error-classifier boundaries | 37/37 constructed cases pass. The first run found 36/37 (an underscore-joined `model_not_found` code misclassified as non-retryable); the regex was fixed and regression tests added |
+| Atomic unread counter | 0 lost updates across 15 trials at up to 100 processes; the naive read-modify-write control lost a median 63% at N=100 |
+
+These prove behavior against constructed inputs and a real Redis, not against live providers or production load. The reports state each experiment's limits, including the reduced concurrency ceiling on the counter test.
 
 ## Deployment
 

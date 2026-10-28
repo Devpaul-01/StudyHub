@@ -1,5 +1,7 @@
 # StudyHub — Metrics Audit
 
+> **Update (2026-10-27) — some figures below are superseded.** This document is a point-in-time record at the commit it names; the codebase has moved on. Current verified figures: **53** SQLAlchemy models (an earlier count of 52 missed `User`, whose bases are `UserMixin, db.Model`); **29** inbound Socket.IO handlers (14 in `websocket_messages.py` + 15 in `websocket_threads.py`; `websocket_events.py` is unused); about **325** route handlers; **1,490** passing tests (672 unit, 818 integration), 2 skipped, no remaining xfails; and the M3 classifier gap is fixed (37/37). Counts quoted further down are left as originally recorded.
+
 **Repository:** https://github.com/Devpaul-01/Studyhub
 **Commit inspected:** `a2c2996f632734f4186a289b0876988ff4ddc871` (branch `main`, also tagged as `origin/tests/service-unit-tests`)
 **Commit date:** 2026-10-12 23:18 +0100 — "test: add unit tests for search_service"

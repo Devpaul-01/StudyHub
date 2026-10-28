@@ -29,7 +29,7 @@ flowchart TB
     subgraph API["API Process(es) — app.py under Gunicorn"]
         CORS[CORS + Security Headers]
         AUTH[Auth chain<br/>role_required decorator]
-        ROUTES[Routes — ~250 endpoints<br/>Flask blueprints]
+        ROUTES[Routes — ~325 route handlers<br/>Flask blueprints]
         SERVICES[Services — services/*.py<br/>zero Flask dependency, CI-enforced]
         WS[Flask-SocketIO<br/>message + thread WebSocket managers]
         SCHED[APScheduler<br/>5 cron jobs, Redis-locked]
@@ -171,7 +171,7 @@ Dependency direction is one-way: `routes → services → models`. Services neve
 
 ## 5. Data architecture
 
-The schema has 55 SQLAlchemy models across identity, social graph, content, real-time chat, homework, gamification, AI, and moderation. Rather than one unreadable ER diagram, the domains that matter architecturally are broken out individually below.
+The schema has 53 SQLAlchemy models across identity, social graph, content, real-time chat, homework, gamification, AI, and moderation. Rather than one unreadable ER diagram, the domains that matter architecturally are broken out individually below.
 
 ### 5.1 Identity & auth
 
@@ -319,7 +319,7 @@ Two models in this schema have a real definition and, in one case, a real UI bui
 # Schema reserved for planned full-text search — not currently populated.
 **`SearchIndex`** is defined with a docstring stating it's meant for full-text search. It is never populated and never queried anywhere in the codebase — every search endpoint in `search_service.py` runs unindexed `ILIKE '%term%'` against the live `users`/`posts`/`threads` tables instead. The table hasn't been dropped because doing so is a destructive schema change that needs a real migration and a product decision on whether full-text search is still planned.
 
-**`WeeklyChampion`** is the more interesting of the two, because the read side is genuinely built: `homework_system.get_current_champions()` queries it, and the homework dashboard renders a real "This Week's Champions" panel from whatever rows it finds. But no code anywhere in this codebase — not a scheduled job, not a route, not another service — ever inserts a row into it. It isn't one of the five scheduled jobs documented in `BACKGROUND_JOBS.md` §2.2, despite being exactly the shape of work that belongs there alongside the leaderboard snapshot jobs. The feature is UI-complete and schema-complete; the computation step that would make it live is the missing piece.
+**`WeeklyChampion`** is the more interesting of the two, because the read side is genuinely built: `homework_system.get_current_champions()` queries it (and `leaderboard_service` reads it to flag a user's champion status), and the homework dashboard renders a real "This Week's Champions" panel from whatever rows it finds. But no code anywhere in this codebase — not a scheduled job, not a route, not another service — ever inserts a row into it. It isn't one of the five scheduled jobs documented in `BACKGROUND_JOBS.md` §2.2, despite being exactly the shape of work that belongs there alongside the leaderboard snapshot jobs. The feature is UI-complete and schema-complete; the computation step that would make it live is the missing piece.
 
 Both are flagged here rather than presented as working infrastructure, in keeping with this document's own standard: the goal is to make the real engineering legible, which means being equally direct about what isn't finished yet.
 
@@ -615,6 +615,8 @@ This same module also tracks which thread a user is *actively viewing* right now
 
 ---
 
+**Legacy manager.** `services/websocket_events.py` (about 1,500 lines) is an earlier combined manager that defines an overlapping set of handlers. The app never imports it: `app.py` initialises only `init_message_websocket`, which wires up the message and thread managers. It is retained for reference, and earlier docs that pointed to it as the source of truth were wrong — the real event inventory is in `API_REFERENCE.md`'s WebSocket Events section.
+
 ## 15. External integrations
 
 | Service | Purpose | Failure handling |
@@ -652,7 +654,7 @@ This section is a summary of the mechanisms; **[`SECURITY.md`](SECURITY.md)** is
 
 - **Password/credential hashing.** Passwords are hashed via Werkzeug's `generate_password_hash`; refresh tokens are hashed at rest (SHA-256) rather than stored raw.
 - **File upload validation goes past extension checking.** `upload_validation_service.validate_and_normalize_image()` opens every image upload with Pillow, structurally verifies it, fully decodes the pixel data (catching truncated/corrupt files a shallow verify alone would miss), and re-encodes it to a fresh buffer before it's ever forwarded to storage — the re-encoding step is what strips any embedded script/metadata/polyglot payload, since the output bytes are freshly generated from decoded pixels rather than a copy of the original file. Non-image documents are checked against a small hand-rolled magic-byte signature table rather than trusted by filename extension.
-- **CSRF.** A double-submit cookie (`csrf_token`, JS-readable, reissued alongside `access_token`) is issued by default (`ACCESS_TOKEN_HTTPONLY` defaults to `true`) — but the server-side validation half of that pattern isn't wired up anywhere in the reviewed routes. `SameSite=Lax` on all three auth cookies is the actual practical CSRF mitigation in effect today. See `SECURITY.md` §2.1 and §7 for the full detail.
+- **CSRF.** A double-submit cookie (`csrf_token`, JS-readable, reissued alongside `access_token`) is issued whenever `ACCESS_TOKEN_HTTPONLY` is on (the default), and the server-side half is enforced: `routes/student/__init__.py::enforce_csrf()` runs as a `before_request` hook on the whole `/student` blueprint, so every state-changing route is covered by default and a mismatched or missing `X-CSRF-Token` header is rejected. A short exempt list (`CSRF_EXEMPT_PATHS` and prefixes) covers routes that run before a `csrf_token` can exist or have no header-capable caller (login, register, onboarding, email verification and password setup/reset, and a few others); `/auth/refresh-token` is deliberately not exempt. `SameSite=Lax` on the auth cookies is defense in depth. See `SECURITY.md` §2.1 and §7.
 - **Rate limiting** at both the HTTP layer (Flask-Limiter, named tiers — see `PRODUCT_OVERVIEW.md`) and the WebSocket layer (per-user thread-message and AI-action caps, Redis-backed for cross-instance correctness).
 - **PII scrubbing before it leaves the process.** Sentry's `before_send` hook strips the three named auth cookies and password-hash field names, by name, from any captured event.
 - **Security headers** (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, conditional HSTS) are set on every response via an `after_request` hook, with an explicit guard to skip WebSocket upgrade connections (setting headers on an already-upgraded connection raises an `AssertionError` under threading mode).
@@ -662,9 +664,11 @@ This section is a summary of the mechanisms; **[`SECURITY.md`](SECURITY.md)** is
 
 ## 19. Testing architecture
 
-The unit suite runs under `pytest` (`pytest.ini`: `testpaths = tests/unit`), with a root-level `conftest.py` that sets placeholder environment variables (`SECRET_KEY`, an in-memory SQLite `DATABASE_NEW_URL`, a Redis URL pointing at a port nothing listens on) before any test module is collected — necessary because `config.py`'s `Config` class reads `SECRET_KEY`/`DATABASE_NEW_URL` and raises `ValueError` at class-definition time, i.e. at import time, so these must exist in the environment before pytest imports anything that touches `config.py`.
+The unit suite runs under `pytest` (`pytest.ini`: `testpaths = tests/unit tests/integration`, so a bare `pytest` runs both), with a root-level `conftest.py` that sets placeholder environment variables (`SECRET_KEY`, an in-memory SQLite `DATABASE_NEW_URL`, a Redis URL pointing at a port nothing listens on) before any test module is collected — necessary because `config.py`'s `Config` class reads `SECRET_KEY`/`DATABASE_NEW_URL` and raises `ValueError` at class-definition time, i.e. at import time, so these must exist in the environment before pytest imports anything that touches `config.py`.
 
 Redis-dependent code is tested against `fakeredis` rather than a real Redis instance, with one specific added dependency worth noting: `distributed_lock.py`'s `release()` uses a Lua script (`EVAL`) for its atomic compare-and-delete, and `fakeredis` doesn't support `EVAL` without the `lupa` package providing Lua scripting support underneath it — confirmed necessary empirically while writing the distributed-lock test, not a defensive addition. `freezegun` is used for deterministic time-dependent tests (login streaks, token expiry, cooldown windows). `pytest-cov` and `pytest-mock` round out the standard toolchain.
+
+As of this revision the suite is 1,490 passing tests (672 unit, 818 integration) with 2 skipped. Defects found while writing tests were pinned with `xfail(strict=True)` markers; strict mode means fixing a defect fails its test until the marker is removed, so the markers could not go stale, and all of them have since been removed along with their fixes. The integration suite builds the real app via `create_app()` and drives it through the Flask test client against SQLite and `fakeredis`. Both CI workflows run `scripts/check_layering.py` first (the unit job on Python 3.12, the integration job on 3.11).
 
 ---
 
