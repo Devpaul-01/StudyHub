@@ -236,7 +236,7 @@ Another honest current gap: the live study session's real-time activity feed is 
 
 ## Project History
 
-StudyHub has been under active development since [actual start month/year]. The current git history was reinitialized to establish a clean commit structure; earlier development predates the current repository.
+StudyHub has been under active development since JANUARY 2025 . The current git history was reinitialized to establish a clean commit structure; earlier development predates the current repository.
 
 ---
 
