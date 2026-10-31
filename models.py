@@ -1828,6 +1828,45 @@ class UserWarning(db.Model):
         return f"<Warning: User {self.user_id} - {self.severity} [{self.reason}]>"
 
 
+class MessageReport(db.Model):
+    """
+    Content moderation for direct messages.
+
+    Batch 5: routes/student/messages.py's report_message() route has
+    existed for a while, taking a reason and description from the
+    reporter — but its own code comment says "Create report (using
+    existing PostReport model structure)... For now, we'll log it",
+    and that's genuinely all it ever did: write a line to the
+    application log and nothing else. No report of a message has ever
+    been queryable or reviewable. This model (and the matching fix to
+    that route) gives message reports the same persisted, reviewable
+    shape PostReport already gives post reports, so a moderation queue
+    can show both without silently missing half its real input.
+
+    Mirrors PostReport's shape field-for-field rather than introducing a
+    different convention, since the two will likely be reviewed through
+    the same queue.
+    """
+    __tablename__ = "message_reports"
+
+    id          = db.Column(db.Integer, primary_key=True)
+    message_id  = db.Column(db.Integer, db.ForeignKey("messages.id"), nullable=False, index=True)
+    reported_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+
+    reason       = db.Column(db.String(100), nullable=False)
+    description  = db.Column(db.Text)
+    status       = db.Column(db.String(20), default="pending", index=True)
+    reviewed_by  = db.Column(db.Integer, db.ForeignKey("users.id"))
+    review_notes = db.Column(db.Text)
+    action_taken = db.Column(db.String(100))
+
+    reported_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    reviewed_at = db.Column(db.DateTime)
+
+    def __repr__(self):
+        return f"<MessageReport {self.id}: Message {self.message_id} - {self.reason} [{self.status}]>"
+
+
 class ProfileChangeHistory(db.Model):
     """Audit trail for profile changes."""
     __tablename__ = "profile_change_history"

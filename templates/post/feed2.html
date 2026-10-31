@@ -1087,6 +1087,21 @@ html { scroll-behavior: smooth; }
                         <span class="slider"></span>
                     </label>
 
+                    <!-- Batch 5: push notifications on this device. The
+                         backend side of this (User.fcm_token, and every
+                         existing call to send a push) already existed
+                         with nothing ever writing a token — see
+                         POST /profile/fcm-token in
+                         routes/student/profile.py. This toggle is the
+                         frontend half: request permission, register with
+                         Firebase, and save the resulting token. -->
+                    <label class="switch" style="display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 12px;">
+                        <span style="flex: 1;">Push Notifications (this device)</span>
+                        <input type="checkbox" role="switch" id="toggle-push-notification" data-action="toggle-push-notification">
+                        <span class="slider"></span>
+                    </label>
+                    <div id="push-notification-status" style="font-size:0.72rem;color:var(--text-secondary,#6c757d);"></div>
+
                     <!-- Batch 2: these were missing entirely — see
                          POST /profile/notifications/mark-all-read and
                          DELETE /profile/notifications/delete-all in
@@ -5717,6 +5732,8 @@ html { scroll-behavior: smooth; }
 <script type="module" src="{{url_for('static', filename='js/connection/connection.init.js')}}"></script>
 <script type="module" src="{{url_for('static', filename='js/homework/homework.init.js')}}"></script>
 <script type="module" src="{{url_for('static', filename='js/notification/notification.init.js')}}"></script>
+<!-- Batch 5: push notifications — see static/js/push/push.js -->
+<script type="module" src="{{url_for('static', filename='js/push/push.js')}}"></script>
 <script type="module" src="{{url_for('static', filename='js/activity/activity.feed.js')}}"></script>
 
 <script type="module" src="{{url_for('static', filename='js/feed/feed.init.js')}}"></script>

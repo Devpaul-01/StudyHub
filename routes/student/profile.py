@@ -479,6 +479,70 @@ def remove_avatar(current_user):
 
 
 # ============================================================================
+# PUSH NOTIFICATIONS (Batch 5)
+# ============================================================================
+#
+# User.fcm_token (models.py) was read extensively by
+# services/push_notifications.py and by every existing push-notification
+# call site (e.g. routes/student/connections/crud.py's connection-request
+# alerts) — but nothing anywhere ever WROTE to it, so every one of those
+# existing calls has always sent to an empty token and done nothing. This
+# is the missing write side; see app.py for the matching fix that makes
+# PushNotificationService.initialize() actually get called at startup,
+# since a saved token alone still wouldn't be enough without that.
+
+@profile_bp.route("/profile/fcm-token", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+def save_fcm_token(current_user):
+    """
+    Save (or update) the current device's FCM token for push notifications.
+
+    Body: { "token": "<fcm token string>" }
+
+    One column, one token: this only supports a single device per
+    account, the same limitation the column itself already had (it's a
+    single db.Column, not a related table) — saving a new token from a
+    second device silently replaces the first device's token, the same
+    way logging into any single-session system elsewhere in this app
+    already works. A real multi-device upgrade would need a separate
+    table and is out of scope here; this fixes the "nothing writes this
+    at all" gap, not the one-token-per-account design.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        token = (data.get("token") or "").strip()
+
+        if not token:
+            return error_response("A token is required")
+        if len(token) > 500:  # matches User.fcm_token's db.String(500)
+            return error_response("Token is too long")
+
+        current_user.fcm_token = token
+        db.session.commit()
+        return success_response("Push notification token saved")
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Save FCM token error: {str(e)}")
+        return error_response("Failed to save push notification token")
+
+
+@profile_bp.route("/profile/fcm-token", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+def clear_fcm_token(current_user):
+    """Clear this account's saved FCM token (e.g. on logout or opt-out)."""
+    try:
+        current_user.fcm_token = None
+        db.session.commit()
+        return success_response("Push notification token cleared")
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Clear FCM token error: {str(e)}")
+        return error_response("Failed to clear push notification token")
+
+
+# ============================================================================
 # HELP SUGGESTIONS
 # ============================================================================
 
