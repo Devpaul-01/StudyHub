@@ -26,6 +26,23 @@ export const homeworkState = {
   connectionsHasMore: false,
   connectionsLoadingMore: false,
 
+  // Batch 3: "Offers on my work" (people who offered to help on MY
+  // assignments) and "Helping others" (assignments I'm helping with).
+  // Both backing routes (GET /homework/my-help-requests and
+  // GET /homework/helping) already existed with no tab in the UI calling
+  // either — there was no inbox for incoming offers and no "what am I
+  // currently helping with" list, which the audit flagged as the two
+  // screens needed to make the peer-help loop actually usable day to day.
+  // No pagination here (unlike myAssignments/connectionsHomework above):
+  // both backend routes return every matching row in one response, not a
+  // cursor-paginated page, so there's nothing to page through client-side.
+  myHelpRequests: [],
+  myHelpRequestsStats: {},
+  myHelpRequestsStatusFilter: 'all',
+  helpingWith: [],
+  helpingWithStats: {},
+  helpingWithStatusFilter: 'all',
+
   streakData: {
   current_streak: 0,
   longest_streak: 0,
@@ -46,12 +63,16 @@ export const homeworkState = {
   loading: {
     myHomework: false,
     stats: false,
-    connectionsHomework: false
+    connectionsHomework: false,
+    myHelpRequests: false,
+    helpingWith: false
   },
   dataLoaded: {
   myHomework: false,
   connectionsHomework: false,
-  stats: false
+  stats: false,
+  myHelpRequests: false,
+  helpingWith: false
 },
   
   // Current modal data
@@ -152,6 +173,36 @@ forceRefresh(type) {
     this.connectionsHasMore = !!data.has_more;
     this.dataLoaded.connectionsHomework = true;
   },
+
+  // Batch 3: "Offers on my work" — data payload shape is
+  // { help_requests: [...], total, stats: {pending, submitted, reviewed, completed} }
+  // (see get_my_help_requests() in routes/student/homework_system.py).
+  setMyHelpRequests(data) {
+    this.myHelpRequests = data.help_requests || [];
+    this.myHelpRequestsStats = data.stats || {};
+    this.dataLoaded.myHelpRequests = true;
+  },
+  setMyHelpRequestsStatusFilter(status) {
+    this.myHelpRequestsStatusFilter = status || 'all';
+  },
+  getMyHelpRequestsStatusFilter() {
+    return this.myHelpRequestsStatusFilter;
+  },
+
+  // Batch 3: "Helping others" — data payload shape is
+  // { helping_with: [...], total, stats: {...} }
+  // (see get_homework_im_helping_with() in the same file).
+  setHelpingWith(data) {
+    this.helpingWith = data.helping_with || [];
+    this.helpingWithStats = data.stats || {};
+    this.dataLoaded.helpingWith = true;
+  },
+  setHelpingWithStatusFilter(status) {
+    this.helpingWithStatusFilter = status || 'all';
+  },
+  getHelpingWithStatusFilter() {
+    return this.helpingWithStatusFilter;
+  },
   
   /**
    * Set loading state
@@ -247,6 +298,11 @@ getEditResources() {
     this.uploadedResources = [];
     this.currentSubmission = null;
     this.currentAssignment = null;
+    // Batch 3
+    this.myHelpRequests = [];
+    this.myHelpRequestsStats = {};
+    this.helpingWith = [];
+    this.helpingWithStats = {};
   }
 };
 window.homeworkState = homeworkState;

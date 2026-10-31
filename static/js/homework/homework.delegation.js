@@ -5,7 +5,10 @@
  * ============================================================================
  */
 
-import { switchTab, refreshCurrentTab } from './homework.render.js';
+import {
+  switchTab, refreshCurrentTab,
+  handleFilterMyHelpRequests, handleFilterHelpingWith,
+} from './homework.render.js';
 import {
   openCreateHomeworkModal,
   closeHomeworkModal,
@@ -361,6 +364,38 @@ export const HomeworkHandlers = {
   'reload-my-homework': async (target, event) => {
     event.preventDefault();
     refreshCurrentTab();
+  },
+
+  // Batch 3: "Offers on my work" / "Helping Others"
+
+  'open-submission-detail': async (target, event) => {
+    event.preventDefault();
+    const submissionId = target.dataset.submissionId;
+    if (submissionId) {
+      await openSubmissionDetailModal(submissionId);
+    }
+  },
+
+  'reload-my-help-requests': async (target, event) => {
+    event.preventDefault();
+    refreshCurrentTab();
+  },
+
+  'reload-helping-with': async (target, event) => {
+    event.preventDefault();
+    refreshCurrentTab();
+  },
+
+  'filter-my-help-requests': async (target, event) => {
+    event.preventDefault();
+    const status = target.dataset.status || 'all';
+    await handleFilterMyHelpRequests(status);
+  },
+
+  'filter-helping-with': async (target, event) => {
+    event.preventDefault();
+    const status = target.dataset.status || 'all';
+    await handleFilterHelpingWith(status);
   },
 
   /**

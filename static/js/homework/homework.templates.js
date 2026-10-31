@@ -454,6 +454,130 @@ export function renderConnectionsHomeworkCard(hw) {
 `;
 }
 
+// ============================================================================
+// BATCH 3: "Offers on my work" / "Helping Others" tabs
+// ============================================================================
+// Both back GET /homework/my-help-requests and GET /homework/helping,
+// which already existed with no tab in the UI calling either — there was
+// no inbox for incoming help offers, and no "what am I currently helping
+// with" list.
+
+const STATUS_FILTERS = ['all', 'pending', 'submitted', 'reviewed', 'completed'];
+
+/**
+ * Status filter chip row, shared by both new tabs.
+ */
+export function renderStatusFilterChips(activeStatus, action) {
+  return `
+    <div class="hw-status-filter-chips" style="display:flex;gap:8px;overflow-x:auto;
+         padding:0 0 1rem;-webkit-overflow-scrolling:touch;">
+      ${STATUS_FILTERS.map(s => `
+        <button type="button" class="hw-status-chip${s === activeStatus ? ' active' : ''}"
+                data-action="${action}" data-status="${s}"
+                style="flex:0 0 auto;padding:0.35rem 0.75rem;border-radius:999px;font-size:0.78rem;
+                       text-transform:capitalize;cursor:pointer;
+                       border:1px solid ${s === activeStatus ? 'var(--accent,#0057FF)' : 'var(--border)'};
+                       background:${s === activeStatus ? 'var(--accent,#0057FF)' : 'transparent'};
+                       color:${s === activeStatus ? '#fff' : 'var(--text-secondary)'};">
+          ${s}
+        </button>`).join('')}
+    </div>`;
+}
+
+/**
+ * "Offers on my work" list — people who offered to help on my
+ * assignments. Each row opens the existing submission-detail modal
+ * (openSubmissionDetailModal, in homework.submission.js), which already
+ * renders the correct helper-vs-requester view and already has the
+ * submit/feedback/cancel actions built in — this tab is just the
+ * missing entry point into all of that.
+ */
+export function renderMyHelpRequestsList(helpRequests) {
+  if (!helpRequests || helpRequests.length === 0) {
+    return `<div class="hw-empty-state"><p>No one has offered to help with your assignments yet.</p></div>`;
+  }
+  return helpRequests.map(req => `
+    <div class="hw-card" data-action="open-submission-detail" data-submission-id="${req.id}" style="cursor:pointer;">
+      <div class="hw-card-header">
+        <div class="hw-card-title-row">
+          <h3 class="hw-card-title">${req.title || 'Untitled assignment'}</h3>
+          <span class="hw-badge ${getStatusBadgeClass(req.status)}">${getStatusDisplayText(req.status)}</span>
+        </div>
+        <div class="hw-card-meta">
+          ${req.subject ? `<span class="hw-card-subject">${req.subject}</span>` : ''}
+        </div>
+      </div>
+      <div class="hw-student-info">
+        <img src="${req.helper?.avatar || '/static/default-avatar.png'}" alt="${req.helper?.name || ''}"
+             data-action="view-avatar" class="hw-student-avatar" />
+        <div class="hw-student-details">
+          <div class="hw-student-name">${req.helper?.name || 'Unknown'} offered to help</div>
+          <div class="hw-student-meta">
+            ${req.helper?.department ? `<span>${req.helper.department}</span> • ` : ''}
+            ${renderUserStatus(req.helper?.active_details)}
+          </div>
+        </div>
+      </div>
+      <div class="hw-card-footer">
+        <div class="hw-card-info">
+          <div class="hw-info-item">
+            <span>${req.solution_submitted ? '✅ Solution submitted' : '⏳ Awaiting solution'}</span>
+          </div>
+          ${req.feedback_received ? `<div class="hw-info-item"><span>💬 Feedback given</span></div>` : ''}
+        </div>
+      </div>
+    </div>`
+  ).join('');
+}
+
+/**
+ * "Helping Others" list — assignments I'm currently helping with. Same
+ * reuse of the submission-detail modal as above.
+ */
+export function renderHelpingWithList(helpingWith) {
+  if (!helpingWith || helpingWith.length === 0) {
+    return `<div class="hw-empty-state"><p>You're not currently helping with anyone's assignment.</p></div>`;
+  }
+  return helpingWith.map(hw => `
+    <div class="hw-card" data-action="open-submission-detail" data-submission-id="${hw.id}" style="cursor:pointer;">
+      <div class="hw-card-header">
+        <div class="hw-card-title-row">
+          <h3 class="hw-card-title">${hw.title || 'Untitled assignment'}</h3>
+          <span class="hw-badge ${getStatusBadgeClass(hw.status)}">${getStatusDisplayText(hw.status)}</span>
+        </div>
+        <div class="hw-card-meta">
+          ${hw.subject ? `<span class="hw-card-subject">${hw.subject}</span>` : ''}
+          ${hw.difficulty ? `<span class="hw-badge ${getDifficultyBadgeClass(hw.difficulty)}">${getDifficultyEmoji(hw.difficulty)} ${hw.difficulty}</span>` : ''}
+        </div>
+      </div>
+      ${hw.description ? `<p class="hw-card-description">${truncateText(hw.description, 120)}</p>` : ''}
+      <div class="hw-student-info">
+        <img src="${hw.student?.avatar || '/static/default-avatar.png'}" alt="${hw.student?.name || ''}"
+             data-action="view-avatar" class="hw-student-avatar" />
+        <div class="hw-student-details">
+          <div class="hw-student-name">Helping ${hw.student?.name || 'Unknown'}</div>
+          <div class="hw-student-meta">
+            ${hw.student?.department ? `<span>${hw.student.department}</span> • ` : ''}
+            ${renderUserStatus(hw.student?.active_details)}
+          </div>
+        </div>
+      </div>
+      <div class="hw-card-footer">
+        <div class="hw-card-info">
+          ${hw.assignment_due_date ? `
+            <div class="hw-info-item">
+              <span>Due ${formatDate(hw.assignment_due_date)}</span>
+            </div>` : ''}
+          <div class="hw-info-item">
+            <span>${hw.solution_submitted ? '✅ Solution submitted' : '⏳ Not submitted yet'}</span>
+          </div>
+          ${hw.feedback_given ? `<div class="hw-info-item"><span>💬 Feedback received</span></div>` : ''}
+        </div>
+      </div>
+    </div>`
+  ).join('');
+}
+
 /**
  * Empty state template
  */

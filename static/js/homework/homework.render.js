@@ -15,7 +15,10 @@ import {
   renderMyHomeworkCard,
   renderConnectionsHomeworkList,
   renderConnectionsHomeworkCard,
-  renderLoadingState
+  renderLoadingState,
+  renderMyHelpRequestsList,
+  renderHelpingWithList,
+  renderStatusFilterChips,
 } from './homework.templates.js';
 import { showHomeworkToast } from './homework.utils.js';
 import { loadStatsTab, loadDynamicStatsComponents} from './homework.stats.js';
@@ -81,6 +84,105 @@ function renderMyHomeworkFromCache() {
 
   disconnectObserver(myHomeworkObserver);
   myHomeworkObserver = setupInfiniteScroll('my', loadMoreMyHomework);
+}
+
+// Batch 3: "Offers on my work" / "Helping Others" — no infinite scroll
+// here (unlike My Work / Connections above), since both backing routes
+// return everything in one response rather than a cursor-paginated page.
+
+function renderFilterChipsFor(containerId, activeStatus, action) {
+  const el = document.getElementById(containerId);
+  if (el) el.innerHTML = renderStatusFilterChips(activeStatus, action);
+}
+
+function renderMyHelpRequestsFromCache() {
+  const container = document.getElementById('my-help-requests-container');
+  if (!container) return;
+  renderFilterChipsFor('my-help-requests-filter-container',
+    homeworkState.getMyHelpRequestsStatusFilter(), 'filter-my-help-requests');
+  container.innerHTML = renderMyHelpRequestsList(homeworkState.myHelpRequests);
+}
+
+export async function handleFilterMyHelpRequests(status) {
+  homeworkState.setMyHelpRequestsStatusFilter(status);
+  homeworkState.forceRefresh('myHelpRequests');
+  await loadMyHelpRequests();
+}
+
+export async function handleFilterHelpingWith(status) {
+  homeworkState.setHelpingWithStatusFilter(status);
+  homeworkState.forceRefresh('helpingWith');
+  await loadHelpingWith();
+}
+
+export async function loadMyHelpRequests() {
+  const container = document.getElementById('my-help-requests-container');
+  if (!container) return;
+
+  try {
+    container.innerHTML = renderLoadingState();
+    homeworkState.setLoading('myHelpRequests', true);
+
+    const status = homeworkState.getMyHelpRequestsStatusFilter();
+    const response = await homeworkAPI.getMyHelpRequestsInbox(status);
+
+    homeworkState.setLoading('myHelpRequests', false);
+
+    if (response.status === 'success') {
+      homeworkState.setMyHelpRequests(response.data);
+      renderMyHelpRequestsFromCache();
+    } else {
+      throw new Error(response.message || 'Failed to load help requests');
+    }
+  } catch (error) {
+    console.error('Error loading my help requests:', error);
+    homeworkState.setLoading('myHelpRequests', false);
+    container.innerHTML = `
+      <div class="hw-error-state">
+        <p>Failed to load help requests. Please try again.</p>
+        <button class="hw-btn hw-btn-primary" data-action="reload-my-help-requests">Retry</button>
+      </div>
+    `;
+  }
+}
+
+function renderHelpingWithFromCache() {
+  const container = document.getElementById('helping-with-container');
+  if (!container) return;
+  renderFilterChipsFor('helping-with-filter-container',
+    homeworkState.getHelpingWithStatusFilter(), 'filter-helping-with');
+  container.innerHTML = renderHelpingWithList(homeworkState.helpingWith);
+}
+
+export async function loadHelpingWith() {
+  const container = document.getElementById('helping-with-container');
+  if (!container) return;
+
+  try {
+    container.innerHTML = renderLoadingState();
+    homeworkState.setLoading('helpingWith', true);
+
+    const status = homeworkState.getHelpingWithStatusFilter();
+    const response = await homeworkAPI.getHelpingWith({ status });
+
+    homeworkState.setLoading('helpingWith', false);
+
+    if (response.status === 'success') {
+      homeworkState.setHelpingWith(response.data);
+      renderHelpingWithFromCache();
+    } else {
+      throw new Error(response.message || 'Failed to load helping-with list');
+    }
+  } catch (error) {
+    console.error('Error loading helping-with:', error);
+    homeworkState.setLoading('helpingWith', false);
+    container.innerHTML = `
+      <div class="hw-error-state">
+        <p>Failed to load. Please try again.</p>
+        <button class="hw-btn hw-btn-primary" data-action="reload-helping-with">Retry</button>
+      </div>
+    `;
+  }
 }
 
 /**
@@ -180,6 +282,20 @@ export function switchTab(tab) {
     } else {
       // Render from cache
       renderStatsFromCache();
+    }
+  } else if (tab === 'my-help-requests') {
+    // Batch 3
+    if (!homeworkState.isDataLoaded('myHelpRequests')) {
+      loadMyHelpRequests();
+    } else {
+      renderMyHelpRequestsFromCache();
+    }
+  } else if (tab === 'helping-with') {
+    // Batch 3
+    if (!homeworkState.isDataLoaded('helpingWith')) {
+      loadHelpingWith();
+    } else {
+      renderHelpingWithFromCache();
     }
   }
 }
@@ -387,6 +503,14 @@ export function refreshCurrentTab() {
   } else if (activeTab === 'stats') {
     homeworkState.forceRefresh('stats');
     loadStatsTab();
+  } else if (activeTab === 'my-help-requests') {
+    // Batch 3
+    homeworkState.forceRefresh('myHelpRequests');
+    loadMyHelpRequests();
+  } else if (activeTab === 'helping-with') {
+    // Batch 3
+    homeworkState.forceRefresh('helpingWith');
+    loadHelpingWith();
   }
 }
 
