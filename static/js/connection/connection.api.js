@@ -136,6 +136,12 @@ async rescheduleSession(sessionData, sessionId) {
     return response;
   },
 
+  // Batch 2: "unfriend" — see the comment on CONNECTION_ENDPOINTS.REMOVE.
+  async removeConnection(userId) {
+    const response = await api.delete(`${CONNECTION_ENDPOINTS.REMOVE}/${userId}`);
+    return response;
+  },
+
   async getBlockedUsers() {
     const response = await api.get(CONNECTION_ENDPOINTS.BLOCKED_LIST);
     return response?.data || [];

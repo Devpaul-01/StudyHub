@@ -8,6 +8,7 @@ import {
   rejectRequest,
   cancelRequest,
   blockRequest,
+  removeConnectionRequest,
   openConnectionActionsModal,
   withdrawStudySession,
   showStudySessions,
@@ -217,6 +218,12 @@ export const ConnectionHandlers = {
     event.stopPropagation();
     const userId = parseInt(target.dataset.userId);
     blockRequest(userId, target);
+  },
+
+  'remove-connection': (target, event) => {
+    event.stopPropagation();
+    const userId = parseInt(target.dataset.userId);
+    removeConnectionRequest(userId, target);
   },
 
   'unblock-request': (target, event) => {

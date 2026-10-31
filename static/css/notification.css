@@ -999,13 +999,14 @@ section#notifications.active #notifications-modal {
 }
 
 /* Settings dropdown positioning */
+/* Settings dropdown positioning */
 #notification-settings-modal {
     position: absolute;
     top: 100%;
     right: 0;
     margin-top: 0.5rem;
-    background: var(--surface, #ffffff);
-    border: 1px solid var(--border, #e5e7eb);
+    background: #000000;
+    border: 1px solid #000000;
     border-radius: 12px;
     padding: 1rem;
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);

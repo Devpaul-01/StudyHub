@@ -703,6 +703,16 @@ export const FeedHandlers = {
       window.filterFeed(filter);
     }
   },
+
+  // Batch 2: see the chip row added to templates/post/feed2.html
+  // right under .feed-filters, and handlePostTypeFilterChange() in
+  // feed.events.js.
+  'filter-post-type': (target, event, containerType) => {
+    const postType = target.dataset.postType || '';
+    if (typeof window.filterPostType === 'function') {
+      window.filterPostType(postType);
+    }
+  },
   
   'logout': (target, event, containerType) => {
     if (typeof logout === 'function') {

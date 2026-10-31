@@ -5,7 +5,10 @@
  * ============================================================================
  */
 
-import { handleDeleteNotification, toggleNotificationSettings } from './notification.events.js';
+import {
+  handleDeleteNotification, toggleNotificationSettings,
+  handleMarkAllRead, handleClearReadNotifications, handleFilterNotifications,
+} from './notification.events.js';
 import { notificationAPI } from './notification.api.js';
 import { updateBadgeCount } from './notification.utils.js';
 
@@ -73,5 +76,33 @@ export const NotificationHandlers = {
     if (id) {
       handleDeleteNotification(id, event);
     }
-  }
+  },
+
+  // Batch 2 additions below ------------------------------------------------
+
+  /**
+   * Mark every (optionally filtered) notification as read.
+   */
+  'mark-all-notifications-read': (target, event) => {
+    event.stopPropagation();
+    toggleNotificationSettings(); // close the options dropdown
+    handleMarkAllRead();
+  },
+
+  /**
+   * Delete every already-read (optionally filtered) notification.
+   */
+  'clear-read-notifications': (target, event) => {
+    event.stopPropagation();
+    toggleNotificationSettings(); // close the options dropdown
+    handleClearReadNotifications();
+  },
+
+  /**
+   * Switch the active notification type filter chip.
+   */
+  'filter-notifications': (target, event) => {
+    event.stopPropagation();
+    handleFilterNotifications(target.dataset.type || '');
+  },
 };

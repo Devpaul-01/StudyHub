@@ -5,8 +5,14 @@
  * ============================================================================
  */
 
-import { loadNotifications, handleToggleNotification, handleToggleNotificationSound, toggleNotificationSettings } from './notification.events.js';
+import {
+  loadNotifications, handleToggleNotification, handleToggleNotificationSound,
+  toggleNotificationSettings,
+} from './notification.events.js';
 import { notificationState } from './notification.state.js';
+import { createNotificationCard } from './notification.templates.js';
+import { updateBadgeCount } from './notification.utils.js';
+import { socket } from '../core/socket.js';
 
 // Pull-to-refresh variables
 let startY      = null;
@@ -260,3 +266,72 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 export { initializeNotifications };
+
+// ============================================================================
+// BATCH 2: LIVE NOTIFICATIONS (new_notification WebSocket event)
+// ============================================================================
+//
+// The backend already emits 'new_notification' the moment a notification
+// is created (see services/notification_service.py::_broadcast) with a
+// payload shape — {id, title, body, type, link, related_type, related_id,
+// created_at} — that already matches what createNotificationCard() reads;
+// nothing on the frontend was listening for it, so the nav badge and the
+// notification list only ever updated on a manual page load, a full
+// pull-to-refresh, or (now) after one of the Batch 2 bulk actions above.
+// This listener is registered unconditionally at module load (not inside
+// initializeNotifications(), which only runs once the #notifications
+// section becomes active), since the badge in the nav bar needs to update
+// live no matter which section the user is currently looking at.
+socket.on('new_notification', (payload) => {
+  if (!payload || !payload.id) return;
+
+  // Bump the badge immediately — this is the one piece that matters even
+  // if the user never opens the notifications section this session.
+  const badge = document.getElementById('notification-badge');
+  const currentCount = badge ? (parseInt(badge.textContent, 10) || 0) : 0;
+  updateBadgeCount(currentCount + 1);
+
+  // If the notifications list is already open, prepend the new card live
+  // rather than waiting for the next reload — but respect whatever filter
+  // chip is currently active, so a filtered view doesn't suddenly show a
+  // notification from a different category.
+  const activeType = notificationState.getActiveType();
+  if (activeType && activeType !== payload.type) {
+    // Still matches _build_type_filter()'s category grouping (e.g.
+    // 'badges' covers both 'badge_earned' and 'reputation_level_up'), not
+    // just an exact string match, so this needs the same groupings the
+    // backend uses rather than a plain equality check.
+    const TYPE_GROUPS = {
+      badges:      ['badge_earned', 'reputation_level_up'],
+      engagements: ['comment', 'like', 'helpful', 'solution_accepted'],
+      connections: ['connection_request', 'connection_accepted'],
+      messages:    ['message'],
+      mentions:    ['mention'],
+    };
+    const inGroup = TYPE_GROUPS[activeType]
+      ? TYPE_GROUPS[activeType].includes(payload.type)
+      : (activeType === 'threads' ? String(payload.type || '').startsWith('thread_') : payload.type === activeType);
+    if (!inGroup) return;
+  }
+
+  const section = document.getElementById('notifications');
+  const container = document.getElementById('notifications-list-container');
+  if (!section || !container || !section.classList.contains('active')) return;
+
+  // Clear the empty-state placeholder if it's showing. Both the
+  // server-rendered empty state (.notifications-empty-state, in
+  // feed2.html) and the JS-rendered one (showEmptyNotifications(), which
+  // has no distinguishing class) have no [data-notification-id] card
+  // inside them, which a real notification list always does — checking
+  // for that is more reliable here than matching either markup shape.
+  if (container.children.length > 0 && !container.querySelector('[data-notification-id]')) {
+    container.innerHTML = '';
+  }
+
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = createNotificationCard({ ...payload, is_read: false });
+  const card = tempDiv.firstElementChild;
+  if (card) {
+    container.insertBefore(card, container.firstChild);
+  }
+});
