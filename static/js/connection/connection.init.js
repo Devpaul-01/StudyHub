@@ -58,6 +58,20 @@ export async function loadConnectionBadges() {
   }
 }
 
+// Batch 3: lightweight badge next to the "Active Now" toggle — see the
+// comment on CONNECTION_ENDPOINTS.ONLINE_COUNT.
+export async function loadOnlineCountBadge() {
+  const el = document.getElementById('connections-online-count-badge');
+  if (!el) return;
+  try {
+    const response = await ConnectionAPI.getOnlineCount();
+    const count = response?.data?.count || 0;
+    el.textContent = count > 0 ? count : '';
+  } catch (error) {
+    console.error('Load online count error:', error);
+  }
+}
+
 // ============================================================================
 // LOAD CONNECTION TAB
 // ============================================================================
@@ -165,6 +179,7 @@ export async function initConnectionSystem() {
     // Load all data
     await loadAllConnectionData();
     await loadConnectionBadges();
+    loadOnlineCountBadge(); // Batch 3 — fire and forget, not critical-path
     
     // Load default tab (received)
     loadConnectionTab('received');

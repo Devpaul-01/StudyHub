@@ -19,6 +19,12 @@ export const CONNECTION_ENDPOINTS = {
   SUGGESTIONS: '/connections/suggestions',
   DISCOVERY: '/connections/mutuals/discover',
   ONLINE: '/connections/online',
+  // Batch 3: existed on the backend with no frontend endpoint constant
+  // and nothing calling any of them.
+  ONLINE_COUNT:      '/connections/online/count',
+  ONLINE_DEPARTMENT: '/connections/online/department',
+  AVAILABLE_NOW:     '/connections/available-now',
+  DETAILS:           '/connections', // + /<id>/details
   SEARCH: '/connections/search',
   OVERVIEW: '/connections/overview',
   MUTUALS: '/connections/mutual',

@@ -142,6 +142,39 @@ async rescheduleSession(sessionData, sessionId) {
     return response;
   },
 
+  // Batch 3: lightweight online count, for a tab badge — avoids pulling
+  // the whole online-connections list just to show a number.
+  async getOnlineCount(timeWindow) {
+    const qs = timeWindow ? `?time_window=${timeWindow}` : '';
+    const response = await api.get(`${CONNECTION_ENDPOINTS.ONLINE_COUNT}${qs}`);
+    return response;
+  },
+
+  // Batch 3: online connections filtered to the user's own department.
+  async getOnlineByDepartment(timeWindow) {
+    const qs = timeWindow ? `?time_window=${timeWindow}` : '';
+    const response = await api.get(`${CONNECTION_ENDPOINTS.ONLINE_DEPARTMENT}${qs}`);
+    return response;
+  },
+
+  // Batch 3: connections who are online, can help with `subject`, or
+  // whose study schedule says they're free right now — scored and
+  // sorted by the backend. `subject` is optional.
+  async getAvailableNow(subject) {
+    const qs = subject ? `?subject=${encodeURIComponent(subject)}` : '';
+    const response = await api.get(`${CONNECTION_ENDPOINTS.AVAILABLE_NOW}${qs}`);
+    return response;
+  },
+
+  // Batch 3: the full connection-health/shared-threads/mutuals/messaging
+  // detail card. Deliberately does not surface the response's
+  // study_history section — study sessions are out of scope for this
+  // project's current batches.
+  async getConnectionDetails(connectionId) {
+    const response = await api.get(`${CONNECTION_ENDPOINTS.DETAILS}/${connectionId}/details`);
+    return response;
+  },
+
   async getBlockedUsers() {
     const response = await api.get(CONNECTION_ENDPOINTS.BLOCKED_LIST);
     return response?.data || [];

@@ -108,6 +108,17 @@ export function createConnectedConnectionCard(connection) {
     Form Thread
   </button>
 
+  <!-- Batch 3: "Connection Details" — GET /connections/<id>/details
+       already existed with no screen in the UI surfacing it. -->
+  <button data-action="show-connection-details" data-connection-id="${connection.id}">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="16" x2="12" y2="12"/>
+      <line x1="12" y1="8" x2="12.01" y2="8"/>
+    </svg>
+    Connection Details
+  </button>
+
   <button data-action="view-mutual-connections" data-user-id="${user.id}">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
@@ -865,4 +876,127 @@ export function createMutualConnectionCard(connection) {
       </div>
     </div>
   `;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCH 3: "Available Now" modal content
+// ─────────────────────────────────────────────────────────────────────────────
+// Backs GET /connections/available-now, which already existed with no
+// entry point in the UI.
+
+export function buildAvailableNowList(availableUsers, subject) {
+  if (!availableUsers || !availableUsers.length) {
+    return `<div class="p-empty" style="padding:1rem;text-align:center;color:var(--text-secondary);">
+      ${subject ? `No connections are free right now who can help with "${subject}".` : 'No connections are free right now.'}
+    </div>`;
+  }
+  return availableUsers.map(entry => {
+    const u = entry.user;
+    const avail = entry.availability;
+    const repIcon = getReputationIcon(u.reputation_level);
+    const reasons = [];
+    if (avail.is_online) reasons.push('🟢 Online now');
+    if (avail.can_help_with_subject) reasons.push(`📚 Can help with "${subject}"`);
+    if (avail.schedule_available) reasons.push('📅 Free per their schedule');
+
+    return `
+      <div class="connection-card" data-user-id="${u.id}" style="padding:0.75rem;">
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          <img src="${u.avatar || '/static/default-avatar.png'}" alt="${u.name}"
+               data-action="view-avatar" data-src="${u.avatar || '/static/default-avatar.png'}"
+               style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;cursor:pointer;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:0.88rem;">${repIcon} ${u.name}</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">${u.department || ''}</div>
+          </div>
+          <button data-action="form-thread" data-user-id="${u.id}"
+                  class="p-btn p-btn--secondary" style="flex-shrink:0;padding:0.3rem 0.7rem;font-size:0.75rem;">
+            Message
+          </button>
+        </div>
+        ${reasons.length ? `
+          <div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.4rem;">
+            ${reasons.map(r => `<span style="font-size:0.7rem;color:var(--text-secondary);">${r}</span>`).join(' ')}
+          </div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCH 3: Connection Details modal content
+// ─────────────────────────────────────────────────────────────────────────────
+// Backs GET /connections/<id>/details, which already existed with no
+// screen in the UI surfacing it. Deliberately leaves out the response's
+// study_history section — study sessions are out of scope for this
+// project's current batches.
+
+export function buildConnectionDetails(data) {
+  if (!data) return `<div class="p-empty">Could not load connection details</div>`;
+
+  const { connection, partner, mutual_connections, shared_threads, interaction_metrics, health } = data;
+  const repIcon = getReputationIcon(partner.reputation_level);
+  const healthColor = getHealthColor(health?.health_score || 0);
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:1rem;max-height:70vh;overflow-y:auto;">
+
+      <div style="display:flex;align-items:center;gap:0.75rem;">
+        <img src="${partner.avatar || '/static/default-avatar.png'}" alt="${partner.name}"
+             data-action="view-avatar" data-src="${partner.avatar || '/static/default-avatar.png'}"
+             style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;">
+        <div>
+          <div style="font-weight:700;font-size:1rem;">${repIcon} ${partner.name}</div>
+          <div style="font-size:0.78rem;color:var(--text-secondary);">
+            ${partner.department || ''} ${partner.is_online ? '• 🟢 Online' : ''}
+          </div>
+        </div>
+      </div>
+
+      <div class="p-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem;">
+          <span style="font-size:0.82rem;font-weight:700;">Connection Health</span>
+          <span style="font-size:0.9rem;font-weight:700;color:${healthColor};">${health?.health_score ?? '—'}%</span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);">${health?.suggestion || ''}</div>
+        <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.3rem;">
+          Connected ${connection.days_connected} day(s) ago •
+          Last interaction ${health?.last_interaction_days ?? '—'} day(s) ago
+        </div>
+      </div>
+
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;margin-bottom:0.4rem;">Messages</div>
+        <div style="display:flex;gap:1.2rem;font-size:0.78rem;color:var(--text-secondary);">
+          <span>${interaction_metrics.total_messages} total</span>
+          <span>${interaction_metrics.messages_sent} sent</span>
+          <span>${interaction_metrics.messages_received} received</span>
+        </div>
+        ${interaction_metrics.last_message ? `
+          <div style="margin-top:0.4rem;font-size:0.76rem;color:var(--text-secondary);">
+            Last message ${interaction_metrics.last_message.days_ago}d ago:
+            "${interaction_metrics.last_message.preview}"
+          </div>` : ''}
+      </div>
+
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;margin-bottom:0.4rem;">
+          Shared Threads (${shared_threads.count})
+        </div>
+        ${shared_threads.threads.length ? shared_threads.threads.map(t => `
+          <div style="font-size:0.78rem;padding:0.25rem 0;">${t.title}</div>
+        `).join('') : `<div class="p-empty">None yet</div>`}
+      </div>
+
+      <div class="p-card">
+        <div style="font-size:0.82rem;font-weight:700;margin-bottom:0.4rem;">
+          Mutual Connections (${mutual_connections.count})
+        </div>
+        ${mutual_connections.sample.length ? `
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            ${mutual_connections.sample.map(m => `
+              <img src="${m.avatar || '/static/default-avatar.png'}" alt="${m.name}" title="${m.name}"
+                   style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+            `).join('')}
+          </div>` : `<div class="p-empty">None yet</div>`}
+      </div>
+    </div>`;
 }

@@ -1307,7 +1307,22 @@ html { scroll-behavior: smooth; }
                             <input type="checkbox" class="toggle-input" data-action="filter-connections" data-filter="active" />
                             <span class="toggle-slider"></span>
                             <span class="toggle-label">Active Now</span>
+                            <!-- Batch 3: lightweight count badge, from
+                                 GET /connections/online/count, which
+                                 already existed with nothing calling it. -->
+                            <span id="connections-online-count-badge" class="tab-count" style="margin-left:4px;"></span>
                         </label>
+
+                        <!-- Batch 3: "Available now" — a different, richer
+                             feature than the toggle above: scores by
+                             online status, schedule match, and (if a
+                             subject is given) who can help with it. Backs
+                             GET /connections/available-now, which already
+                             existed with no entry point in the UI. -->
+                        <button type="button" data-action="show-available-now"
+                                class="toggle-filter" style="cursor:pointer;background:none;border:none;">
+                            <span class="toggle-label">🟢 Available Now</span>
+                        </button>
                     </div>
                 </div>
 
