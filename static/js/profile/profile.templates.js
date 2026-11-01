@@ -548,7 +548,7 @@ export function buildConnectionsTab(connections) {
 // REPUTATION TAB
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildReputationTab(repData, historyData) {
+export function buildReputationTab(repData, historyData, rankHistoryData) {
   if (!repData) return `<div class="p-empty">Could not load reputation data</div>`;
 
   const rep     = repData.reputation;
@@ -625,6 +625,9 @@ export function buildReputationTab(repData, historyData) {
           </div>
         ` : `<div style="font-size:0.82rem;color:var(--success);font-weight:600;">🎉 Max level reached!</div>`}
       </div>
+
+      <!-- Batch 3: rank-history trend chart -->
+      ${buildRankHistoryChart(rankHistoryData)}
 
       <!-- Summary boxes -->
       ${summary.total_gained !== undefined ? `
@@ -923,5 +926,78 @@ export function buildAllBadgesModal(data) {
           ${b.has_earned ? '<span style="font-size:0.9rem;">✅</span>' : ''}
         </button>
       `).join('')}
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCH 3: Rank history chart
+// ─────────────────────────────────────────────────────────────────────────────
+// Backs GET /leaderboard/rank-history, which already existed with no
+// trend shown anywhere — the reputation tab only ever showed the
+// CURRENT rank, never how it changed over time.
+//
+// This renders as an empty state for any account that hasn't been
+// through at least one weekly snapshot cycle yet (the backend's
+// leaderboard snapshots run every Sunday via scheduler.py — confirmed
+// that job is real and scheduled, unlike WeeklyChampion elsewhere in
+// this codebase, which the original audit flagged as never actually
+// populated) — so an empty chart here is the correct, expected state
+// for a new account, not a bug.
+export function buildRankHistoryChart(data) {
+  const history = data?.history || [];
+
+  if (history.length < 2) {
+    return `
+      <div class="p-card">
+        <div style="font-size:0.78rem;font-weight:700;color:var(--text-primary);margin-bottom:0.3rem;">
+          Rank Over Time
+        </div>
+        <div class="p-empty">
+          ${history.length === 0
+            ? 'No rank history yet — check back after this week\u2019s leaderboard snapshot.'
+            : 'Not enough history yet to show a trend.'}
+        </div>
+      </div>`;
+  }
+
+  const W = 280, H = 80, PAD = 8;
+  const ranks = history.map(h => h.global_rank);
+  const minRank = Math.min(...ranks);
+  const maxRank = Math.max(...ranks);
+  const range = Math.max(maxRank - minRank, 1);
+
+  // Lower rank = better, so this is drawn inverted: the best (lowest)
+  // rank sits near the TOP of the chart, not the bottom.
+  const points = history.map((h, i) => {
+    const x = PAD + (i / (history.length - 1)) * (W - PAD * 2);
+    const y = PAD + ((h.global_rank - minRank) / range) * (H - PAD * 2);
+    return { x, y, rank: h.global_rank, date: h.date };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+  const first = history[0].global_rank;
+  const last  = history[history.length - 1].global_rank;
+  const delta = first - last; // positive = improved (rank number went down)
+  const trendColor = delta > 0 ? '#10b981' : (delta < 0 ? '#ef4444' : 'var(--text-secondary)');
+  const trendLabel = delta > 0 ? `▲ Improved ${delta}` : (delta < 0 ? `▼ Dropped ${Math.abs(delta)}` : 'No change');
+
+  return `
+    <div class="p-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem;">
+        <span style="font-size:0.78rem;font-weight:700;color:var(--text-primary);">Rank Over Time</span>
+        <span style="font-size:0.72rem;font-weight:600;color:${trendColor};">${trendLabel} this period</span>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+        <path d="${pathD}" fill="none" stroke="var(--primary,#0057FF)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"></path>
+        ${points.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5"
+                                   fill="var(--primary,#0057FF)"><title>${p.date}: #${p.rank}</title></circle>`).join('')}
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-secondary);margin-top:0.2rem;">
+        <span>${history[0].date}</span>
+        <span>#${last} now</span>
+        <span>${history[history.length - 1].date}</span>
+      </div>
     </div>`;
 }

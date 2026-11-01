@@ -100,13 +100,15 @@ async function renderConnectionsTab() {
 async function renderReputationTab() {
   if (!profileState.isLoaded('reputation')) {
     setTabContent(buildSkeleton());
-    [profileState.reputation, profileState.repHistory] = await Promise.all([
+    // Batch 3: rankHistory fetched alongside the two existing calls here.
+    [profileState.reputation, profileState.repHistory, profileState.rankHistory] = await Promise.all([
       profileApi.fetchReputation(),
       profileApi.fetchReputationHistory(),
+      profileApi.fetchRankHistory(),
     ]);
     profileState.markLoaded('reputation');
   }
-  setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory));
+  setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory, profileState.rankHistory));
 }
 
 // Batch 3
