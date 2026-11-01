@@ -135,6 +135,85 @@ export async function removeLearningGoal(index) {
   }
 }
 
+// ── Batch 3: Privacy / visibility settings ─────────────────────────────────
+// GET/POST /profile/visibility-settings already existed on the backend
+// with no settings UI anywhere calling either.
+
+export async function fetchVisibilitySettings() {
+  try {
+    const res = await api.get('/profile/visibility-settings');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchVisibilitySettings:', e);
+    return null;
+  }
+}
+
+export async function saveVisibilitySettings(settings) {
+  try {
+    return await api.post('/profile/visibility-settings', settings);
+  } catch (e) {
+    console.error('[profile.api] saveVisibilitySettings:', e);
+    return null;
+  }
+}
+
+// ── Batch 3: Skills ──────────────────────────────────────────────────────
+// POST /profile/skills and DELETE /profile/skills/<name> already existed
+// with no UI calling either (only learning goals, above, had one).
+
+export async function addSkill(skill) {
+  try {
+    return await api.post('/profile/skills', { skill });
+  } catch (e) {
+    console.error('[profile.api] addSkill:', e);
+    return null;
+  }
+}
+
+export async function removeSkill(skillName) {
+  try {
+    return await api.delete(`/profile/skills/${encodeURIComponent(skillName)}`);
+  } catch (e) {
+    console.error('[profile.api] removeSkill:', e);
+    return null;
+  }
+}
+
+export async function fetchPopularSkills() {
+  try {
+    const res = await api.get('/skills/popular');
+    return res?.data?.skills || [];
+  } catch (e) {
+    console.error('[profile.api] fetchPopularSkills:', e);
+    return [];
+  }
+}
+
+// ── Batch 3: Study schedule ─────────────────────────────────────────────────
+// GET/POST /profile/study-schedule already existed, only ever written once
+// (during onboarding) and never editable afterward, and never read back
+// anywhere in the profile UI.
+
+export async function fetchStudySchedule() {
+  try {
+    const res = await api.get('/profile/study-schedule');
+    return res?.data?.study_schedule || null;
+  } catch (e) {
+    console.error('[profile.api] fetchStudySchedule:', e);
+    return null;
+  }
+}
+
+export async function saveStudySchedule(schedule) {
+  try {
+    return await api.post('/profile/study-schedule', schedule);
+  } catch (e) {
+    console.error('[profile.api] saveStudySchedule:', e);
+    return null;
+  }
+}
+
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
 export async function uploadAvatar(file) {

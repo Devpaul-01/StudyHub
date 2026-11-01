@@ -715,3 +715,56 @@ export function buildGoalsList(goals) {
     </div>`
   ).join('');
 }
+
+// Batch 3: same pattern as buildGoalsList above, rendered as wrapping
+// chips rather than a vertical list, since skills (unlike goals) are
+// short tags more than sentences.
+export function buildSkillsList(skills) {
+  if (!skills || !skills.length) {
+    return `<div style="font-size:0.78rem;color:var(--text-secondary);padding:0.25rem 0;">No skills added yet</div>`;
+  }
+  return `<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">` +
+    skills.map(s => `
+      <span style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.25rem 0.5rem;
+                   background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;
+                   font-size:0.78rem;color:var(--text-primary);">
+        ${s}
+        <button data-action="profile-remove-skill" data-skill="${s.replace(/"/g, '&quot;')}"
+          style="padding:0;background:none;border:none;cursor:pointer;font-size:0.7rem;
+                 color:var(--text-secondary);line-height:1;">✕</button>
+      </span>`
+    ).join('') +
+    `</div>`;
+}
+
+// Batch 3: study-schedule grid, one row per day, one toggle chip per time
+// slot. Built by JS instead of 28 hardcoded checkboxes in feed2.html (the
+// way templates/onboard.html does it) — see populateScheduleModal() in
+// profile.delegation.js for how selections are read back out of this.
+const SCHEDULE_DAYS  = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const SCHEDULE_SLOTS = ['morning', 'afternoon', 'evening', 'night'];
+
+export function buildScheduleGrid(schedule) {
+  schedule = schedule || {};
+  return SCHEDULE_DAYS.map(day => {
+    const selected = new Set(schedule[day] || []);
+    return `
+      <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0;border-bottom:1px solid var(--border);">
+        <span style="width:72px;flex-shrink:0;font-size:0.78rem;font-weight:600;
+                     color:var(--text-primary);text-transform:capitalize;">${day}</span>
+        <div style="display:flex;flex-wrap:wrap;gap:0.35rem;flex:1;">
+          ${SCHEDULE_SLOTS.map(slot => `
+            <button type="button" data-action="profile-toggle-schedule-slot"
+                    data-day="${day}" data-slot="${slot}"
+                    class="${selected.has(slot) ? 'active' : ''}"
+                    style="padding:0.3rem 0.6rem;border-radius:999px;font-size:0.72rem;
+                           cursor:pointer;text-transform:capitalize;
+                           border:1px solid ${selected.has(slot) ? 'var(--accent,#0057FF)' : 'var(--border)'};
+                           background:${selected.has(slot) ? 'var(--accent,#0057FF)' : 'transparent'};
+                           color:${selected.has(slot) ? '#fff' : 'var(--text-secondary)'};">
+              ${slot}
+            </button>`).join('')}
+        </div>
+      </div>`;
+  }).join('');
+}

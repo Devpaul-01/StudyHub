@@ -20,6 +20,8 @@ import {
   buildReputationTab,
   buildGoalsList,
   buildReputationLevelsModal,
+  buildSkillsList,
+  buildScheduleGrid,
 } from './profile.templates.js';
 import { closeModal, openModal } from '../feed/feed.utils.js';
 
@@ -171,6 +173,42 @@ function populateEditModal() {
   setVal('p-edit-bio',  d.bio);
   const goalsEl = $id('p-edit-goals-list');
   if (goalsEl) goalsEl.innerHTML = buildGoalsList(d.learning_goals || []);
+  // Batch 3: skills is already part of the same profile payload (see
+  // "skills" in the /profile/me response, routes/student/profile.py) —
+  // no extra request needed to populate this.
+  const skillsEl = $id('p-edit-skills-list');
+  if (skillsEl) skillsEl.innerHTML = buildSkillsList(d.skills || []);
+  populateSkillSuggestions();
+}
+
+// Batch 3: populates the <datalist> backing the skill input's
+// autocomplete from GET /skills/popular. Fire-and-forget — if it fails,
+// the input still works as a plain text field, just without suggestions.
+async function populateSkillSuggestions() {
+  const el = $id('p-edit-skill-suggestions');
+  if (!el) return;
+  const popular = await profileApi.fetchPopularSkills();
+  el.innerHTML = popular.map(s => `<option value="${String(s).replace(/"/g, '&quot;')}"></option>`).join('');
+}
+
+// Batch 3: Privacy settings modal — populated from GET
+// /profile/visibility-settings each time it's opened, so it always
+// reflects the current saved state rather than a stale local copy.
+async function populatePrivacyModal() {
+  const data = await profileApi.fetchVisibilitySettings();
+  if (!data) return;
+  const setChecked = (id, val) => { const el = $id(id); if (el) el.checked = !!val; };
+  setChecked('p-privacy-profile-private',     data.set_profile_private);
+  setChecked('p-privacy-show-active',         data.show_active_status);
+  setChecked('p-privacy-weekly-notification', data.send_weekly_notification);
+}
+
+// Batch 3: Study schedule modal — same "always re-fetch on open" approach
+// as privacy above.
+async function populateScheduleModal() {
+  const schedule = await profileApi.fetchStudySchedule();
+  const gridEl = $id('p-schedule-grid');
+  if (gridEl) gridEl.innerHTML = buildScheduleGrid(schedule || {});
 }
 
 async function populateAcademicModal() {
@@ -324,6 +362,15 @@ export const ProfileHandlers = {
     openReputationLevelsModal(data);
   },
 
+  // Batch 3
+  'profile-open-privacy': () => {
+    populatePrivacyModal().then(() => openProfileModal('p-privacy-modal'));
+  },
+
+  'profile-open-schedule': () => {
+    populateScheduleModal().then(() => openProfileModal('p-schedule-modal'));
+  },
+
   // ── Close modals ──────────────────────────────────────────────────────────
 
   'profile-close-modal': (target) => {
@@ -387,6 +434,85 @@ export const ProfileHandlers = {
       if (goalsEl) goalsEl.innerHTML = buildGoalsList(newGoals);
     } else {
       showToast(res?.message || 'Could not remove goal', 'error');
+    }
+  },
+
+  // ── Batch 3: Skills ────────────────────────────────────────────────────────
+
+  'profile-add-skill': async () => {
+    const input = $id('p-edit-skill-input');
+    const skill = input?.value?.trim();
+    if (!skill) return;
+    const res = await profileApi.addSkill(skill);
+    if (res?.status === 'success') {
+      if (input) input.value = '';
+      const newSkills = res.data?.skills || [];
+      if (profileState.profileData) profileState.profileData.skills = newSkills;
+      const skillsEl = $id('p-edit-skills-list');
+      if (skillsEl) skillsEl.innerHTML = buildSkillsList(newSkills);
+    } else {
+      showToast(res?.message || 'Could not add skill', 'error');
+    }
+  },
+
+  'profile-remove-skill': async (target) => {
+    const skill = target.dataset.skill;
+    if (!skill) return;
+    const res = await profileApi.removeSkill(skill);
+    if (res?.status === 'success') {
+      const newSkills = res.data?.skills || [];
+      if (profileState.profileData) profileState.profileData.skills = newSkills;
+      const skillsEl = $id('p-edit-skills-list');
+      if (skillsEl) skillsEl.innerHTML = buildSkillsList(newSkills);
+    } else {
+      showToast(res?.message || 'Could not remove skill', 'error');
+    }
+  },
+
+  // ── Batch 3: Privacy settings ─────────────────────────────────────────────
+
+  'profile-save-privacy': async () => {
+    const settings = {
+      set_profile_private:      !!$id('p-privacy-profile-private')?.checked,
+      show_active_status:       !!$id('p-privacy-show-active')?.checked,
+      send_weekly_notification: !!$id('p-privacy-weekly-notification')?.checked,
+    };
+    const res = await profileApi.saveVisibilitySettings(settings);
+    if (res?.status === 'success') {
+      showToast('Privacy settings saved', 'success');
+      closeProfileModal('p-privacy-modal');
+    } else {
+      showToast(res?.message || 'Could not save privacy settings', 'error');
+    }
+  },
+
+  // ── Batch 3: Study schedule ───────────────────────────────────────────────
+
+  'profile-toggle-schedule-slot': (target) => {
+    // Pure UI toggle — read back by profile-save-schedule below. No
+    // request per click; one save sends the whole schedule at once, the
+    // same way the academic-info modal batches its fields into one save.
+    target.classList.toggle('active');
+    const active = target.classList.contains('active');
+    target.style.background   = active ? 'var(--accent,#0057FF)' : 'transparent';
+    target.style.borderColor  = active ? 'var(--accent,#0057FF)' : 'var(--border)';
+    target.style.color        = active ? '#fff' : 'var(--text-secondary)';
+  },
+
+  'profile-save-schedule': async () => {
+    const schedule = {};
+    document.querySelectorAll('#p-schedule-grid [data-action="profile-toggle-schedule-slot"].active')
+      .forEach(btn => {
+        const day = btn.dataset.day;
+        if (!schedule[day]) schedule[day] = [];
+        schedule[day].push(btn.dataset.slot);
+      });
+    const res = await profileApi.saveStudySchedule(schedule);
+    if (res?.status === 'success') {
+      showToast('Study schedule saved', 'success');
+      closeProfileModal('p-schedule-modal');
+    } else {
+      showToast(res?.message || 'Could not save study schedule', 'error');
     }
   },
 
