@@ -214,6 +214,60 @@ export async function saveStudySchedule(schedule) {
   }
 }
 
+// ── Batch 3: Badges ─────────────────────────────────────────────────────
+// GET /badges/my-badges, /badges/progress and /badges/available already
+// existed with nothing calling any of them — only the unrelated
+// "top earners" sidebar widget used the badges blueprint before this.
+
+export async function fetchMyBadges() {
+  try {
+    const res = await api.get('/badges/my-badges');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchMyBadges:', e);
+    return null;
+  }
+}
+
+export async function fetchBadgeProgress() {
+  try {
+    const res = await api.get('/badges/progress');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchBadgeProgress:', e);
+    return null;
+  }
+}
+
+export async function fetchBadgeDetails(badgeId) {
+  try {
+    const res = await api.get(`/badges/${badgeId}/details`);
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchBadgeDetails:', e);
+    return null;
+  }
+}
+
+export async function toggleFeatureBadge(badgeId) {
+  try {
+    return await api.post(`/badges/feature/${badgeId}`);
+  } catch (e) {
+    console.error('[profile.api] toggleFeatureBadge:', e);
+    return null;
+  }
+}
+
+export async function fetchAvailableBadges() {
+  try {
+    const res = await api.get('/badges/available');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchAvailableBadges:', e);
+    return null;
+  }
+}
+
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
 export async function uploadAvatar(file) {

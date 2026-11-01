@@ -22,6 +22,9 @@ import {
   buildReputationLevelsModal,
   buildSkillsList,
   buildScheduleGrid,
+  buildBadgesTab,
+  buildBadgeDetailsModal,
+  buildAllBadgesModal,
 } from './profile.templates.js';
 import { closeModal, openModal } from '../feed/feed.utils.js';
 
@@ -106,12 +109,26 @@ async function renderReputationTab() {
   setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory));
 }
 
+// Batch 3
+async function renderBadgesTab() {
+  if (!profileState.isLoaded('badges')) {
+    setTabContent(buildSkeleton());
+    [profileState.myBadges, profileState.badgeProgress] = await Promise.all([
+      profileApi.fetchMyBadges(),
+      profileApi.fetchBadgeProgress(),
+    ]);
+    profileState.markLoaded('badges');
+  }
+  setTabContent(buildBadgesTab(profileState.myBadges, profileState.badgeProgress));
+}
+
 async function renderCurrentTab() {
   const tab = profileState.getCurrentTab();
   if (tab === 'posts')       return renderPostsTab();
   if (tab === 'stats')       return renderStatsTab();
   if (tab === 'connections') return renderConnectionsTab();
   if (tab === 'reputation')  return renderReputationTab();
+  if (tab === 'badges')     return renderBadgesTab();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,6 +180,45 @@ function closeReputationLevelsModal() {
   // toggles with a plain display:none/flex (no CSS transition — checked
   // static/css/profile/profile.css), so there's no animation to wait out.
   document.getElementById(REPUTATION_LEVELS_MODAL_ID)?.remove();
+}
+
+// Batch 3: badge details and "browse all badges" — both built and
+// inserted into the page on demand (same p-modal-* classes other modals
+// use) and removed on close, rather than two more large static blocks in
+// feed2.html for what are essentially one-off info screens. Each uses
+// its own fixed id and is replaced (not stacked) on repeated opens.
+function _openDynamicProfileModal(id, title, bodyHtml) {
+  document.getElementById(id)?.remove();
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = 'p-modal-overlay hidden';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.innerHTML = `
+    <div class="p-modal-box" style="max-width:420px;">
+      <div class="p-modal-header">
+        <h3 class="p-modal-title">${title}</h3>
+        <button data-action="profile-close-modal" data-modal-id="${id}" class="p-modal-close">✕</button>
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+  document.body.appendChild(el);
+  openProfileModal(id);
+}
+
+const BADGE_DETAILS_MODAL_ID = 'p-badge-details-modal';
+const ALL_BADGES_MODAL_ID    = 'p-all-badges-modal';
+
+function openBadgeDetailsModal(data) {
+  _openDynamicProfileModal(BADGE_DETAILS_MODAL_ID, 'Badge Details', buildBadgeDetailsModal(data));
+}
+function closeBadgeDetailsModal() {
+  closeProfileModal(BADGE_DETAILS_MODAL_ID);
+  document.getElementById(BADGE_DETAILS_MODAL_ID)?.remove();
+}
+function openAllBadgesModal(data) {
+  _openDynamicProfileModal(ALL_BADGES_MODAL_ID, 'All Badges', buildAllBadgesModal(data));
 }
 
 function populateEditModal() {
@@ -267,6 +323,7 @@ export const ProfileHandlers = {
     else if (tab === 'stats')       await renderStatsTab();
     else if (tab === 'connections') await renderConnectionsTab();
     else if (tab === 'reputation')  await renderReputationTab();
+    else if (tab === 'badges')      await renderBadgesTab();
   },
 
   // ── Post filter ───────────────────────────────────────────────────────────
@@ -369,6 +426,38 @@ export const ProfileHandlers = {
 
   'profile-open-schedule': () => {
     populateScheduleModal().then(() => openProfileModal('p-schedule-modal'));
+  },
+
+  // Batch 3: badge details — dynamically built/removed modal, same
+  // approach as the privacy/schedule modals above but with no static
+  // shell in feed2.html at all (see openBadgeDetailsModal() below for
+  // why — same reasoning as the reputation-levels-style modals).
+  'profile-open-badge-details': async (target) => {
+    const badgeId = target.closest('[data-badge-id]')?.dataset.badgeId;
+    if (!badgeId) return;
+    const data = await profileApi.fetchBadgeDetails(badgeId);
+    openBadgeDetailsModal(data);
+  },
+
+  'profile-toggle-feature-badge': async (target) => {
+    const badgeId = target.dataset.badgeId;
+    if (!badgeId) return;
+    const res = await profileApi.toggleFeatureBadge(badgeId);
+    if (res?.status === 'success') {
+      showToast(res.message || 'Updated', 'success');
+      profileState.invalidate('badges'); // featured state changed — refetch next visit
+      closeBadgeDetailsModal();
+      // If the badges tab is currently open, refresh it immediately
+      // rather than waiting for the next tab switch.
+      if (profileState.getCurrentTab() === 'badges') await renderBadgesTab();
+    } else {
+      showToast(res?.message || 'Could not update badge', 'error');
+    }
+  },
+
+  'profile-browse-all-badges': async () => {
+    const data = await profileApi.fetchAvailableBadges();
+    openAllBadgesModal(data);
   },
 
   // ── Close modals ──────────────────────────────────────────────────────────
