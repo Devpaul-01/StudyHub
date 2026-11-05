@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 
 from models import (
     User, Assignment, HomeworkSubmission, Connection,
-    Notification, LiveStudySession
+    Notification
 )
 from extensions import db
 from routes.student.helpers import (

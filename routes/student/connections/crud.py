@@ -1356,47 +1356,6 @@ def unseen_all_count(current_user):
         return error_response("Failed to get unseen connections count")
 
 
-@connections_crud_bp.route("/study-sessions/unseen", methods=["GET"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
-def unseen_study_sessions_count(current_user):
-    """
-    Get count of pending study session requests sent TO you.
-
-    AUDIT §12.2 FIX (option A, minimal): previously queried StudySessions,
-    which no live code path ever writes to — this always silently
-    returned 0 via the try/except wrapper (see StudySessions' own
-    docstring in models.py). Repointed at StudySessionCalendar, the model
-    every session-creation route actually writes to.
-
-    Behavior change, flagged explicitly: StudySessionCalendar has no
-    is_seen/seen concept at all, so the original "unseen" semantics
-    (cleared once the receiver views the request) cannot be preserved
-    without adding a new column — out of scope for this fix per the
-    "less fixes" direction. This now counts PENDING session requests
-    sent to you, full stop; the count no longer clears on view, only
-    once the request is actually confirmed/declined/cancelled (i.e. its
-    status leaves PENDING). Route path and response shape are unchanged.
-    """
-    try:
-        from models import StudySessionCalendar, StudySessionCalendarStatus
-        count = StudySessionCalendar.query.filter_by(
-            receiver_id=current_user.id,
-            status=StudySessionCalendarStatus.PENDING.value
-        ).count()
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "count": count
-            }
-        })
-
-    except Exception as e:
-        current_app.logger.error("Unseen study sessions error", exc_info=True)
-        return error_response("Failed to get unseen study sessions count")
-
-
 # ============================================================================
 # MARK AS SEEN - Helper Endpoints
 # ============================================================================
