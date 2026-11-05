@@ -284,91 +284,18 @@ def get_connection_details(current_user, connection_id):
         # 11. STUDY SESSION HISTORY
         # ============================================================================
 
-        # AUDIT §12.2 FIX (option A): previously queried StudySessions,
-        # which no live code path ever writes to (see StudySessions'
-        # own docstring in models.py) — this block always silently
-        # returned empty results via its try/except wrapper. Repointed at
-        # StudySessionCalendar, the model every session-creation route
-        # (request_study_session, schedule_session_with_template) actually
-        # writes to. Field mapping, since the two models don't share an
-        # identical shape:
-        #   - schedule_date -> confirmed_time (StudySessionCalendar has no
-        #     plain schedule_date; confirmed_time is the actual scheduled
-        #     datetime once set, None while still only PENDING/proposed)
-        #   - status "accepted" -> "confirmed" (StudySessionCalendarStatus's
-        #     actual value for an accepted session — StudySessions used a
-        #     different status vocabulary)
-        #   - type -> no equivalent concept on StudySessionCalendar; kept
-        #     as None rather than inventing a fake mapping
-        #   - notes -> the current viewer's OWN notes (requester_notes if
-        #     they're the requester, else receiver_notes), matching the
-        #     is_requester-conditional pattern already used by
-        #     get_connection_notes elsewhere in this same file
-        try:
-            from models import StudySessionCalendar, StudySessionCalendarStatus
-            study_sessions = StudySessionCalendar.query.filter(
-                or_(
-                    and_(StudySessionCalendar.requester_id == current_user.id, StudySessionCalendar.receiver_id == partner_id),
-                    and_(StudySessionCalendar.requester_id == partner_id, StudySessionCalendar.receiver_id == current_user.id)
-                )
-            ).order_by(StudySessionCalendar.created_at.desc()).limit(20).all()
-
-            sessions_data = []
-            completed = 0
-            upcoming = 0
-            now = datetime.datetime.utcnow()
-
-            for session in study_sessions:
-                is_completed = False
-                if session.status == StudySessionCalendarStatus.CONFIRMED.value and session.confirmed_time:
-                    if session.confirmed_time < now:
-                        completed += 1
-                        is_completed = True
-                    else:
-                        upcoming += 1
-
-                session_is_requester = session.requester_id == current_user.id
-                session_notes = session.requester_notes if session_is_requester else session.receiver_notes
-
-                sessions_data.append({
-                    "id": session.id,
-                    "subject": session.subject,
-                    "type": None,
-                    "duration": session.duration_minutes,
-                    "schedule_date": session.confirmed_time.isoformat() if session.confirmed_time else None,
-                    "status": session.status,
-                    "notes": session_notes,
-                    "is_completed": is_completed,
-                    "is_requester": session_is_requester,
-                    "requested_at": session.created_at.isoformat()
-                })
-
-            total_sessions = StudySessionCalendar.query.filter(
-                or_(
-                    and_(StudySessionCalendar.requester_id == current_user.id, StudySessionCalendar.receiver_id == partner_id),
-                    and_(StudySessionCalendar.requester_id == partner_id, StudySessionCalendar.receiver_id == current_user.id)
-                )
-            ).count()
-
-            study_history = {
-                "sessions": sessions_data,
-                "total_sessions": total_sessions,
-                "completed_sessions": completed,
-                "upcoming_sessions": upcoming,
-                "last_session_date": (
-                    sessions_data[0]["schedule_date"]
-                    if sessions_data and sessions_data[0]["schedule_date"]
-                    else None
-                )
-            }
-        except Exception:
-            study_history = {
-                "sessions": [],
-                "total_sessions": 0,
-                "completed_sessions": 0,
-                "upcoming_sessions": 0,
-                "last_session_date": None
-            }
+        # The study-sessions feature (and its StudySessionCalendar table)
+        # has been removed from main for now. This key is kept in the
+        # response — the frontend (connection.api.js / connection.templates.js)
+        # still reads study_history — but it's now always the empty shape
+        # rather than a DB query against a table that no longer exists.
+        study_history = {
+            "sessions": [],
+            "total_sessions": 0,
+            "completed_sessions": 0,
+            "upcoming_sessions": 0,
+            "last_session_date": None
+        }
 
         # ============================================================================
         # COMPILE FINAL RESPONSE
