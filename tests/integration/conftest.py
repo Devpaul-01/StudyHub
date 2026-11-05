@@ -484,18 +484,6 @@ def make_onboarding_details(db_session):
 
 
 @pytest.fixture
-def make_study_buddy_request(db_session):
-    from tests.integration.factories_ext import make_study_buddy_request as _f
-    return lambda requester, receiver, **kw: _f(db_session, requester, receiver, **kw)
-
-
-@pytest.fixture
-def make_study_buddy_match(db_session):
-    from tests.integration.factories_ext import make_study_buddy_match as _f
-    return lambda user1, user2, **kw: _f(db_session, user1, user2, **kw)
-
-
-@pytest.fixture
 def make_badge(db_session):
     from tests.integration.factories_ext import make_badge as _f
     return lambda **kw: _f(db_session, **kw)
