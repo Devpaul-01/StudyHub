@@ -310,7 +310,6 @@ def notify_welcome(user_id: int, name: str, *, features_link: str, rich: bool = 
             "Discover what makes StudyHub special:\n\n"
             "📚 Smart Q&A - Get help from peers and experts\n"
             "🧵 Study Threads - Join private study groups\n"
-            "🤝 Study Buddy - Find your perfect study partner\n"
             "🏆 Earn Badges - Showcase your achievements\n"
             "📊 Track Progress - GitHub-style activity heatmaps\n\n"
             "Ready to start? Complete your profile and ask your first question!\n\n"
