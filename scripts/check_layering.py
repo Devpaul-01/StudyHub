@@ -37,8 +37,8 @@ DISALLOWED_FLASK_IMPORTS = {"request", "session", "g", "jsonify", "abort"}
 # These are NOT "business logic that got grandfathered in" — each entry is
 # infrastructure that cannot be built any other way, reviewed case by case:
 #
-#   - websocket_threads.py / websocket_events.py / websocket_messages.py
-#     register @socketio.on(...) handlers directly. `request.sid` and
+#   - websocket_threads.py / websocket_messages.py register
+#     @socketio.on(...) handlers directly. `request.sid` and
 #     `request.cookies` there are Flask-SocketIO's connection identity and
 #     handshake data — the real-time equivalent of an HTTP route reading
 #     flask.request, i.e. these modules are acting as the entry-point layer
@@ -58,7 +58,6 @@ DISALLOWED_FLASK_IMPORTS = {"request", "session", "g", "jsonify", "abort"}
 # Anything not listed here follows the rule with zero exceptions.
 FLASK_IMPORT_EXEMPTIONS: dict[str, set[str]] = {
     "services/websocket_threads.py": {"request"},
-    "services/websocket_events.py": {"request"},
     "services/websocket_messages.py": {"request"},
     "services/rate_limit_service.py": {"request", "g", "jsonify"},
 }
