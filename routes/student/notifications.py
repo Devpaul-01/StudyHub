@@ -151,8 +151,6 @@ def _build_type_filter(notif_type):
         )
     elif notif_type == "threads":
         return Notification.notification_type.like("thread_%")
-    elif notif_type == "study_buddy":
-        return Notification.notification_type.like("study_buddy_%")
     elif notif_type == "messages":
         return Notification.notification_type == "message"
     elif notif_type == "mentions":
@@ -403,7 +401,7 @@ def get_notification_settings(current_user):
             "enable_notification": notification_settings.get("enable_notification", True),
             "notification_category": notification_settings.get("notification_category", [
                 "engagements", "badges", "connections", "threads", 
-                "study_buddy", "messages", "mentions"
+                "messages", "mentions"
             ]),
             "send_email_notification": notification_settings.get("send_email_notification", False),
             "enable_notification_sound": notification_settings.get("enable_notification_sound", True),
