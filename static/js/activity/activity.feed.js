@@ -179,21 +179,6 @@ function getActivityDisplay(type, user, data) {
       }
       break;
       
-    case 'joined_study_session':
-      icon = '🎧';
-      message = `<strong>${user.name}</strong> started studying ${data.subject}`;
-      
-      if (data.session_id) {
-        actionButton = `
-          <button class="activity-btn" 
-                  data-action="join-study-session" 
-                  data-session-id="${data.session_id}">
-            Join Session
-          </button>
-        `;
-      }
-      break;
-      
     case 'achieved_streak':
       icon = '🔥';
       message = `<strong>${user.name}</strong> reached a <strong>${data.streak_count}-day</strong> helping streak!`;
