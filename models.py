@@ -95,13 +95,6 @@ class HomeworkSubmissionStatus(str, Enum):
     CANCELLED  = "cancelled"
 
 
-class StudySessionCalendarStatus(str, Enum):
-    PENDING    = "pending"
-    CONFIRMED  = "confirmed"
-    DECLINED   = "declined"
-    CANCELLED  = "cancelled"
-    COMPLETED  = "completed"
-
 # ThreadMessageStatus removed — was byte-for-byte identical to the old
 # MessageStatus (now MessageDeliveryStatus above). Both ThreadMessage.status
 # and Message.status now reference the single shared enum.
@@ -252,55 +245,6 @@ class HelpRequest(db.Model):
         return f"<HelpRequest {self.id}: {self.subject} by User {self.requester_id}>"
 
 
-class LiveStudySession(db.Model):
-    __tablename__ = "live_study_sessions"
-
-    id      = db.Column(db.Integer, primary_key=True)
-    user1_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    user2_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-
-    session_key = db.Column(db.String(100), unique=True, nullable=False)
-    title       = db.Column(db.String(200), default="Study Session")
-    subject     = db.Column(db.String(100))
-    resources   = db.Column(MutableList.as_mutable(db.JSON), default=list)
-
-    user1_timer_state = db.Column(db.JSON, default=dict)
-    user2_timer_state = db.Column(db.JSON, default=dict)
-
-    notepad_content      = db.Column(db.Text, default="# Study Notes\n\n")
-    notepad_version      = db.Column(db.Integer, default=1)
-    last_notepad_edit_by = db.Column(db.Integer, db.ForeignKey("users.id"))
-    last_notepad_edit_at = db.Column(db.DateTime)
-
-    timer_started_at    = db.Column(db.DateTime)
-    timer_paused_at     = db.Column(db.DateTime)
-    timer_total_seconds = db.Column(db.Integer, default=0)
-    timer_is_running    = db.Column(db.Boolean, default=False)
-    timer_owner_id      = db.Column(db.Integer, db.ForeignKey('users.id'))
-
-    ai_messages = db.Column(MutableList.as_mutable(db.JSON), default=list)
-
-    status          = db.Column(db.String(20), default="active")
-    session_log     = db.Column(db.JSON)
-    started_at      = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    ended_at        = db.Column(db.DateTime)
-    last_activity   = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    topics_covered  = db.Column(db.JSON, default=list)
-    problems_solved = db.Column(db.Integer, default=0)
-
-    # MIGRATION-001: missing columns
-    total_duration_seconds     = db.Column(db.Integer, nullable=False, default=0)
-    session_goal               = db.Column(db.Text, nullable=True)
-    target_count               = db.Column(db.Integer, nullable=False, default=0)
-    completed_count            = db.Column(db.Integer, nullable=False, default=0)
-    quick_notes                = db.Column(db.Text, nullable=True)
-    assignment_id              = db.Column(db.Integer, db.ForeignKey("assignments.id"), nullable=True)
-    pomodoro_cycles_completed  = db.Column(db.Integer, nullable=False, default=0)
-    current_pomodoro_state     = db.Column(db.String(20), nullable=True)
-    rating_user1               = db.Column(db.String(20), nullable=True)
-    rating_user2               = db.Column(db.String(20), nullable=True)
-
-
 class ConversationAnalytics(db.Model):
     """AI-powered analytics for conversations."""
     __tablename__ = 'conversation_analytics'
@@ -335,93 +279,6 @@ class ConversationAnalytics(db.Model):
 
     def __repr__(self):
         return f'<ConversationAnalytics {self.conversation_key}>'
-
-
-class StudySessionCalendar(db.Model):
-    """Scheduled study sessions with confirmation workflow."""
-    __tablename__ = 'study_session_calendar'
-
-    id           = db.Column(db.Integer, primary_key=True)
-    requester_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    receiver_id  = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-
-    title           = db.Column(db.String(200), nullable=False)
-    subject         = db.Column(db.String(100))
-    description     = db.Column(db.Text)
-    proposed_times  = db.Column(db.JSON)
-    confirmed_time  = db.Column(db.DateTime)
-    duration_minutes= db.Column(db.Integer, default=60)
-    status          = db.Column(db.Enum(StudySessionCalendarStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=StudySessionCalendarStatus.PENDING.value)
-
-    created_at   = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    confirmed_at = db.Column(db.DateTime)
-    completed_at = db.Column(db.DateTime)
-
-    requester_notes     = db.Column(db.Text)
-    requester_resources = db.Column(db.JSON)
-    receiver_notes      = db.Column(db.Text)
-    receiver_resources  = db.Column(db.JSON)
-    decline_reason      = db.Column(db.Text)
-
-    message_id = db.Column(db.Integer, db.ForeignKey('messages.id'))
-
-    reminder_15min_sent  = db.Column(db.Boolean, default=False)
-    reminder_1hour_sent  = db.Column(db.Boolean, default=False)
-
-    # MIGRATION-001: missing columns
-    cancelled_at  = db.Column(db.DateTime, nullable=True)
-    cancelled_by  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
-    cancel_reason = db.Column(db.Text, nullable=True)
-    template_used = db.Column(db.String(50), nullable=True)
-
-    requester = db.relationship('User', foreign_keys=[requester_id])
-    receiver  = db.relationship('User', foreign_keys=[receiver_id])
-
-    def __repr__(self):
-        return f'<StudySessionCalendar {self.id}: {self.title}>'
-
-
-class StudySessions(db.Model):
-    """
-    Study session requests (invite/accept workflow), with an unseen-inbox
-    flag for the receiver.
-
-    This model is confirmed fully dead — it was never populated by any
-    write path. Its two former readers
-    (connections/crud.py::unseen_study_sessions_count and the
-    partner-history block in connections/health.py) have both been
-    repointed at StudySessionCalendar, the model session-creation routes
-    actually write to. Left in place rather than dropped (no migration
-    performed) — table removal is a separate, larger decision than the
-    read-site fix this pass covers.
-    """
-    __tablename__ = "study_sessions"
-
-    id           = db.Column(db.Integer, primary_key=True)
-    requester_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    receiver_id  = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-
-    subject       = db.Column(db.String(100))
-    type          = db.Column(db.String(50))
-    duration      = db.Column(db.Integer)  # minutes
-    schedule_date = db.Column(db.DateTime)
-    notes         = db.Column(db.Text)
-
-    status   = db.Column(db.String(20), default="pending", index=True)  # pending | accepted | declined | cancelled
-    is_seen  = db.Column(db.Boolean, default=False, index=True)
-
-    requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-    requester = db.relationship("User", foreign_keys=[requester_id])
-    receiver  = db.relationship("User", foreign_keys=[receiver_id])
-
-    __table_args__ = (
-        db.Index("idx_study_sessions_receiver_status", "receiver_id", "status"),
-        db.Index("idx_study_sessions_pair", "requester_id", "receiver_id"),
-    )
-
-    def __repr__(self):
-        return f"<StudySessions {self.id}: {self.requester_id} -> {self.receiver_id} [{self.status}]>"
 
 
 class Assignment(db.Model):
@@ -1458,57 +1315,6 @@ class PeerTeachingRelationship(db.Model):
         db.CheckConstraint('learner_rating >= 1 AND learner_rating <= 5', name='check_learner_rating'),
         db.CheckConstraint('teacher_rating >= 1 AND teacher_rating <= 5', name='check_teacher_rating'),
     )
-
-
-class StudyBuddyRequest(db.Model):
-    """Study partnership requests with matching criteria."""
-    __tablename__ = "study_buddy_requests"
-
-    id           = db.Column(db.Integer, primary_key=True)
-    requester_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    receiver_id  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-
-    subjects     = db.Column(MutableList.as_mutable(db.JSON), default=list)
-    availability = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
-    message      = db.Column(db.Text)
-
-    status    = db.Column(db.String(20), default="pending", index=True)
-    thread_id = db.Column(db.Integer, db.ForeignKey("threads.id"), nullable=True)
-
-    requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    responded_at = db.Column(db.DateTime)
-
-    __table_args__ = (
-        db.UniqueConstraint('requester_id', 'receiver_id', name='unique_study_buddy_request'),
-    )
-
-    def __repr__(self):
-        return f"<StudyBuddy: {self.requester_id} -> {self.receiver_id} [{self.status}]>"
-
-
-class StudyBuddyMatch(db.Model):
-    """Active study buddy partnerships."""
-    __tablename__ = "study_buddy_matches"
-
-    id       = db.Column(db.Integer, primary_key=True)
-    user1_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    user2_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-
-    subjects       = db.Column(MutableList.as_mutable(db.JSON), default=list)
-    thread_id      = db.Column(db.Integer, db.ForeignKey("threads.id"))
-    sessions_count = db.Column(db.Integer, default=0)
-    is_active      = db.Column(db.Boolean, default=True)
-
-    matched_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    last_activity = db.Column(db.DateTime)
-    ended_at      = db.Column(db.DateTime)
-
-    __table_args__ = (
-        db.UniqueConstraint('user1_id', 'user2_id', name='unique_study_match'),
-    )
-
-    def __repr__(self):
-        return f"<StudyMatch: {self.user1_id} <-> {self.user2_id}>"
 
 
 # ============================================================================
