@@ -352,7 +352,6 @@ class HomeworkSubmission(db.Model):
 
     created_at        = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
     is_marked_helpful = db.Column(db.Boolean, default=False)
-    study_session_id  = db.Column(db.Integer, db.ForeignKey("live_study_sessions.id"))
 
     # MIGRATION-001: missing columns
     feedback_rating = db.Column(db.Integer, nullable=True)
@@ -1238,7 +1237,6 @@ class Message(db.Model):
     has_thread          = db.Column(db.Boolean, default=False)
     thread_reply_count  = db.Column(db.Integer, default=0)
     related_post_id     = db.Column(db.Integer, db.ForeignKey("posts.id"), nullable=True)
-    related_session_id  = db.Column(db.Integer, db.ForeignKey("study_session_calendar.id"), nullable=True)
 
     def __repr__(self):
         return f"<Message {self.id}: {self.sender_id} -> {self.receiver_id}>"
