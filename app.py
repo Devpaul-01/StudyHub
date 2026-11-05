@@ -192,9 +192,8 @@ def create_app(config_class=None):
     #     (services/ai_provider_service.py's MultiProviderManager) — out
     #     of the stated scope of this refactor, flagged in the design doc,
     #     not addressed here.
-    # websocket_events.py is not part of any of the above — it's confirmed
-    # unused (not imported by this file or anywhere else) and was
-    # deliberately left untouched.
+    # websocket_events.py (legacy, unused duplicate of the managers below)
+    # has been deleted.
     # WebSocket Initialization (CRITICAL - must be in correct order)
     # ========================================================================
     # Step 1: Initialize base message WebSocket (creates socketio instance).
