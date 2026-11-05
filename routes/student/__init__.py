@@ -15,7 +15,6 @@ Structure:
 - Reputation: Points and leaderboards
 - Analytics: Activity tracking
 - Search: Find users/posts/threads
-- Study Buddy: Find study partners
 
 --------------------------------------------------------------------------
 Document 1 (Architecture Refactor) §2 / Document 5 Phase 2 note:
@@ -155,7 +154,6 @@ from .messages import messages_bp
 from .homework_system import homework_bp
 from .notifications import notifications_bp
 from .profile import profile_bp
-from .study_sessions import study_sessions_bp
 
 from .leaderboard import leaderboard_bp
 
@@ -164,7 +162,6 @@ from .reputation import reputation_bp
 from .analytics import analytics_bp
 from .search import search_bp
 from .learnora import learnora_bp          # unchanged: single blueprint, not split
-from .study_buddy import study_buddy_bp
 
 # Document 1 §2 / Document 5 Phase 2: these three packages were split into
 # multiple blueprints each — import the registration helper, not a single
@@ -193,7 +190,6 @@ from .posts import register_posts_blueprints
 student_bp.register_blueprint(notifications_bp)
 student_bp.register_blueprint(homework_bp)
 student_bp.register_blueprint(auth_bp)
-student_bp.register_blueprint(study_sessions_bp)
 register_posts_blueprints(student_bp)          # was: student_bp.register_blueprint(posts_bp)
 student_bp.register_blueprint(learnora_bp)
 student_bp.register_blueprint(profile_bp)
@@ -203,7 +199,6 @@ student_bp.register_blueprint(leaderboard_bp)
 student_bp.register_blueprint(messages_bp)
 register_connections_blueprints(student_bp)    # was: student_bp.register_blueprint(connections_bp)
 register_threads_blueprints(student_bp)        # was: student_bp.register_blueprint(threads_bp)
-student_bp.register_blueprint(study_buddy_bp)
 
 # Gamification
 student_bp.register_blueprint(badges_bp)
