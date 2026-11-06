@@ -3,21 +3,17 @@ import { connectionState } from './connection.state.js';
 import { loadConnectionTab } from './connection.init.js';
 import { startAuthorOverviewStream } from '../feed/feed.modals.js';
 import {
-  
   acceptRequest,
   rejectRequest,
   cancelRequest,
   blockRequest,
   removeConnectionRequest,
   openConnectionActionsModal,
-  withdrawStudySession,
-  showStudySessions,
   unblockRequest,
-  submitDeclineStudySession,
   viewBlockedUsers,
   showMutualConnections,
   sendConnectionRequest,
-  
+
   viewUserOverview,
 
   performConnectionSearch,
@@ -25,27 +21,13 @@ import {
   toggleConnectionDetails,
   closeAdvancedOptionModals,
   showAdvancedOptions,
-  openStudySessionModal,
   showUserAvatar,
   showActiveConnections,
   toggleConnectionSetting,
   formThread,
   viewConnectionNotes,
-  rescheduleStudySession,
-  declineStudySession,
-  handleCreateStudySession,
-  submitCancelStudySession,
-  addRescheduleTimeSlot,
-  submitRescheduleSession,
   createOrUpdateNote,
-  closeStudySessionResourcePreview,
-  showStudySessionResourcePreview,
   showCreateNoteUI,
-  addTimeSlot,
-  removeTimeSlot,
-  confirmStudySession,
-  cancelStudySession,
-  filterSessions,
   showAvailableNowModal,
   refreshAvailableNowResults,
   closeAvailableNowModal,
@@ -66,28 +48,6 @@ export const ConnectionHandlers = {
     const tab = target.dataset.tab;
     loadConnectionTab(tab);
   },
-  'close-study-session-resource-modal': (target, event) => {
-    event.stopPropagation();
-    closeStudySessionResourcePreview();
-    
-  },
-  
-
-  
-
-  'close-session-preview-modal': (target, event) => {
-    event.stopPropagation();
-    closeStudySessionResourcePreview();
-  },
-  
-  'preview-study-session-resource': (target, event) => {
-    const url = target.dataset.url;
-    const name = target.dataset.name;
-    const type = target.dataset.type;
-    
-    showStudySessionResourcePreview(url, name, type);
-    
-  },
   'close-notification': (target, event) => {
     if (target) {
       const toast = target.closest('.notification-toast');
@@ -98,97 +58,6 @@ export const ConnectionHandlers = {
         }, 300);
       }
     }
-  },
-  'add-reschedule-time-slot':(target, event) => {
-    event.stopPropagation();
-    addRescheduleTimeSlot();
-  },
-  'submit-reschedule-study-session': (target, event) => {
-    event.stopPropagation();
-    submitRescheduleSession();
-  },
-  'remove-reschedule-time-slot': (target, event) => {
-    const timeSlot = target.closest('.reschedule-time-slot');
-    const container = document.getElementById('reschedule-proposed-times-container');
-    timeSlot.remove();
-
-    
-  },
-  
-  // ============================================================================
-  // STUDY SESSION HANDLERS (FIXED)
-  // ============================================================================
-  
-  'submit-create-session': (target, event) => {
-    event.preventDefault();
-    handleCreateStudySession();
-  },
-  
-
-  'save-session-changes': (target, event) => {
-    event.stopPropagation();
-    saveSessionChanges();
-  },
-  'create-study-session': (target, event) => {
-    event.stopPropagation();
-    const userId = parseInt(target.dataset.userId);
-    openStudySessionModal(userId);
-  },
-  
-  'view-study-sessions': (target, event) => {
-    event.stopPropagation();
-    const userId = parseInt(target.dataset.userId);
-    showStudySessions(userId);
-  },
-  
-  
-  'add-time-slot': (target, event) => {
-    event.stopPropagation();
-    addTimeSlot();
-  },
-  
-  'remove-time-slot': (target, event) => {
-    event.stopPropagation();
-    removeTimeSlot(target);
-  },
-  'submit-decline-session-reason': (target, event) => {
-    submitDeclineStudySession();
-  },
-  'upload-reschedule-study-session-resource': (target, event) => {
-    document.getElementById('reschedule-session-upload-input').click();
-  },
-  'submit-cancel-session-reason': (target, event) => {
-    submitCancelStudySession();
-  },
-  'upload-create-study-session-resource': (target, event) => {
-    document.getElementById('create-sesion-upload-input').click();
-  },
-  
-  'confirm-study-session': (target, event) => {
-    event.stopPropagation();
-    const sessionId = parseInt(target.dataset.sessionId);
-    confirmStudySession(sessionId);
-  },
-  
-  'cancel-study-session': (target, event) => {
-    event.stopPropagation();
-    const sessionId = parseInt(target.dataset.sessionId);
-    cancelStudySession(sessionId);
-  },
-  'decline-study-session': (target, event) => {
-    event.stopPropagation();
-    const sessionId = parseInt(target.dataset.sessionId);
-    declineStudySession(sessionId);
-  },
-  'reschedule-study-session': (target, event) => {
-    event.stopPropagation();
-    const sessionId = parseInt(target.dataset.sessionId);
-    rescheduleStudySession(sessionId);
-  },
-  
-  'filter-sessions': (target, event) => {
-    event.stopPropagation();
-    filterSessions(target);
   },
 
   // ============================================================================
@@ -319,13 +188,6 @@ export const ConnectionHandlers = {
     showUserAvatar(src);
   },
   
-  'withdraw-study-session': (target, event) => {
-    const sessionId = target.dataset.sessionId;
-    withdrawStudySession(sessionId)
-  },
-
-  
-
   'form-thread': (target, event) => {
     event.stopPropagation();
     const userId = parseInt(target.dataset.userId);
