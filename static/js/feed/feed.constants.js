@@ -100,7 +100,6 @@ export const WIDGET_ORDER = [
   { id: 'popularTags', every: 5 },
   { id: 'risingStars', every: 4 },
   { id: 'openThreads', every: 6 },
-  { id: 'studyBuddyMatches', every: 7 },
   { id: 'canHelp', every: 8 },
   { id: 'topBadgeEarners', every: 9 }
 ];

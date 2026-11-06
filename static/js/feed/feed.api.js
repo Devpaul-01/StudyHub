@@ -124,7 +124,6 @@ export async function loadWidgetData() {
     popularTags,
     risingStars,
     openThreads,
-    studyBuddyMatches,
     canHelp,
     topBadgeEarners,
   ] = await Promise.all([
@@ -132,7 +131,6 @@ export async function loadWidgetData() {
     api.get('/posts/tags'),
     api.get('/reputation/rising-stars?limit=10'),
     api.get('/threads/recommended?limit=10'),
-    api.get('/study-buddy/suggestions?limit=10'),
     api.get('/threads/help/suggestions?limit=10'),
     api.get('/badges/top-earners?limit=10'),
   ]);
@@ -142,7 +140,6 @@ export async function loadWidgetData() {
     popularTags:          popularTags?.data || {},
     risingStars:          risingStars?.data?.rising_stars         || risingStars?.data         || [],
     openThreads:          openThreads?.data?.recommendations      || openThreads?.data         || [],
-    studyBuddyMatches:    studyBuddyMatches?.data?.suggestions    || studyBuddyMatches?.data   || [],
     canHelp:              canHelp?.data?.suggestions              || canHelp?.data             || [],
     topBadgeEarners:      topBadgeEarners?.data                   || [],
   };

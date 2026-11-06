@@ -15,7 +15,6 @@ export function createWidget(widgetId, index, widgets) {
     'popularTags': () => createPopularTagsWidget(widgets.popularTags),
     'risingStars': () => createRisingStarsWidget(widgets.risingStars),
     'openThreads': () => createOpenThreadsWidget(widgets.openThreads),
-    'studyBuddyMatches': () => createStudyBuddyWidget(widgets.studyBuddyMatches),
     'canHelp': () => createHelpSuggestionsWidget(widgets.canHelp),
     'topBadgeEarners': () => createTopBadgeEarnersWidget(widgets.topBadgeEarners)
   };
@@ -141,41 +140,6 @@ function createOpenThreadsWidget(threads) {
   return `
     <div class="carousel-widget">
       <div class="widget-header"><h3>Open Study Threads</h3></div>
-      <div class="carousel-container">${cards}</div>
-    </div>
-  `;
-}
-
-/**
- * Study Buddy Widget
- */
-function createStudyBuddyWidget(matches) {
-  const cards = matches.slice(0, 10).map(match => `
-    <div class="user-card"
-         data-action="view-profile"
-         data-username="${match.user?.username}">
-      
-      <img src="${match.user?.avatar || '/static/default-avatar.png'}"
-           class="user-avatar"
-           style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: block;">
-      <div class="user-name">${match.user?.name}</div>
-      <div class="user-bio">${match.user?.department}</div>
-      <div class="match-score">Match: ${match.match_score}%</div>
-
-      <button class="connect-btn"
-      data-action="open-connection-request"
-              data-user-name='${match.user.name}'
-              
-            
-              data-user-id="${match.user?.id}">
-        Connect
-      </button>
-    </div>
-  `).join('');
-
-  return `
-    <div class="carousel-widget">
-      <div class="widget-header"><h3>Study Buddy Matches</h3></div>
       <div class="carousel-container">${cards}</div>
     </div>
   `;

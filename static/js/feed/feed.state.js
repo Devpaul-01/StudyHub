@@ -70,7 +70,6 @@ class FeedState {
       popularTags:          {},
       risingStars:          [],
       openThreads:          [],
-      studyBuddyMatches:    [],
       canHelp:              [],
       topBadgeEarners:      [],
     };
