@@ -274,29 +274,25 @@ export function handlePickRecent(query) {
 
 // ── Navigation out of the search page ─────────────────────────────────────
 //
-// There is no single-post or single-thread detail PAGE anywhere in this
-// app to link to — confirmed by checking: the main SPA (feed2.html)
-// shows posts entirely inline within the feed itself (reactions/comments
-// expand in place), with no dedicated "open this one post" route or JS
-// function anywhere in static/js/feed/, and no post notification link
-// anywhere in the backend follows any URL convention that would resolve
-// to one either. Rather than link to a URL that doesn't actually show
-// the post (which would be a broken/misleading "deep link"), search
-// results for posts and threads open a lightweight read-only preview
-// modal right here on the search page, built from the real
-// GET /posts/<id> and GET /threads/<id> endpoints — both of which
-// already existed and already return everything a preview needs.
+// Posts and threads now have real, dedicated detail pages
+// (/student/posts/view/<id>, /student/threads/view/<id> — see the long
+// header comments on view_post_page() in routes/student/posts/crud.py
+// and view_thread_page() in routes/student/threads/discovery.py) with
+// full functionality: reactions, comments, mark-solved for posts; the
+// actual join/apply flow for threads. Search results navigate straight
+// there instead of opening the old read-only preview modal
+// (search.preview.js), which had no way to act on a result at all — in
+// particular, no way to apply to a thread, which is exactly what this
+// fixes.
 
 export function openProfile(username) {
-  window.location.href = `/student/profile/${encodeURIComponent(username)}`;
+  window.location.href = `/student/profile/view/${encodeURIComponent(username)}`;
 }
 
-export async function openPost(postId) {
-  const { showPostPreview } = await import('./search.preview.js');
-  await showPostPreview(postId);
+export function openPost(postId) {
+  window.location.href = `/student/posts/view/${encodeURIComponent(postId)}`;
 }
 
-export async function openThread(threadId) {
-  const { showThreadPreview } = await import('./search.preview.js');
-  await showThreadPreview(threadId);
+export function openThread(threadId) {
+  window.location.href = `/student/threads/view/${encodeURIComponent(threadId)}`;
 }
