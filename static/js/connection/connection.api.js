@@ -43,28 +43,6 @@ export const ConnectionAPI = {
     const response = await api.get(`/connections/help/${requestId}/volunteers`);
     return response?.data || null;
   },
-  
-  
-  async getSessionDetails(sessionId) {
-  try {
-    const response = await api.get(`/study-session/${sessionId}/details`);
-    return response;
-  } catch(error) {
-    console.error("Error getting session details:", error);
-    throw error;
-  }
-},
-
-async rescheduleSession(sessionData, sessionId) {
-  try {
-    const response = await api.post(`/study-session/${sessionId}/reschedule`, sessionData);
-    return response;
-  } catch(error) {
-    console.error("Error rescheduling session:", error);
-    showToast(`Error saving session changes ${error.message}`, 'error');
-    
-  }
-},
   // Load badge counts
   async loadConnectionBadges() {
     try {
@@ -168,8 +146,8 @@ async rescheduleSession(sessionData, sessionId) {
 
   // Batch 3: the full connection-health/shared-threads/mutuals/messaging
   // detail card. Deliberately does not surface the response's
-  // study_history section — study sessions are out of scope for this
-  // project's current batches.
+  // study_history section — the study-sessions feature it covered has
+  // been removed from main.
   async getConnectionDetails(connectionId) {
     const response = await api.get(`${CONNECTION_ENDPOINTS.DETAILS}/${connectionId}/details`);
     return response;
@@ -207,90 +185,6 @@ async rescheduleSession(sessionData, sessionId) {
     });
   },
   
-  // ============================================================================
-  // STUDY SESSIONS API (FIXED & COMPLETE)
-  // ============================================================================
-  
-  async getStudySessions(userId, filter = 'all') {
-    try {
-      const response = await api.get(`/study-session/all?partner_id=${userId}&status=${filter}`);
-      return response;
-    } catch (error) {
-      console.error('Get study sessions error:', error);
-      throw error;
-    }
-  },
-  
-  async createStudySession(sessionData) {
-    try {
-      const response = await api.post('/study-session/request', sessionData);
-      return response;
-    } catch (error) {
-      console.error('Create study session error:', error);
-      throw error;
-    }
-  },
-  
-  async confirmStudySession(sessionId, confirmedTime) {
-    try {
-      const response = await api.post(`/study-session/${sessionId}/confirm`, {
-        confirmed_time: confirmedTime
-      });
-      return response;
-    } catch (error) {
-      console.error('Confirm study session error:', error);
-      throw error;
-    }
-  },
-  
-  async cancelStudySession(sessionId, reason) {
-    try {
-      const response = await api.post(`/study-session/${sessionId}/cancel`, {reason:reason});
-      return response;
-    } catch (error) {
-      console.error('Cancel study session error:', error);
-      throw error;
-    }
-  },
-  async declineStudySession(sessionId, reason, isWithdrawal=false) {
-    try {
-      const response = await api.post(`/study-session/${sessionId}/decline`, {is_withdrawal: isWithdrawal, reason:reason});
-      return response;
-    } catch (error) {
-      console.error('Decline study session error:', error);
-      throw error;
-    }
-  },
-  async getStudySession(sessionId) {
-    try {
-      const response = await api.get(`/study-session/${sessionId}/details`);
-      return response;
-    } catch (error) {
-      console.error('Get study session error:', error);
-      throw error;
-    }
-  },
-  async sendSessionChanges(content,sessionId) {
-    try {
-      const response = await api.post(`/study-session/${sessionId}/reschedule`, content);
-      return response;
-    } catch (error) {
-      console.error('Save study session error:', error);
-      throw error;
-    }
-  },
-  async uploadResource(file) {
-    try{
-      const formData = new FormData();
-      formData.append("file", file);
-      return await api.post("/posts/resource/upload", formData, true);
-    }
-    catch(error){
-      showToast('Error encounterd uploading fils', 'error');
-    }
- },
-  
-
   // Connection notes
   async getConnectionNotes(connectionId) {
     const response = await api.get(`/connections/${connectionId}/notes`);
