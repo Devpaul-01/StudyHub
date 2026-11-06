@@ -1,19 +1,20 @@
-/* Batch 4: public profile page — reuses base.css's design tokens
-   (--primary-color, --radius-md, --shadow-sm, etc.), the same approach
-   taken for search.css, since this page extends base.html and
-   static/css/profile/profile.css's tokens (--accent-subtle, etc.)
-   aren't loaded here and would be undefined. */
+/* Batch 4: public profile page — restyled to match the app's real dark
+   theme (see static/css/shell/app-shell.css for the --shell-* tokens).
+   This page no longer extends base.html (see templates/profile-view.html),
+   so it owns its full palette here instead of inheriting base.css's
+   light-theme tokens, which never matched feed2.html's actual branding. */
 
 .pv-page {
   max-width: 720px;
   margin: 0 auto;
   padding: 1.25rem 1rem 3rem;
+  color: var(--shell-text-primary);
 }
 
 .pv-loading, .pv-error {
   text-align: center;
   padding: 3rem 1rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
 }
 
 /* ── Header ────────────────────────────────────────────────────────────── */
@@ -23,6 +24,10 @@
   gap: 1rem;
   align-items: center;
   margin-bottom: 1.25rem;
+  padding: 1.25rem;
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border-light);
+  border-radius: var(--shell-radius-lg);
 }
 
 .pv-avatar {
@@ -31,29 +36,34 @@
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
-  border: 3px solid var(--bg-white);
-  box-shadow: var(--shadow-sm);
+  background: var(--shell-bg-hover);
+  border: 3px solid var(--shell-bg-surface);
+  box-shadow: var(--shell-shadow-sm);
 }
 
-.pv-name { font-size: 1.3rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-.pv-username { font-size: 0.85rem; color: var(--text-secondary); }
-.pv-meta { font-size: 0.82rem; color: var(--text-secondary); margin-top: 0.25rem; }
-.pv-bio { font-size: 0.88rem; color: var(--text-primary); margin-top: 0.5rem; line-height: 1.5; }
+.pv-name { font-size: 1.3rem; font-weight: 700; color: var(--shell-text-primary); margin: 0; }
+.pv-username { font-size: 0.85rem; color: var(--shell-text-secondary); }
+.pv-meta { font-size: 0.82rem; color: var(--shell-text-secondary); margin-top: 0.25rem; }
+.pv-bio { font-size: 0.88rem; color: var(--shell-text-primary); margin-top: 0.5rem; line-height: 1.5; }
 
 .pv-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
 
 .pv-btn {
   padding: 0.5rem 1.1rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--shell-radius-md);
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
-  border: 2px solid var(--border-light);
-  background: var(--bg-white);
-  color: var(--text-primary);
+  border: 2px solid var(--shell-border);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.pv-btn-primary { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+.pv-btn:hover { border-color: var(--shell-accent-border); background: var(--shell-bg-hover); }
+
+.pv-btn-primary { background: var(--shell-accent); border-color: var(--shell-accent); color: #fff; }
+.pv-btn-primary:hover { background: var(--shell-accent-hover); border-color: var(--shell-accent-hover); }
 .pv-btn[disabled] { opacity: 0.6; cursor: default; }
 
 /* ── Private profile notice ───────────────────────────────────────────── */
@@ -61,9 +71,10 @@
 .pv-private-notice {
   text-align: center;
   padding: 2rem 1rem;
-  background: var(--bg-light);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border-light);
+  border-radius: var(--shell-radius-md);
+  color: var(--shell-text-secondary);
   font-size: 0.9rem;
 }
 
@@ -79,13 +90,13 @@
 .pv-stat {
   text-align: center;
   padding: 0.75rem 0.4rem;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
 }
 
-.pv-stat-value { font-size: 1.15rem; font-weight: 700; color: var(--primary-color); }
-.pv-stat-label { font-size: 0.68rem; color: var(--text-secondary); margin-top: 0.1rem; }
+.pv-stat-value { font-size: 1.15rem; font-weight: 700; color: var(--shell-accent); }
+.pv-stat-label { font-size: 0.68rem; color: var(--shell-text-secondary); margin-top: 0.1rem; }
 
 @media (max-width: 480px) {
   .pv-stat-grid { grid-template-columns: repeat(2, 1fr); }
@@ -98,7 +109,7 @@
 .pv-section-title {
   font-size: 0.85rem;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.02em;
   margin-bottom: 0.5rem;
@@ -108,10 +119,11 @@
   display: inline-block;
   padding: 0.3rem 0.7rem;
   margin: 0 0.3rem 0.3rem 0;
-  background: var(--bg-light);
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
   border-radius: 999px;
   font-size: 0.78rem;
-  color: var(--text-primary);
+  color: var(--shell-text-primary);
 }
 
 .pv-badge-grid {
@@ -123,24 +135,31 @@
 .pv-badge {
   text-align: center;
   padding: 0.5rem 0.2rem;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
 }
 
 .pv-badge-icon { font-size: 1.4rem; }
-.pv-badge-name { font-size: 0.65rem; color: var(--text-secondary); margin-top: 0.15rem; }
+.pv-badge-name { font-size: 0.65rem; color: var(--shell-text-secondary); margin-top: 0.15rem; }
 
 .pv-post-row, .pv-thread-row {
   padding: 0.6rem 0.8rem;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
   margin-bottom: 0.5rem;
   font-size: 0.86rem;
-  color: var(--text-primary);
+  color: var(--shell-text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.pv-post-meta, .pv-thread-meta { font-size: 0.74rem; color: var(--text-secondary); margin-top: 0.2rem; }
+.pv-post-row:hover, .pv-thread-row:hover {
+  border-color: var(--shell-accent-border);
+  box-shadow: var(--shell-shadow-sm);
+}
 
-.pv-empty { color: var(--text-secondary); font-size: 0.82rem; padding: 0.3rem 0; }
+.pv-post-meta, .pv-thread-meta { font-size: 0.74rem; color: var(--shell-text-secondary); margin-top: 0.2rem; }
+
+.pv-empty { color: var(--shell-text-secondary); font-size: 0.82rem; padding: 0.3rem 0; }

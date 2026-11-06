@@ -1,11 +1,16 @@
-/* Batch 4: search page — reuses the design tokens already defined in
-   base.css (--primary-color, --radius-md, --shadow-sm, etc.) rather than
-   inventing a second palette, since this page extends base.html. */
+/* Batch 4: search page — restyled to match the app's real dark theme
+   (see static/css/shell/app-shell.css for the --shell-* tokens this page
+   now uses instead of base.css's light-theme --primary-color/--bg-white/
+   etc., which never matched feed2.html's actual dark purple/indigo
+   branding — confirmed via live screenshot comparison). This page no
+   longer extends base.html (see templates/search.html), so it owns its
+   full palette here rather than inheriting from base.css. */
 
 .search-page {
   max-width: 820px;
   margin: 0 auto;
   padding: 1.25rem 1rem 3rem;
+  color: var(--shell-text-primary);
 }
 
 /* ── Type tabs ─────────────────────────────────────────────────────────── */
@@ -20,10 +25,10 @@
 .search-type-tab {
   flex: 0 0 auto;
   padding: 0.5rem 1.1rem;
-  border: 2px solid var(--border-light);
-  border-radius: var(--radius-md);
-  background: var(--bg-white);
-  color: var(--text-secondary);
+  border: 2px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-card);
+  color: var(--shell-text-secondary);
   font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
@@ -31,13 +36,13 @@
 }
 
 .search-type-tab:hover {
-  border-color: var(--primary-color);
-  color: var(--text-primary);
+  border-color: var(--shell-accent);
+  color: var(--shell-text-primary);
 }
 
 .search-type-tab.active {
-  background: var(--primary-color);
-  border-color: var(--primary-color);
+  background: var(--shell-accent);
+  border-color: var(--shell-accent);
   color: #fff;
 }
 
@@ -58,34 +63,39 @@
   width: 100%;
   box-sizing: border-box;
   padding: 0.75rem 1rem;
-  border: 2px solid var(--border-light);
-  border-radius: var(--radius-md);
+  border: 2px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
   font-size: 0.95rem;
-  background: var(--bg-light);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
   transition: all 0.2s;
+}
+
+.search-page-input::placeholder {
+  color: var(--shell-text-meta);
 }
 
 .search-page-input:focus {
   outline: none;
-  border-color: var(--primary-color);
-  background: var(--bg-white);
+  border-color: var(--shell-accent);
+  background: var(--shell-bg-card);
 }
 
 .search-filters-toggle {
   flex: 0 0 auto;
   padding: 0.6rem 1rem;
-  border: 2px solid var(--border-light);
-  border-radius: var(--radius-md);
-  background: var(--bg-white);
-  color: var(--text-secondary);
+  border: 2px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-card);
+  color: var(--shell-text-secondary);
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .search-filters-toggle:hover {
-  border-color: var(--primary-color);
-  color: var(--text-primary);
+  border-color: var(--shell-accent);
+  color: var(--shell-text-primary);
 }
 
 /* ── Suggestions dropdown ──────────────────────────────────────────────── */
@@ -95,10 +105,10 @@
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  box-shadow: var(--shell-shadow-md);
   z-index: 20;
   max-height: 320px;
   overflow-y: auto;
@@ -111,12 +121,12 @@
   padding: 0.6rem 0.9rem;
   cursor: pointer;
   font-size: 0.88rem;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-light);
+  color: var(--shell-text-primary);
+  border-bottom: 1px solid var(--shell-border-light);
 }
 
 .search-suggestion-item:last-child { border-bottom: none; }
-.search-suggestion-item:hover { background: var(--bg-light); }
+.search-suggestion-item:hover { background: var(--shell-bg-hover); }
 
 /* ── Filters drawer ────────────────────────────────────────────────────── */
 
@@ -127,9 +137,9 @@
   align-items: flex-end;
   padding: 0.9rem;
   margin-bottom: 1rem;
-  background: var(--bg-light);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-light);
+  background: var(--shell-bg-card);
+  border-radius: var(--shell-radius-md);
+  border: 1px solid var(--shell-border);
 }
 
 .search-filter-group {
@@ -142,27 +152,33 @@
 .search-filter-group label {
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
 }
 
 .search-filter-group select {
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
-  background: var(--bg-white);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-sm);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
   font-size: 0.85rem;
 }
 
 .search-apply-filters {
   padding: 0.5rem 1.2rem;
   border: none;
-  border-radius: var(--radius-sm);
-  background: var(--primary-color);
+  border-radius: var(--shell-radius-sm);
+  background: var(--shell-accent);
   color: #fff;
   font-weight: 600;
   font-size: 0.85rem;
   cursor: pointer;
   height: fit-content;
+  transition: background 0.15s;
+}
+
+.search-apply-filters:hover {
+  background: var(--shell-accent-hover);
 }
 
 /* ── Recent searches ───────────────────────────────────────────────────── */
@@ -170,8 +186,9 @@
 .search-recent {
   margin-bottom: 1rem;
   padding: 0.75rem 0.9rem;
-  background: var(--bg-light);
-  border-radius: var(--radius-md);
+  background: var(--shell-bg-card);
+  border-radius: var(--shell-radius-md);
+  border: 1px solid var(--shell-border-light);
 }
 
 .search-recent-header {
@@ -180,14 +197,14 @@
   align-items: center;
   font-size: 0.78rem;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   margin-bottom: 0.4rem;
 }
 
 .search-clear-history {
   background: none;
   border: none;
-  color: var(--primary-color);
+  color: var(--shell-accent);
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
@@ -197,15 +214,15 @@
   display: inline-block;
   padding: 0.3rem 0.7rem;
   margin: 0.2rem 0.3rem 0.2rem 0;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
   border-radius: 999px;
   font-size: 0.78rem;
-  color: var(--text-primary);
+  color: var(--shell-text-primary);
   cursor: pointer;
 }
 
-.search-recent-chip:hover { border-color: var(--primary-color); }
+.search-recent-chip:hover { border-color: var(--shell-accent); }
 
 /* ── Results ───────────────────────────────────────────────────────────── */
 
@@ -214,7 +231,7 @@
 .search-results-section-title {
   font-size: 0.85rem;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   margin-bottom: 0.5rem;
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -224,15 +241,18 @@
   display: flex;
   gap: 0.75rem;
   padding: 0.9rem;
-  background: var(--bg-white);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
   margin-bottom: 0.6rem;
   cursor: pointer;
-  transition: box-shadow 0.15s;
+  transition: box-shadow 0.15s, border-color 0.15s;
 }
 
-.search-result-card:hover { box-shadow: var(--shadow-sm); }
+.search-result-card:hover {
+  box-shadow: var(--shell-shadow-sm);
+  border-color: var(--shell-accent-border);
+}
 
 .search-result-avatar {
   width: 44px;
@@ -240,6 +260,7 @@
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
+  background: var(--shell-bg-hover);
 }
 
 .search-result-body { flex: 1; min-width: 0; }
@@ -247,18 +268,18 @@
 .search-result-title {
   font-weight: 600;
   font-size: 0.92rem;
-  color: var(--text-primary);
+  color: var(--shell-text-primary);
   margin-bottom: 0.15rem;
 }
 
 .search-result-meta {
   font-size: 0.78rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
 }
 
 .search-result-excerpt {
   font-size: 0.82rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   margin-top: 0.3rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -270,7 +291,7 @@
 .search-empty-state {
   text-align: center;
   padding: 2.5rem 1rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   font-size: 0.9rem;
 }
 
@@ -278,18 +299,51 @@
   display: block;
   margin: 0.5rem auto 0;
   padding: 0.6rem 1.4rem;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  background: var(--bg-white);
-  color: var(--text-primary);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-card);
+  color: var(--shell-text-primary);
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
+  transition: border-color 0.15s;
 }
 
-@media (prefers-color-scheme: dark) {
-  /* base.html / base.css have no dark-mode handling anywhere else in
-     this app (confirmed — base.css defines no dark overrides), so this
-     page intentionally doesn't invent one either; it stays on the same
-     light palette the rest of base.html's nav already commits to. */
+.search-load-more:hover {
+  border-color: var(--shell-accent);
+}
+
+/* Apply/Join buttons on thread result cards (see search.templates.js —
+   thread cards now render an inline apply affordance instead of only
+   being openable via a read-only preview modal). */
+.search-result-action {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--shell-accent-border);
+  border-radius: var(--shell-radius-sm);
+  background: var(--shell-accent-subtle);
+  color: var(--shell-accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.search-result-action:hover {
+  background: var(--shell-accent);
+  color: #fff;
+}
+
+.search-result-action.is-joined {
+  border-color: var(--shell-border);
+  background: transparent;
+  color: var(--shell-text-secondary);
+  cursor: default;
+}
+
+.search-result-action.is-joined:hover {
+  background: transparent;
+  color: var(--shell-text-secondary);
 }
