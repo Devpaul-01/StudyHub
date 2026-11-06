@@ -68,27 +68,6 @@ export function createConnectedConnectionCard(connection) {
           <div class="advanced-options hidden">
   
 
-  <button data-action="create-study-session" data-user-id="${user.id}">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M8 2v4"/>
-      <path d="M16 2v4"/>
-      <rect width="18" height="18" x="3" y="4" rx="2"/>
-      <path d="M3 10h18"/>
-      <path d="M10 16h4"/>
-      <path d="M12 14v4"/>
-    </svg>
-    Create Study Session
-  </button>
-
-  <button data-action="view-study-sessions" data-user-id="${user.id}">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
-      <path d="M8 7h8"/>
-      <path d="M8 11h8"/>
-    </svg>
-    View Study Sessions
-  </button>
-
   <button data-action="view-connection-notes" data-connection-id="${connection.id}">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
@@ -926,8 +905,8 @@ export function buildAvailableNowList(availableUsers, subject) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Backs GET /connections/<id>/details, which already existed with no
 // screen in the UI surfacing it. Deliberately leaves out the response's
-// study_history section — study sessions are out of scope for this
-// project's current batches.
+// study_history section — the study-sessions feature it covered has
+// been removed from main.
 
 export function buildConnectionDetails(data) {
   if (!data) return `<div class="p-empty">Could not load connection details</div>`;
