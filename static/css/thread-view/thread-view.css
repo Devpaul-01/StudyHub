@@ -1,0 +1,213 @@
+/* Dedicated thread-detail page — dark theme, uses the --shell-* tokens
+   from static/css/shell/app-shell.css (loaded by shell_base.html). */
+
+.threadv-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 4rem;
+  color: var(--shell-text-primary);
+}
+
+.threadv-loading, .threadv-error {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--shell-text-secondary);
+}
+
+.threadv-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-card);
+  color: var(--shell-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.threadv-back:hover { border-color: var(--shell-accent-border); color: var(--shell-text-primary); }
+
+/* ── Header card ───────────────────────────────────────────────────────── */
+
+.threadv-card {
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border-light);
+  border-radius: var(--shell-radius-lg);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.threadv-header { display: flex; gap: 1rem; align-items: center; }
+
+.threadv-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--shell-radius-lg);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--shell-bg-hover);
+}
+
+.threadv-title { font-size: 1.25rem; font-weight: 700; color: var(--shell-text-primary); margin: 0; }
+
+.threadv-sub { font-size: 0.82rem; color: var(--shell-text-secondary); margin-top: 0.25rem; }
+
+.threadv-status-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+
+.threadv-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.threadv-badge-open { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.threadv-badge-closed { background: rgba(239, 68, 68, 0.18); color: #ef4444; }
+.threadv-badge-full { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.threadv-badge-dept { background: var(--shell-accent-subtle); color: var(--shell-accent); }
+
+.threadv-desc {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--shell-text-primary);
+  margin-top: 1rem;
+  white-space: pre-wrap;
+}
+
+.threadv-tags { margin-top: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.threadv-tag {
+  padding: 0.25rem 0.7rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  color: var(--shell-text-secondary);
+}
+
+.threadv-stats { display: flex; gap: 1.5rem; margin-top: 1rem; }
+
+.threadv-stat { text-align: left; }
+.threadv-stat-value { font-size: 1.05rem; font-weight: 700; color: var(--shell-accent); }
+.threadv-stat-label { font-size: 0.7rem; color: var(--shell-text-secondary); }
+
+/* ── Action bar ────────────────────────────────────────────────────────── */
+
+.threadv-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--shell-border-light);
+  flex-wrap: wrap;
+}
+
+.threadv-btn {
+  padding: 0.55rem 1.1rem;
+  border-radius: var(--shell-radius-md);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: 2px solid var(--shell-border);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
+  transition: all 0.15s;
+}
+
+.threadv-btn:hover { border-color: var(--shell-accent-border); }
+
+.threadv-btn-primary { background: var(--shell-accent); border-color: var(--shell-accent); color: #fff; }
+.threadv-btn-primary:hover { background: var(--shell-accent-hover); border-color: var(--shell-accent-hover); }
+
+.threadv-btn-danger { color: #ef4444; border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.08); }
+.threadv-btn-danger:hover { background: rgba(239, 68, 68, 0.18); }
+
+.threadv-btn[disabled] { opacity: 0.55; cursor: default; }
+
+.threadv-pending-note {
+  font-size: 0.82rem;
+  color: var(--shell-text-secondary);
+  padding: 0.5rem 0.8rem;
+  background: var(--shell-bg-surface);
+  border-radius: var(--shell-radius-md);
+}
+
+/* ── Join form ─────────────────────────────────────────────────────────── */
+
+.threadv-join-form { margin-top: 0.9rem; display: none; }
+.threadv-join-form.is-open { display: block; }
+
+.threadv-join-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 70px;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
+  font-family: inherit;
+  font-size: 0.86rem;
+}
+
+.threadv-join-textarea::placeholder { color: var(--shell-text-meta); }
+.threadv-join-textarea:focus { outline: none; border-color: var(--shell-accent); background: var(--shell-bg-card); }
+
+.threadv-join-form-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+
+/* ── Members ───────────────────────────────────────────────────────────── */
+
+.threadv-section { margin-top: 1.25rem; }
+
+.threadv-section-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--shell-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.75rem;
+}
+
+.threadv-member-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--shell-border-light);
+}
+
+.threadv-member-row:last-child { border-bottom: none; }
+
+.threadv-member-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--shell-bg-hover);
+}
+
+.threadv-member-name { font-weight: 600; font-size: 0.86rem; color: var(--shell-text-primary); }
+.threadv-member-role { font-size: 0.72rem; color: var(--shell-text-secondary); text-transform: capitalize; }
+
+.threadv-empty { color: var(--shell-text-secondary); font-size: 0.85rem; padding: 0.3rem 0; }
+
+.threadv-related-post {
+  display: block;
+  padding: 0.7rem 0.9rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  color: var(--shell-text-primary);
+  text-decoration: none;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.threadv-related-post:hover { border-color: var(--shell-accent-border); }

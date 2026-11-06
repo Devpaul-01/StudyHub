@@ -1,0 +1,30 @@
+{% extends "shell_base.html" %}
+
+{#
+  Dedicated single-thread detail page. See the long comment on
+  view_thread_page() in routes/student/threads/discovery.py — this is
+  where "apply to thread fully" from the search page actually happens:
+  it has the real join button (POST /threads/<id>/join), not a read-only
+  preview with no way to act.
+
+  Thread id comes from the URL path itself (/student/threads/view/<id>),
+  read from window.location.pathname on load — see thread-view.js.
+#}
+
+{% block title %}Thread — StudyHub{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/thread-view/thread-view.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="threadv-page" id="threadv-page">
+  <div id="threadv-content">
+    <div class="threadv-loading">Loading thread…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module" src="{{ url_for('static', filename='js/thread-view/thread-view.js') }}"></script>
+{% endblock %}
