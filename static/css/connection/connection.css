@@ -2,12 +2,12 @@
 /* ============================================================================
    LEARNHUB — CONNECTION SYSTEM CSS
    Modern, clean, production-ready styles for the connections section.
-   Separated from general app CSS. Study-session styles live in study-sessions.css
+   Separated from general app CSS.
    ============================================================================ */
 
 /* ============================================================================
    CSS VARIABLES (Design Tokens)
-   Defined here as the primary source. These cascade to study-sessions.css too.
+   Defined here as the primary source.
    ============================================================================ */
 :root {
   /* ── Primary — Cool Graphite ──────────────────────────────────────── */
