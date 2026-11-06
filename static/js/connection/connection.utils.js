@@ -61,27 +61,3 @@ export function showEmptyState(type) {
     </div>
   `;
 }
-export function resetRescheduleSessionForm() {
-  // Clear text inputs
-  document.getElementById('reschedule-title').value = '';
-  document.getElementById('reschedule-subject').value = '';
-  document.getElementById('reschedule-description').value = '';
-  document.getElementById('reschedule-notes').value = '';
-  
-  // Reset duration to default
-  document.getElementById('reschedule-duration').value = '60';
-  
-  // Clear session info display
-  document.getElementById('reschedule-session-title').textContent = '';
-  document.getElementById('reschedule-session-subject').textContent = '';
-  document.getElementById('reschedule-session-partner').textContent = '';
-  document.getElementById('reschedule-current-time').textContent = '';
-  
-  // Clear hidden session ID
-  document.getElementById('reschedule-session-id').value = '';
-  
-  // Clear all proposed time slots
-  const timesContainer = document.getElementById('reschedule-proposed-times-container');
-  timesContainer.innerHTML = '';
-  
-}
