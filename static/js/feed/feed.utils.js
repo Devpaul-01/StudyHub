@@ -51,30 +51,6 @@
  * Call this once when your app initializes
  */
 
-function resetRescheduleSessionForm() {
-  // Clear text inputs
-  document.getElementById('reschedule-title').value = '';
-  document.getElementById('reschedule-subject').value = '';
-  document.getElementById('reschedule-description').value = '';
-  document.getElementById('reschedule-notes').value = '';
-  
-  // Reset duration to default
-  document.getElementById('reschedule-duration').value = '60';
-  
-  // Clear session info display
-  document.getElementById('reschedule-session-title').textContent = '';
-  document.getElementById('reschedule-session-subject').textContent = '';
-  document.getElementById('reschedule-session-partner').textContent = '';
-  document.getElementById('reschedule-current-time').textContent = '';
-  
-  // Clear hidden session ID
-  document.getElementById('reschedule-session-id').value = '';
-  
-  // Clear all proposed time slots
-  const timesContainer = document.getElementById('reschedule-proposed-times-container');
-  timesContainer.innerHTML = '';
-  
-}
 export function formatTime(timestamp) {
   const date = new Date(timestamp);
   const now = new Date();
@@ -334,7 +310,7 @@ export function navigateTo(sectionId, event) {
     }
 
     const implementedSections = [
-        'feed', 'profile','threads', 'learnora', 'leaderboard', 'analytics', 'study-session', 'advanced-search', 'homework',
+        'feed', 'profile','threads', 'learnora', 'leaderboard', 'analytics', 'advanced-search', 'homework',
         'notifications', 'activity-feed', 'connections'
     ];
 
@@ -391,9 +367,6 @@ export function navigateTo(sectionId, event) {
 
 export function openModal(modalId) {
   const modal = document.getElementById(modalId);
-  if(modalId == 'reschdule-study-session-modal') {
-    resetRescheduleSessionForm();
-  }
   if (modalId === 'help-volunteers-modal') {
     const requestId = window._activeHelpRequestId;
     if (requestId) {
