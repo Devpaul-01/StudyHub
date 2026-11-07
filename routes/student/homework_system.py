@@ -1446,11 +1446,12 @@ def give_feedback(current_user, submission_id):
             submission.is_marked_helpful = True
 
         mark_complete = data.get("mark_complete", True)
+        streak_result = None
         if mark_complete:
             submission.status = "completed"
 
             if submission.is_marked_helpful:
-                _update_help_streak(submission.helper_id)
+                streak_result = _update_help_streak(submission.helper_id)
         else:
             submission.status = "reviewed"
 
@@ -1468,6 +1469,24 @@ def give_feedback(current_user, submission_id):
             )
 
         db.session.commit()
+
+        # Activity feed: fire after the main commit above, never before —
+        # record_live_activity does its own db.session.commit() internally
+        # (see activity_service.py's module docstring), and this session
+        # still has this route's own uncommitted submission/streak changes
+        # on it up to that point. Calling it earlier would mean this
+        # best-effort side write forces an early, partial commit of the
+        # route's actual primary operation.
+        if streak_result and streak_result.get('is_new_record'):
+            record_live_activity(
+                submission.helper_id,
+                'achieved_streak',
+                {
+                    'current_streak': streak_result['current_streak'],
+                    'longest_streak': streak_result['longest_streak'],
+                },
+                scope='global',
+            )
 
         return success_response("Feedback submitted successfully! 🎉")
 
