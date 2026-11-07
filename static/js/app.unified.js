@@ -7,6 +7,7 @@
  */
 
 import { downloadResource, closeModal, openModal } from './feed/feed.utils.js';
+import { detectContainer, getActiveContainer } from './container-detect.js';
 
 import { HomeworkHandlers }     from '../js/homework/homework.delegation.js';
 import { MessageHandlers }      from '../js/message/message.delegation.js';
@@ -54,45 +55,6 @@ const UNIFIED_ACTIONS = {
   // ─────────────────────────────────────────────────────────────────────────
 };
 
-
-/**
- * Smart container detection.
- * Returns: 'tag-modal' | 'comments-modal' | 'smart-feed' | 'profile' | 'leaderboard' | 'global'
- */
-function detectContainer(element) {
-  const tagModal = document.getElementById('tag-posts-container');
-  if (tagModal && tagModal.contains(element)) return 'tag-modal';
-
-  const commentsContainer = document.getElementById('comments-container');
-  if (commentsContainer && commentsContainer.contains(element)) return 'comments-modal';
-
-  const profileSection = document.getElementById('profile');
-  if (profileSection && profileSection.classList.contains('active') && profileSection.contains(element)) {
-    return 'profile';
-  }
-
-  // ── NEW ──────────────────────────────────────────────────────────────────
-  const lbSection = document.getElementById('leaderboard');
-  if (lbSection && lbSection.contains(element)) return 'leaderboard';
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const postsContainer = document.getElementById('posts-container');
-  if (postsContainer && postsContainer.contains(element)) return 'smart-feed';
-
-  return 'global';
-}
-
-/**
- * Get active feed container for syncing.
- */
-function getActiveContainer(containerType) {
-  if (containerType === 'tag-modal')      return document.getElementById('tag-posts-container');
-  if (containerType === 'comments-modal') return document.getElementById('comments-container');
-  if (containerType === 'smart-feed')     return document.querySelector('.posts-feed.active');
-  if (containerType === 'profile')        return document.getElementById('profile');
-  if (containerType === 'leaderboard')    return document.getElementById('leaderboard');
-  return null;
-}
 
 /**
  * UNIFIED EVENT HANDLER
