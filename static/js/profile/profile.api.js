@@ -258,16 +258,6 @@ export async function toggleFeatureBadge(badgeId) {
   }
 }
 
-export async function fetchAvailableBadges() {
-  try {
-    const res = await api.get('/badges/available');
-    return res?.data || null;
-  } catch (e) {
-    console.error('[profile.api] fetchAvailableBadges:', e);
-    return null;
-  }
-}
-
 // Batch 3: GET /leaderboard/rank-history already existed with nothing
 // calling it — the reputation tab showed current rank but no trend over
 // time.
@@ -281,6 +271,15 @@ export async function fetchRankHistory(weeks = 12) {
   }
 }
 
+export async function fetchAvailableBadges() {
+  try {
+    const res = await api.get('/badges/available');
+    return res?.data || null;
+  } catch (e) {
+    console.error('[profile.api] fetchAvailableBadges:', e);
+    return null;
+  }
+}
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
 export async function uploadAvatar(file) {
