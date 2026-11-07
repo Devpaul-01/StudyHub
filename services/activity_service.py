@@ -33,7 +33,7 @@ its events over WebSocket — but "pushing the WebSocket event" is now two
 related paths, not one: _broadcast_to_connections (always, every call —
 the original _create_activity's entire behavior) and, additionally when
 scope="global", _broadcast_to_global_pulse, which sends an anonymized
-version (_anonymize_for_global) to anyone subscribed to the shared
+version (anonymize_for_global) to anyone subscribed to the shared
 activity_pulse:global room, not just the actor's known connections.
 
 Consumers:
@@ -62,7 +62,7 @@ ACTIVITY_EXPIRY_HOURS = 24
 # Activity types whose feed card needs the actor's real identity even on
 # the global/campus-pulse scope — e.g. user_signed_up's "Connect" button
 # needs a real user_id to send a connection request to. Every other
-# global-scope activity is anonymized (see _anonymize_for_global). Kept as
+# global-scope activity is anonymized (see anonymize_for_global). Kept as
 # a small, explicit allowlist rather than a per-call flag, so adding a new
 # un-anonymized type later is a one-line, reviewable change here rather
 # than something a caller could opt into by accident.
@@ -82,7 +82,7 @@ def record_live_activity(
         actor's accepted connections only — this is the entire behavior
         record_live_activity had before scope existed, unchanged here.
     scope="global": do the above, AND ALSO broadcast an anonymized
-        version (see _anonymize_for_global) to the shared
+        version (see anonymize_for_global) to the shared
         "activity_pulse:global" room every subscribed client receives,
         regardless of whether they're connected to the actor.
 
@@ -175,12 +175,19 @@ def _broadcast_to_global_pulse(user: User, activity: ActivityFeed) -> None:
     message_ws_manager.emit_to_room(
         "activity_pulse:global",
         "activity_pulse_update",
-        _anonymize_for_global(user, activity),
+        anonymize_for_global(user, activity),
     )
 
 
-def _anonymize_for_global(user: User, activity: ActivityFeed) -> dict:
+def anonymize_for_global(user: User, activity: ActivityFeed) -> dict:
     """Strip the actor's identity before broadcasting to strangers.
+
+    Public (no leading underscore), unlike _broadcast_to_connections and
+    _broadcast_to_global_pulse above: GET /activity/pulse in
+    routes/student/homework_system.py also needs this exact shaping logic
+    for its initial-page-load response, so a client sees an identical
+    payload shape whether a row arrived via that GET or over the
+    activity_pulse_update WebSocket event this function also feeds.
 
     This is what makes the opt-out default (show_in_activity_feed=True)
     safe to ship: a user who never opts out is still only ever *named* to
@@ -206,6 +213,7 @@ def _anonymize_for_global(user: User, activity: ActivityFeed) -> dict:
         )
         if not profile_private:
             return {
+                "id": activity.id,
                 "type": activity.activity_type,
                 "user_id": user.id,
                 "name": user.name,
@@ -216,6 +224,7 @@ def _anonymize_for_global(user: User, activity: ActivityFeed) -> dict:
         # to the standard anonymized shape below.
 
     return {
+        "id": activity.id,
         "type": activity.activity_type,
         "subject": data.get("subject"),
         "department": data.get("department"),

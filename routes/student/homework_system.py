@@ -302,6 +302,78 @@ def get_activity_feed(current_user):
         return error_response("Failed to load activity feed")
 
 
+@homework_bp.route("/activity/pulse", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@token_required
+def get_activity_pulse(current_user):
+    """Get recent anonymized global activity (not scoped to connections).
+
+    Sibling of get_activity_feed above, kept in this file alongside it
+    rather than split into a separate module — same imports
+    (ActivityFeed, User), same pagination/response-envelope shape, and
+    splitting them would mean also moving the existing route to avoid
+    two files both claiming /activity/*, which is a larger change than
+    this endpoint calls for.
+
+    Unlike get_activity_feed, this is NOT connection-filtered — it's the
+    initial-page-load equivalent of the activity_pulse_update WebSocket
+    broadcast (services/activity_service.py::_broadcast_to_global_pulse):
+    every row created with scope="global", run through the same
+    anonymize_for_global used for the live push, so a client sees an
+    identical shape whether a row arrived via this GET or over the
+    socket. current_user is required (via token_required) purely to gate
+    the endpoint to authenticated users, same as every other route in
+    this file — the response itself carries no information scoped to
+    current_user specifically.
+    """
+    try:
+        from models import ActivityFeed
+        from services.activity_service import anonymize_for_global
+
+        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+
+        activities = ActivityFeed.query.filter(
+            ActivityFeed.created_at >= cutoff_time,
+            ActivityFeed.expires_at > datetime.utcnow()
+        ).order_by(ActivityFeed.created_at.desc()).limit(30).all()
+
+        actor_ids = {a.user_id for a in activities}
+        actors_map = {u.id: u for u in User.query.filter(User.id.in_(actor_ids)).all()} if actor_ids else {}
+
+        now = datetime.utcnow()
+        pulse_items = []
+        for activity in activities:
+            user = actors_map.get(activity.user_id)
+            if not user:
+                continue
+
+            anonymized = anonymize_for_global(user, activity)
+
+            diff = now - activity.created_at
+            seconds = diff.total_seconds()
+            if seconds < 60:
+                time_ago = "just now"
+            elif seconds < 3600:
+                time_ago = f"{int(seconds / 60)}m ago"
+            else:
+                time_ago = f"{int(seconds / 3600)}h ago"
+
+            anonymized['time_ago'] = time_ago
+            pulse_items.append(anonymized)
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "activities": pulse_items,
+                "total": len(pulse_items)
+            }
+        })
+
+    except Exception as e:
+        current_app.logger.error(f"Get activity pulse error: {str(e)}")
+        return error_response("Failed to load activity pulse")
+
+
 @homework_bp.route("/homework/my-streak", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
