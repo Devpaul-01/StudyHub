@@ -658,6 +658,21 @@ def create_assignment(current_user):
         db.session.add(assignment)
         db.session.commit()
 
+        # Activity feed: only when shared for help — an assignment kept
+        # private has nothing to tell a connection about, and firing here
+        # unconditionally would mean every personal, unshared assignment
+        # also generates a feed row.
+        if assignment.is_shared_for_help:
+            record_live_activity(
+                current_user.id,
+                'started_homework',
+                {
+                    'assignment_id': assignment.id,
+                    'assignment_title': assignment.title,
+                    'subject': assignment.subject,
+                }
+            )
+
         return success_response(
             "Assignment created successfully! 📚",
             data={
@@ -706,12 +721,14 @@ def update_assignment(current_user, assignment_id):
             if not isinstance(data['resources'], list):
                 return error_response("Resources must be an array", 400)
             assignment.resources = data['resources']
+        just_completed = False
         if "status" in data:
             old_status = assignment.status
             assignment.status = data["status"]
 
             if assignment.status == "completed" and old_status != "completed":
                 assignment.completed_at = datetime.utcnow()
+                just_completed = True
             elif assignment.status != "completed":
                 assignment.completed_at = None
 
@@ -719,6 +736,21 @@ def update_assignment(current_user, assignment_id):
         assignment.priority_score = homework_service.calculate_priority_score(assignment)
 
         db.session.commit()
+
+        # Activity feed: only on the actual not-completed -> completed
+        # transition (just_completed), same guard as completed_at above —
+        # a PUT that re-sends status="completed" on an already-completed
+        # assignment, or touches unrelated fields, must not re-fire this.
+        if just_completed:
+            record_live_activity(
+                current_user.id,
+                'completed_homework',
+                {
+                    'assignment_id': assignment.id,
+                    'assignment_title': assignment.title,
+                    'subject': assignment.subject,
+                }
+            )
 
         return success_response(
             "Assignment updated",
@@ -1042,6 +1074,18 @@ def offer_homework_help(current_user, assignment_id):
         )
 
         db.session.commit()
+
+        record_live_activity(
+            current_user.id,
+            'offered_help',
+            {
+                'assignment_id': assignment.id,
+                'assignment_title': assignment.title,
+                'subject': assignment.subject,
+                'requester_name': student.name if student else None,
+                'requester_id': assignment.user_id,
+            }
+        )
 
         return success_response(
             f"You're now helping {student.name if student else 'this student'}!",
