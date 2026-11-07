@@ -261,6 +261,28 @@ class MessageWebSocketManager:
         """
         self.socketio.emit(event_name, data, room=f"user_{user_id}")
 
+    def emit_to_room(self, room: str, event_name: str, data: dict) -> None:
+        """
+        Broadcast to every socket currently in `room`, on every instance.
+
+        Added for the Live Activity feed's global/campus-pulse broadcast
+        (services/activity_service.py), which needs to reach everyone
+        subscribed to a shared room rather than one specific user's
+        sockets. This is the same self.socketio.emit(..., room=...)
+        mechanism emit_to_user above already relies on for its
+        horizontal-scaling fix — once message_queue is configured (see
+        init_app), a room-targeted emit reaches sockets on every
+        instance, not just this process's local ones, same as for a
+        per-user room.
+
+        Unlike emit_to_user, callers are responsible for having sockets
+        actually join `room` first (see the activity_feed:subscribe /
+        activity_feed:unsubscribe handlers in register_handlers below) —
+        there's no implicit per-user room to fall back on here, since a
+        broadcast room's membership is opt-in, not automatic on connect.
+        """
+        self.socketio.emit(event_name, data, room=room)
+
     def disconnect_user(self, user_id):
         """
         Document 3 §1.5: force-close every socket tracked for `user_id`.
@@ -1151,6 +1173,38 @@ class MessageWebSocketManager:
         def handle_ping():
             """Keep-alive ping"""
             emit('pong', {'timestamp': datetime.now(timezone.utc).isoformat()})
+
+        @self.socketio.on('activity_feed:subscribe')
+        @self.auth_required
+        def handle_activity_feed_subscribe(current_user_id, data):
+            """
+            Join the global Live Activity broadcast room.
+
+            Deliberately opt-in (unlike the per-user room joined
+            automatically in handle_connect above) rather than having
+            every connected socket join on connect: a user only pays the
+            bandwidth cost of the global/campus-pulse feed while they
+            actually have the Activity Feed section open.
+
+            `data` is unused — matches the existing no-payload handlers
+            in this file (e.g. handle_request_unread_count above), which
+            also declare a required `data` param even though they ignore
+            it, since auth_required's decorated_function always forwards
+            exactly one positional arg.
+            """
+            try:
+                join_room('activity_pulse:global')
+            except Exception as e:
+                current_app.logger.error(f'Activity feed subscribe error: {e}')
+
+        @self.socketio.on('activity_feed:unsubscribe')
+        @self.auth_required
+        def handle_activity_feed_unsubscribe(current_user_id, data):
+            """Leave the global Live Activity broadcast room. `data` unused — see handle_activity_feed_subscribe above."""
+            try:
+                leave_room('activity_pulse:global')
+            except Exception as e:
+                current_app.logger.error(f'Activity feed unsubscribe error: {e}')
 
 
 # ============================================================================
