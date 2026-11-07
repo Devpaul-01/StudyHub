@@ -60,7 +60,7 @@ export function renderPrivateProfile(data, isOwnProfile) {
       <div class="pv-section">
         <div class="pv-section-title">Pinned</div>
         ${u.pinned_posts.map(p => `
-          <div class="pv-post-row">
+          <div class="pv-post-row" data-action="pv-open-post" data-post-id="${p.id}">
             ${escapeHtml(p.title)}
             <div class="pv-post-meta">${escapeHtml(p.post_type || '')} • ${timeAgo(p.posted_at)}</div>
           </div>`).join('')}
@@ -134,7 +134,7 @@ export function renderPublicProfile(data, isOwnProfile) {
     <div class="pv-section">
       <div class="pv-section-title">Recent Posts</div>
       ${posts.length ? posts.map(p => `
-        <div class="pv-post-row">
+        <div class="pv-post-row" data-action="pv-open-post" data-post-id="${p.id}">
           ${p.is_pinned ? '📌 ' : ''}${escapeHtml(p.title)}
           <div class="pv-post-meta">
             ${escapeHtml(p.post_type || '')} • 💬 ${p.comments_count ?? 0} • ❤️ ${p.likes_count ?? 0}
@@ -146,7 +146,7 @@ export function renderPublicProfile(data, isOwnProfile) {
     <div class="pv-section">
       <div class="pv-section-title">Active Threads</div>
       ${threads.length ? threads.map(t => `
-        <div class="pv-thread-row">
+        <div class="pv-thread-row" data-action="pv-open-thread" data-thread-id="${t.id}">
           ${escapeHtml(t.title)}${t.is_creator ? ' 👑' : ''}
           <div class="pv-thread-meta">👥 ${t.member_count} members • active ${timeAgo(t.last_activity)}</div>
         </div>`).join('') : `<div class="pv-empty">Not in any threads yet</div>`}

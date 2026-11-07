@@ -95,6 +95,16 @@ function setupDelegation() {
     } else if (action === 'pv-go-to-connections') {
       event.preventDefault();
       window.location.href = '/student/profile/homepage';
+    } else if (action === 'pv-open-post') {
+      // Batch 4: posts shown on a profile used to be static, unclickable
+      // text (confirmed in the old renderPublicProfile/renderPrivateProfile
+      // output — no data-action, no handler). Now navigates to the
+      // dedicated post-detail page, same destination search results use.
+      const postId = target.dataset.postId;
+      if (postId) window.location.href = `/student/posts/view/${postId}`;
+    } else if (action === 'pv-open-thread') {
+      const threadId = target.dataset.threadId;
+      if (threadId) window.location.href = `/student/threads/view/${threadId}`;
     }
   });
 }
