@@ -908,6 +908,33 @@ def get_visibility_settings(current_user):
 # VIEW ANOTHER USER'S PROFILE
 # ============================================================================
 
+@profile_bp.route("/profile/view/<username>", methods=["GET"])
+@token_required
+def view_profile_page(current_user, username):
+    """
+    Batch 4: standalone public-profile PAGE.
+
+    GET /profile/<username> below is an existing, working JSON API route
+    (not a page — it has no render_template call) that this project's own
+    frontend already tries to navigate to for viewing another user's
+    profile — see viewProfile() in static/js/feed/feed.utils.js, which
+    sends the browser to /profile/<username> on a username click. That
+    always 404'd for two separate reasons: it's missing the /student
+    blueprint prefix this whole app is registered under, AND even with
+    the correct prefix it would have hit this JSON API, returning raw
+    data instead of a page.
+
+    This route exists at a different path (/profile/view/<username>,
+    not /profile/<username>) specifically so it doesn't collide with or
+    change the existing JSON API's contract — anything else already
+    calling GET /student/profile/<username> expecting JSON keeps working
+    exactly as before. The page itself fetches that same JSON API via
+    the browser's own request (see static/js/profile-view/
+    profile-view.api.js), the same way search.html fetches search data.
+    """
+    return render_template("profile-view.html")
+
+
 @profile_bp.route("/profile/<username>", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required

@@ -240,13 +240,20 @@ export function downloadResource(url, filename) {
 
 /**
  * Navigate to profile page
+ *
+ * Batch 4 fix: both branches here sent the browser to the same wrong
+ * URL — `/profile/${username}`, missing the /student blueprint prefix
+ * this whole app is registered under, so this always 404'd regardless
+ * of which branch ran (the typeof check never actually changed the
+ * outcome). Also, `/student/profile/<username>` itself is a JSON API
+ * route, not a page — so even with the prefix fixed, this would have
+ * shown raw JSON instead of a profile page. Points at the new
+ * /student/profile/view/<username> page route instead (see
+ * view_profile_page() in routes/student/profile.py for why that's a
+ * different path from the JSON API rather than the same one).
  */
 export function viewProfile(username) {
-  if (typeof username === 'number') {
-    window.location.href = `/profile/${username}`;
-  } else {
-    window.location.href = `/profile/${username}`;
-  }
+  window.location.href = `/student/profile/view/${username}`;
 }
 
 /**

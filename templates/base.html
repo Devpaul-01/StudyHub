@@ -102,7 +102,20 @@
 
     <!-- ========================================
          MAIN CONTENT AREA
-         Pages will inject content here via {% block content %}
+         Pages will inject content here via the content block below.
+
+         Batch 4 fix: this comment used to literally spell out the Jinja
+         block-tag syntax by name inside an HTML comment. Jinja does not
+         respect HTML comment syntax: it parses its own template tags
+         anywhere in the file regardless of surrounding HTML comment
+         markers, so writing that tag syntax here created a bogus,
+         unclosed fifth block with no matching close tag, which made the
+         whole template fail to compile ("Unexpected end of template...
+         looking for endblock"). Never caught before because nothing
+         ever rendered base.html (it was a fully orphaned template — see
+         the comment on search_page() in routes/student/search.py for
+         the full story). Describing the syntax in prose here instead of
+         spelling it out literally, so this can't recur.
     ======================================== -->
     <div class="page-wrapper">
         {% block content %}

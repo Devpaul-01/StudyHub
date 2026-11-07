@@ -17,7 +17,7 @@ page) is gone. Full member lists are available via the existing
 GET /threads/<id>/members endpoint.
 """
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, render_template
 from sqlalchemy import or_, and_, func, desc
 import datetime
 
@@ -40,6 +40,27 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_
 
 
 search_bp = Blueprint("student_search", __name__)
+
+
+# ============================================================================
+# SEARCH PAGE (Batch 4)
+# ============================================================================
+#
+# templates/base.html's top-nav search bar has always navigated to
+# GET /student/search?q=... on Enter — but no route for that path existed
+# anywhere, so it always 404'd. While building this, also found
+# templates/base.html itself was completely orphaned: it has
+# {% block title/extra_css/content/extra_js %} Jinja blocks (clearly
+# designed as a layout base for other pages to extend) but nothing in the
+# whole backend rendered it and nothing extended it — the same "built,
+# wired for reuse, never actually plugged in" pattern as home.html, which
+# Batch 1 found and removed. Making this page base.html's first child
+# template fixes that orphan as a side effect, rather than needing a
+# second, separate fix for it.
+@search_bp.route("/search", methods=["GET"])
+@token_required
+def search_page(current_user):
+    return render_template("search.html")
 
 
 # ============================================================================

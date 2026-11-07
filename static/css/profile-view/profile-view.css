@@ -1,0 +1,146 @@
+/* Batch 4: public profile page — reuses base.css's design tokens
+   (--primary-color, --radius-md, --shadow-sm, etc.), the same approach
+   taken for search.css, since this page extends base.html and
+   static/css/profile/profile.css's tokens (--accent-subtle, etc.)
+   aren't loaded here and would be undefined. */
+
+.pv-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+.pv-loading, .pv-error {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+
+.pv-header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.pv-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 3px solid var(--bg-white);
+  box-shadow: var(--shadow-sm);
+}
+
+.pv-name { font-size: 1.3rem; font-weight: 700; color: var(--text-primary); margin: 0; }
+.pv-username { font-size: 0.85rem; color: var(--text-secondary); }
+.pv-meta { font-size: 0.82rem; color: var(--text-secondary); margin-top: 0.25rem; }
+.pv-bio { font-size: 0.88rem; color: var(--text-primary); margin-top: 0.5rem; line-height: 1.5; }
+
+.pv-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+
+.pv-btn {
+  padding: 0.5rem 1.1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 2px solid var(--border-light);
+  background: var(--bg-white);
+  color: var(--text-primary);
+}
+
+.pv-btn-primary { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+.pv-btn[disabled] { opacity: 0.6; cursor: default; }
+
+/* ── Private profile notice ───────────────────────────────────────────── */
+
+.pv-private-notice {
+  text-align: center;
+  padding: 2rem 1rem;
+  background: var(--bg-light);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* ── Stats ─────────────────────────────────────────────────────────────── */
+
+.pv-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+
+.pv-stat {
+  text-align: center;
+  padding: 0.75rem 0.4rem;
+  background: var(--bg-white);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+}
+
+.pv-stat-value { font-size: 1.15rem; font-weight: 700; color: var(--primary-color); }
+.pv-stat-label { font-size: 0.68rem; color: var(--text-secondary); margin-top: 0.1rem; }
+
+@media (max-width: 480px) {
+  .pv-stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Sections ──────────────────────────────────────────────────────────── */
+
+.pv-section { margin-bottom: 1.25rem; }
+
+.pv-section-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.pv-chip {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  margin: 0 0.3rem 0.3rem 0;
+  background: var(--bg-light);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.pv-badge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 0.5rem;
+}
+
+.pv-badge {
+  text-align: center;
+  padding: 0.5rem 0.2rem;
+  background: var(--bg-white);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+}
+
+.pv-badge-icon { font-size: 1.4rem; }
+.pv-badge-name { font-size: 0.65rem; color: var(--text-secondary); margin-top: 0.15rem; }
+
+.pv-post-row, .pv-thread-row {
+  padding: 0.6rem 0.8rem;
+  background: var(--bg-white);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  margin-bottom: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--text-primary);
+}
+
+.pv-post-meta, .pv-thread-meta { font-size: 0.74rem; color: var(--text-secondary); margin-top: 0.2rem; }
+
+.pv-empty { color: var(--text-secondary); font-size: 0.82rem; padding: 0.3rem 0; }
