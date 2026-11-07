@@ -40,6 +40,7 @@ from routes.student.helpers import (
 )
 from services.online_status_service import get_user_online_status, get_online_status_batch
 from services import homework_service, notification_service
+from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
 # request create/update/delete/offer-help/submit-solution/give-feedback
 # routes.
@@ -126,76 +127,6 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
         'longest_streak': user.help_streak_longest,
         'is_new_record': is_new_record
     }
-
-
-def _create_activity(user_id: int, activity_type: str, data: dict):
-    """Create activity feed entry. Auto-expires after 24 hours.
-
-    Broad except is intentional here (Document 1 §4 point 5's "scoped
-    comment" requirement): this helper is a best-effort side channel
-    (activity feed / WebSocket broadcast) called from several mutation
-    routes — a DB write succeeding but the activity-feed write or the
-    WebSocket broadcast failing (bad ActivityFeed data, ws_manager down,
-    etc.) should never roll back or fail the caller's primary operation,
-    so every failure mode here is swallowed and logged rather than raised.
-
-    AUDIT BUG-4 FIX: services.websocket_events.ws_manager is never
-    initialized anywhere in the app, so ws_manager.broadcast_activity(activity)
-    silently no-op'd on every call — this row was always correctly
-    persisted (get_activity_feed already reads it back on next poll/
-    reload, so that path was never affected), but no connection ever saw
-    it pushed live. There is no broadcast_activity equivalent on the
-    live message_ws_manager (it only exposes a per-user emit_to_user),
-    and no separate "activity broadcast room" exists anywhere else in
-    this codebase — get_activity_feed's own query
-    (ActivityFeed.user_id.in_(connection_ids), a few functions above)
-    is the actual, only definition of who should see this: the actor's
-    accepted connections. So the live-push equivalent of a broadcast
-    here is a per-connection emit_to_user, matching exactly what the
-    DB-backed feed already promises those same connections on their
-    next reload — this fix makes the live and polled paths agree
-    instead of inventing new fan-out semantics.
-    """
-    from models import ActivityFeed
-
-    try:
-        activity = ActivityFeed(
-            user_id=user_id,
-            activity_type=activity_type,
-            activity_data=data,
-            created_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(hours=24)
-        )
-        db.session.add(activity)
-        db.session.commit()
-
-        from services.websocket_messages import message_ws_manager
-
-        connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == user_id,
-                Connection.receiver_id == user_id
-            ),
-            Connection.status == 'accepted'
-        ).all()
-
-        payload = {
-            'id': activity.id,
-            'type': activity.activity_type,
-            'user_id': user_id,
-            'data': activity.activity_data,
-            'created_at': activity.created_at.isoformat(),
-        }
-
-        for conn in connections:
-            other_id = conn.receiver_id if conn.requester_id == user_id else conn.requester_id
-            message_ws_manager.emit_to_user(other_id, 'activity_feed_update', payload)
-
-        return activity
-    except Exception as e:
-        current_app.logger.error(f"Create activity error: {e}", exc_info=True)
-        db.session.rollback()
-        return None
 
 
 # ============================================================================
@@ -1317,7 +1248,7 @@ def submit_solution(current_user, submission_id):
         if not submission.response_time_seconds:
             time_diff = (datetime.utcnow() - submission.created_at).total_seconds()
             submission.response_time_seconds = int(time_diff)
-            _create_activity(
+            record_live_activity(
                 current_user.id,
                 'submitted_solution',
                 {
