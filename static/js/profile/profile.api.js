@@ -280,7 +280,6 @@ export async function fetchRankHistory(weeks = 12) {
     return null;
   }
 }
-
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
 export async function uploadAvatar(file) {

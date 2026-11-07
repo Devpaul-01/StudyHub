@@ -35,7 +35,7 @@ import os
 
 from models import (
     User, Message, Connection, Notification, ThreadMember,
-    MessageReaction
+    MessageReaction, MessageReport
     
 )
 from extensions import db
@@ -1456,23 +1456,39 @@ def report_message(current_user, message_id):
         data = request.get_json()
         reason = data.get("reason", "").strip()
         description = data.get("description", "").strip()
-        
-        if not reason:
-            return error_response("Reason required")
-        
-        # Create report (using existing PostReport model structure)
-        # You may want to create a separate MessageReport model
-        # For now, we'll log it
-        
-        current_app.logger.warning(
-            f"Message reported - ID: {message_id}, "
-            f"From: {message.sender_id}, "
-            f"Reason: {reason}, "
-            f"By: {current_user.id}"
+
+        # Matches PostReport's valid_reasons (routes/student/posts/crud.py)
+        # so moderators see one consistent set of reasons across both
+        # post and message reports.
+        valid_reasons = ["spam", "harassment", "inappropriate", "misinformation", "other"]
+        if reason not in valid_reasons:
+            return error_response(f"Reason must be one of: {', '.join(valid_reasons)}")
+
+        # Batch 5 fix: this used to only write a log line
+        # ("For now, we'll log it" — see the model's own docstring for
+        # the full story) and never actually persisted anything, so no
+        # message report has ever been reviewable. Now creates a real
+        # MessageReport row, the same way post reports already work.
+        existing = MessageReport.query.filter_by(
+            message_id=message_id,
+            reported_by=current_user.id,
+            status="pending"
+        ).first()
+        if existing:
+            return error_response("You've already reported this message", 409)
+
+        report = MessageReport(
+            message_id=message_id,
+            reported_by=current_user.id,
+            reason=reason,
+            description=description,
         )
-        
-        return success_response("Message reported - we'll review it soon")
+        db.session.add(report)
+        db.session.commit()
+
+        return success_response("Report submitted. Our team will review it.")
         
     except Exception as e:
+        db.session.rollback()
         current_app.logger.error(f"Report message error: {str(e)}")
         return error_response("Failed to report message")

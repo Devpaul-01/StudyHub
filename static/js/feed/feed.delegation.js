@@ -18,7 +18,18 @@ import {
   closeModal
 } from './feed.utils.js';
 
-import { detectContainer } from '../app.unified.js';
+// Fix: this used to import detectContainer from '../app.unified.js' — but
+// app.unified.js itself imports FeedHandlers from THIS file to build
+// UNIFIED_ACTIONS, so that was a real circular import (feed.delegation.js
+// -> app.unified.js -> feed.delegation.js). That cycle broke this module's
+// evaluation in the browser: app.unified.js's own top-level code (including
+// `window.setupUnifiedDelegation = setupUnifiedDelegation`) never ran,
+// setupUnifiedDelegation() was never callable, the single delegated click
+// listener on document.body was never attached, and every data-action
+// button on the page (sidebar nav items, homework tabs, post actions, etc.)
+// silently did nothing when clicked. detectContainer now lives in its own
+// dependency-free module that both files import, with no cycle.
+import { detectContainer } from '../container-detect.js';
 
 import {
   renderPostComments,

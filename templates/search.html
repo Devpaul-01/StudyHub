@@ -1,0 +1,101 @@
+{% extends "shell_base.html" %}
+
+{#
+  Switched from base.html to shell_base.html: base.html was dead code
+  (never rendered by anything before this page — see the old comment on
+  search_page() in routes/student/search.py) with a light theme that
+  doesn't match the app's real dark theme, and its navbar dropdown links
+  to several routes that 404 (confirmed against the running app).
+  shell_base.html fixes both. See static/css/shell/app-shell.css and
+  static/js/shell/app-shell.js for details.
+
+  shell_base.html's #shell-search-input already redirects here
+  (/student/search?q=...) on Enter; this page reads that ?q= (and
+  ?type=, ?tags=, ?department=) on load and performs the search
+  immediately, so landing here via the nav search bar actually shows
+  results rather than an empty page.
+#}
+
+{% block title %}Search — StudyHub{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/search/search.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="search-page" id="search-page">
+
+  <!-- Type switcher -->
+  <div class="search-type-tabs" id="search-type-tabs">
+    <button class="search-type-tab active" data-action="search-set-type" data-type="all">All</button>
+    <button class="search-type-tab" data-action="search-set-type" data-type="users">People</button>
+    <button class="search-type-tab" data-action="search-set-type" data-type="posts">Posts</button>
+    <button class="search-type-tab" data-action="search-set-type" data-type="threads">Threads</button>
+  </div>
+
+  <!-- Search bar for this page (separate from the nav bar's own one —
+       this one supports live suggestions and doesn't require a full page
+       reload to run a new search). -->
+  <div class="search-bar-row">
+    <div class="search-bar-wrap">
+      <input type="text" id="search-page-input" class="search-page-input"
+             placeholder="Search posts, people, threads..." autocomplete="off">
+      <div id="search-suggestions" class="search-suggestions hidden"></div>
+    </div>
+    <button class="search-filters-toggle" data-action="search-toggle-filters" id="search-filters-toggle">
+      ⚙️ Filters
+    </button>
+  </div>
+
+  <!-- Filters drawer (hidden until toggled; contents populated by JS from
+       GET /search/filters/departments and /search/filters/class-levels) -->
+  <div class="search-filters-drawer hidden" id="search-filters-drawer">
+    <div class="search-filter-group">
+      <label>Department</label>
+      <select id="search-filter-department"><option value="">Any</option></select>
+    </div>
+    <div class="search-filter-group" id="search-filter-class-level-group">
+      <label>Class Level</label>
+      <select id="search-filter-class-level"><option value="">Any</option></select>
+    </div>
+    <div class="search-filter-group" id="search-filter-post-type-group" style="display:none;">
+      <label>Post Type</label>
+      <select id="search-filter-post-type">
+        <option value="">Any</option>
+        <option value="question">Question</option>
+        <option value="discussion">Discussion</option>
+        <option value="resource">Resource</option>
+        <option value="announcement">Announcement</option>
+        <option value="problem">Problem</option>
+      </select>
+    </div>
+    <div class="search-filter-group" id="search-filter-sort-group">
+      <label>Sort</label>
+      <select id="search-filter-sort">
+        <option value="relevance">Relevance</option>
+        <option value="recent">Most Recent</option>
+      </select>
+    </div>
+    <button class="search-apply-filters" data-action="search-apply-filters">Apply</button>
+  </div>
+
+  <!-- Recent searches (shown when the box is focused and empty) -->
+  <div class="search-recent hidden" id="search-recent">
+    <div class="search-recent-header">
+      <span>Recent Searches</span>
+      <button data-action="search-clear-history" class="search-clear-history">Clear</button>
+    </div>
+    <div id="search-recent-list"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="search-results" class="search-results">
+    <!-- Populated by JS — starts as the discovery/empty-query state -->
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module" src="{{ url_for('static', filename='js/search/search.init.js') }}"></script>
+{% endblock %}

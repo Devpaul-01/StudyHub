@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}StudyHub{% endblock %}</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/shell/app-shell.css') }}">
+    {% block extra_css %}{% endblock %}
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <nav class="shell-navbar" id="shell-navbar">
+        <div class="shell-navbar-container">
+            <a href="/student/profile/homepage" class="shell-logo">
+                <div class="shell-logo-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M2 7s3-2 10-2 10 2 10 2v13s-3-2-10-2S2 20 2 20V7z"/>
+                        <path d="M12 5v15"/>
+                        <path d="M17 4l1.5-2M19 8l2-1M17 8l1.5 2"/>
+                    </svg>
+                </div>
+                <span class="shell-logo-text">Study<span>Hub</span></span>
+            </a>
+
+            <div class="shell-search">
+                <span class="shell-search-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                </span>
+                <input type="text" id="shell-search-input" class="shell-search-input"
+                       placeholder="Search posts, users, threads..." autocomplete="off">
+            </div>
+
+            <div class="shell-navbar-actions">
+                <button class="shell-icon-btn" onclick="window.location.href='/student/profile/homepage?section=notifications'" aria-label="Notifications">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+                        <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+                    </svg>
+                    <span class="shell-badge" id="shell-notif-count">0</span>
+                </button>
+
+                <a href="/student/learnora" class="shell-icon-btn" aria-label="Learnora AI">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2a4 4 0 0 1 4 4c0 1.5-.7 2.8-1.8 3.6L16 22H8l1.8-12.4A4 4 0 0 1 8 6a4 4 0 0 1 4-4z"/>
+                    </svg>
+                </a>
+
+                <button class="shell-icon-btn" onclick="window.location.href='/student/profile/homepage?section=messages'" aria-label="Messages">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    <span class="shell-badge" id="shell-msg-count">0</span>
+                </button>
+
+                <div class="shell-profile-dropdown">
+                    <button class="shell-profile-btn" id="shell-profile-dropdown-btn">
+                        <img src="/static/default-avatar.png" alt="Profile" class="shell-profile-avatar" id="shell-user-avatar">
+                        <span class="shell-profile-name" id="shell-user-name">Loading...</span>
+                    </button>
+
+                    <div class="shell-dropdown-menu hidden" id="shell-profile-dropdown-menu">
+                        <a href="/student/profile/me" class="shell-dropdown-item">👤 My Profile</a>
+                        <a href="/student/posts/my-posts" class="shell-dropdown-item">📄 My Posts</a>
+                        <a href="/student/profile/homepage?section=connections" class="shell-dropdown-item">🤝 Connections</a>
+                        <a href="/student/posts/bookmarked" class="shell-dropdown-item">🔖 Bookmarks</a>
+                        <a href="/student/profile/homepage?section=leaderboard" class="shell-dropdown-item">🏆 Leaderboard</a>
+                        <a href="/student/profile/homepage?section=analytics" class="shell-dropdown-item">📊 Analytics</a>
+                        <hr class="shell-dropdown-divider">
+                        <button class="shell-dropdown-item danger" id="shell-logout-btn">🚪 Logout</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="shell-page-wrapper">
+        {% block content %}{% endblock %}
+    </div>
+
+    <script src="{{ url_for('static', filename='js/core/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/core/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/shell/app-shell.js') }}"></script>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,337 @@
+/* ============================================================================
+   APP SHELL — shared navbar + page-wrapper for standalone pages
+   (search, profile-view, post-view, thread-view).
+
+   Replaces templates/base.html + static/css/base.css for these pages.
+   base.html was never actually wired up correctly for this purpose: its
+   navbar dropdown linked to several URLs that don't exist as real page
+   routes (/student/leaderboard, /student/analytics, /student/connections,
+   /student/notifications, /student/ai-assistant all 404 — confirmed by
+   curling each one), and its color palette (light gray/white,
+   #667eea/#764ba2 purple-blue gradient) doesn't match the actual main app
+   shell's real dark theme (templates/post/feed2.html, via
+   static/css/post/feed3.css: near-black #0F0F11 background, #6366F1
+   indigo accent, light text on dark surfaces). This file matches that
+   real palette so a user moving between the main feed and these pages
+   doesn't see a jarring light-theme flash.
+   ============================================================================ */
+
+:root {
+  --shell-primary:        #18181B;
+  --shell-accent:         #6366F1;
+  --shell-accent-hover:   #4F46E5;
+  --shell-accent-subtle:  rgba(99, 102, 241, 0.15);
+  --shell-accent-border:  rgba(99, 102, 241, 0.3);
+
+  --shell-text-primary:   #FAFAFA;
+  --shell-text-secondary: #A1A1AA;
+  --shell-text-meta:      #71717A;
+
+  --shell-bg-page:        #0F0F11;
+  --shell-bg-card:        #1C1C1F;
+  --shell-bg-surface:     #242428;
+  --shell-bg-hover:       #2A2A2E;
+
+  --shell-border:         #27272A;
+  --shell-border-light:   #1F1F22;
+
+  --shell-radius-sm: 0.375rem;
+  --shell-radius-md: 0.5rem;
+  --shell-radius-lg: 0.75rem;
+
+  --shell-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shell-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.55);
+
+  --shell-navbar-height: 64px;
+  --shell-danger: #ef4444;
+
+  /* Aliases matching the token names used by static/js/core/api.js's
+     showToast() (--bg-card, --text-primary, --accent, --danger,
+     --success, --warning, --shadow-lg, --radius-md, --border-light,
+     --transition-base) and other shared utils, which were written
+     against static/css/post/feed3.css's token names. feed3.css isn't
+     loaded on these standalone shell pages (search, profile-view,
+     post-view, thread-view), so without these aliases shared JS that
+     reaches for those var names silently falls back to CSS initial
+     values (e.g. a toast with no background/border). Defining them
+     here means any shared util that assumes feed3.css's token set
+     keeps working correctly wherever app-shell.css is loaded instead.*/
+  --bg-card: var(--shell-bg-card);
+  --text-primary: var(--shell-text-primary);
+  --text-secondary: var(--shell-text-secondary);
+  --accent: var(--shell-accent);
+  --danger: var(--shell-danger);
+  --success: #10b981;
+  --warning: #f59e0b;
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.6);
+  --radius-md: var(--shell-radius-md);
+  --border-light: var(--shell-border-light);
+  --transition-base: 200ms ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  background: var(--shell-bg-page);
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: var(--shell-text-primary);
+  margin: 0;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+}
+
+/* ==================== NAVBAR ==================== */
+.shell-navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--shell-navbar-height);
+  background: var(--shell-bg-card);
+  border-bottom: 1px solid var(--shell-border-light);
+  box-shadow: var(--shell-shadow-sm);
+  z-index: 1000;
+}
+
+.shell-navbar-container {
+  max-width: 1400px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.shell-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.shell-logo-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+  color: #fff;
+}
+
+.shell-logo-text {
+  font-family: 'Poppins', 'Inter', sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.5px;
+  color: var(--shell-text-primary);
+}
+
+.shell-logo-text span {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 800;
+}
+
+/* Global search — also doubles as the page's own search entry point on
+   pages other than search.html itself (clicking it navigates there). */
+.shell-search {
+  flex: 1;
+  max-width: 480px;
+  position: relative;
+}
+
+.shell-search-input {
+  width: 100%;
+  padding: 9px 14px 9px 36px;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  font-size: 14px;
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.shell-search-input::placeholder {
+  color: var(--shell-text-meta);
+}
+
+.shell-search-input:focus {
+  outline: none;
+  border-color: var(--shell-accent);
+  background: var(--shell-bg-card);
+}
+
+.shell-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--shell-text-meta);
+  pointer-events: none;
+  display: flex;
+}
+
+.shell-navbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.shell-icon-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  border-radius: var(--shell-radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--shell-text-secondary);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.shell-icon-btn:hover {
+  background: var(--shell-bg-hover);
+  color: var(--shell-text-primary);
+}
+
+.shell-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--shell-danger);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.shell-profile-dropdown {
+  position: relative;
+}
+
+.shell-profile-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-surface);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.shell-profile-btn:hover {
+  border-color: var(--shell-accent-border);
+}
+
+.shell-profile-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--shell-bg-hover);
+}
+
+.shell-profile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--shell-text-primary);
+}
+
+.shell-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 210px;
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  box-shadow: var(--shell-shadow-md);
+  overflow: hidden;
+  z-index: 1001;
+}
+
+.shell-dropdown-menu.hidden {
+  display: none;
+}
+
+.shell-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  color: var(--shell-text-primary);
+  text-decoration: none;
+  font-size: 14px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.shell-dropdown-item:hover {
+  background: var(--shell-bg-hover);
+}
+
+.shell-dropdown-item.danger {
+  color: var(--shell-danger);
+}
+
+.shell-dropdown-divider {
+  height: 1px;
+  background: var(--shell-border);
+  border: none;
+  margin: 4px 0;
+}
+
+/* ==================== PAGE WRAPPER ==================== */
+.shell-page-wrapper {
+  min-height: 100vh;
+  padding-top: var(--shell-navbar-height);
+  background: var(--shell-bg-page);
+}
+
+@media (max-width: 640px) {
+  .shell-navbar-container {
+    gap: 10px;
+    padding: 0 12px;
+  }
+  .shell-search {
+    max-width: none;
+  }
+  .shell-logo-text {
+    display: none;
+  }
+}

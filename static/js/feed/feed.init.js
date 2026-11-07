@@ -595,6 +595,23 @@ document.addEventListener('DOMContentLoaded', async function () {
     if (window.location.pathname === '/student/profile/me') {
       navigateTo('profile');
     }
+
+    // Fix: several places in the app (the navbar's dropdown menu on
+    // search.html / profile-view.html in particular — see base.html)
+    // linked to standalone URLs like /student/leaderboard,
+    // /student/analytics, /student/connections and /student/notifications
+    // that have never existed as real page routes — those are sections
+    // INSIDE this single-page shell, reached only via navigateTo(), not
+    // separate pages. Every one of those links 404'd. Rather than build
+    // four redundant standalone pages that would drift out of sync with
+    // the real sections here, those links now point at
+    // /student/profile/homepage?section=<id>, and this reads that param
+    // once on load and opens straight to the requested section — same
+    // pattern as the /profile/me special-case above, generalized.
+    const requestedSection = new URLSearchParams(window.location.search).get('section');
+    if (requestedSection) {
+      navigateTo(requestedSection);
+    }
   } catch (error) {
     err('=== INITIALIZATION FAILED ===', error);
     alert('Failed to load feed: ' + error.message);

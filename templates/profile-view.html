@@ -1,0 +1,37 @@
+{% extends "shell_base.html" %}
+
+{#
+  Public profile page. See the long comment on view_profile_page() in
+  routes/student/profile.py for why this is a separate route/template
+  from the existing GET /profile/<username> JSON API, and the comment on
+  viewProfile() in static/js/feed/feed.utils.js for the two separate
+  bugs that made clicking a username go nowhere before this existed.
+
+  Switched from base.html to shell_base.html: base.html was dead code
+  with a light theme that doesn't match the app's real dark theme, and
+  several broken nav links (confirmed 404). See
+  static/css/shell/app-shell.css / static/js/shell/app-shell.js.
+
+  This page's username comes from the URL path itself
+  (/student/profile/view/<username>) rather than a query string — JS
+  reads it from window.location.pathname on load (see
+  profile-view.init.js).
+#}
+
+{% block title %}Profile — StudyHub{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/profile-view/profile-view.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="pv-page" id="pv-page">
+  <div id="pv-content">
+    <div class="pv-loading">Loading profile…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module" src="{{ url_for('static', filename='js/profile-view/profile-view.init.js') }}"></script>
+{% endblock %}

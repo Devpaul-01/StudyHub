@@ -1,0 +1,286 @@
+/* Dedicated post-detail page — dark theme, uses the --shell-* tokens from
+   static/css/shell/app-shell.css (loaded by shell_base.html). */
+
+.postv-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 4rem;
+  color: var(--shell-text-primary);
+}
+
+.postv-loading, .postv-error {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--shell-text-secondary);
+}
+
+.postv-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-card);
+  color: var(--shell-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.postv-back:hover { border-color: var(--shell-accent-border); color: var(--shell-text-primary); }
+
+/* ── Card ──────────────────────────────────────────────────────────────── */
+
+.postv-card {
+  background: var(--shell-bg-card);
+  border: 1px solid var(--shell-border-light);
+  border-radius: var(--shell-radius-lg);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.postv-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.postv-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--shell-bg-hover);
+  cursor: pointer;
+}
+
+.postv-author-block { flex: 1; min-width: 0; }
+
+.postv-author-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--shell-text-primary);
+  cursor: pointer;
+}
+
+.postv-author-name:hover { color: var(--shell-accent); }
+
+.postv-meta { font-size: 0.78rem; color: var(--shell-text-secondary); margin-top: 0.1rem; }
+
+.postv-badges { display: flex; gap: 0.5rem; margin-top: 0.4rem; flex-wrap: wrap; }
+
+.postv-badge {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.postv-badge-solved { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.postv-badge-type { background: var(--shell-accent-subtle); color: var(--shell-accent); text-transform: capitalize; }
+
+.postv-title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--shell-text-primary);
+  margin: 1rem 0 0.5rem;
+}
+
+.postv-text {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--shell-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.postv-tags { margin-top: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.postv-tag {
+  padding: 0.25rem 0.7rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  color: var(--shell-text-secondary);
+}
+
+.postv-resources { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem; }
+
+.postv-resource-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  color: var(--shell-text-primary);
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.postv-resource-link:hover { border-color: var(--shell-accent-border); }
+
+/* ── Action bar ────────────────────────────────────────────────────────── */
+
+.postv-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--shell-border-light);
+}
+
+.postv-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.postv-action-btn:hover { border-color: var(--shell-accent-border); color: var(--shell-text-primary); }
+
+.postv-action-btn.is-active {
+  background: var(--shell-accent-subtle);
+  border-color: var(--shell-accent-border);
+  color: var(--shell-accent);
+}
+
+.postv-action-btn[disabled] { opacity: 0.55; cursor: default; }
+
+.postv-solved-btn {
+  margin-left: auto;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #10b981;
+}
+
+/* ── Comments ──────────────────────────────────────────────────────────── */
+
+.postv-comments-section { margin-top: 1.25rem; }
+
+.postv-comments-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--shell-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.75rem;
+}
+
+.postv-comment-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.postv-comment-input {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-primary);
+  font-family: inherit;
+  font-size: 0.88rem;
+}
+
+.postv-comment-input::placeholder { color: var(--shell-text-meta); }
+.postv-comment-input:focus { outline: none; border-color: var(--shell-accent); background: var(--shell-bg-card); }
+
+.postv-comment-submit {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  padding: 0.6rem 1.1rem;
+  border: none;
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.postv-comment-submit:hover { background: var(--shell-accent-hover); }
+.postv-comment-submit[disabled] { opacity: 0.55; cursor: default; }
+
+.postv-comment {
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--shell-border-light);
+}
+
+.postv-comment:last-child { border-bottom: none; }
+
+.postv-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.postv-comment-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--shell-bg-hover);
+}
+
+.postv-comment-author { font-weight: 700; font-size: 0.85rem; color: var(--shell-text-primary); }
+.postv-comment-time { font-size: 0.72rem; color: var(--shell-text-meta); }
+
+.postv-comment-solution {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.18);
+  color: #10b981;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.postv-comment-body {
+  margin: 0.4rem 0 0 2.5rem;
+  font-size: 0.87rem;
+  line-height: 1.55;
+  color: var(--shell-text-primary);
+}
+
+.postv-comment-footer {
+  margin-left: 2.5rem;
+  margin-top: 0.35rem;
+  display: flex;
+  gap: 0.9rem;
+}
+
+.postv-comment-action {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--shell-text-secondary);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.postv-comment-action:hover { color: var(--shell-accent); }
+.postv-comment-action.is-active { color: var(--shell-accent); }
+
+.postv-replies { margin-left: 2.5rem; margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.6rem; }
+
+.postv-empty-comments { color: var(--shell-text-secondary); font-size: 0.85rem; padding: 0.5rem 0; }

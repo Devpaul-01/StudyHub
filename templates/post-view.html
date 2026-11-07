@@ -1,0 +1,31 @@
+{% extends "shell_base.html" %}
+
+{#
+  Dedicated single-post detail page. See the long comment on
+  view_post_page() in routes/student/posts/crud.py for why this exists as
+  its own page/route instead of duplicating full post UI (reactions,
+  comments, mark-solved) across search.html, profile-view.html, and
+  feed2.html's own profile section — it's built once here and linked to
+  from everywhere else a post appears outside the main feed.
+
+  Post id comes from the URL path itself (/student/posts/view/<id>), read
+  from window.location.pathname on load — see post-view.js.
+#}
+
+{% block title %}Post — StudyHub{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/post-view/post-view.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="postv-page" id="postv-page">
+  <div id="postv-content">
+    <div class="postv-loading">Loading post…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module" src="{{ url_for('static', filename='js/post-view/post-view.js') }}"></script>
+{% endblock %}

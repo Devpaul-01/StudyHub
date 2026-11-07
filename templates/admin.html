@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{#
+  Batch 5: admin panel. The four backing routes (health, scheduler,
+  ai-providers, reconciliation) already existed as a working JSON API —
+  see routes/admin.py — with no UI anywhere calling any of them.
+#}
+
+{% block title %}Admin — StudyHub{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin/admin.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="admin-page" id="admin-page">
+  <h1 class="admin-title">Admin Panel</h1>
+
+  <div class="admin-grid">
+
+    <div class="admin-card" id="admin-health-card">
+      <div class="admin-card-header">
+        <span>System Health</span>
+        <button class="admin-refresh-btn" data-action="admin-refresh-health">↻</button>
+      </div>
+      <div class="admin-card-body" id="admin-health-body">Loading…</div>
+    </div>
+
+    <div class="admin-card" id="admin-scheduler-card">
+      <div class="admin-card-header">
+        <span>Scheduler</span>
+        <button class="admin-refresh-btn" data-action="admin-refresh-scheduler">↻</button>
+      </div>
+      <div class="admin-card-body" id="admin-scheduler-body">Loading…</div>
+    </div>
+
+    <div class="admin-card" id="admin-providers-card">
+      <div class="admin-card-header">
+        <span>AI Providers</span>
+        <button class="admin-refresh-btn" data-action="admin-refresh-providers">↻</button>
+      </div>
+      <div class="admin-card-body" id="admin-providers-body">Loading…</div>
+    </div>
+
+    <div class="admin-card" id="admin-reconciliation-card">
+      <div class="admin-card-header"><span>Counter Reconciliation</span></div>
+      <div class="admin-card-body">
+        <p class="admin-card-desc">Manually re-run the job that fixes drifted counters (likes, comments, member counts, etc.) across the database.</p>
+        <button class="admin-action-btn" data-action="admin-run-reconciliation" id="admin-reconciliation-btn">Run Now</button>
+        <div id="admin-reconciliation-result" class="admin-result"></div>
+      </div>
+    </div>
+
+    <div class="admin-card" id="admin-leaderboard-card">
+      <div class="admin-card-header"><span>Leaderboard Snapshot</span></div>
+      <div class="admin-card-body">
+        <p class="admin-card-desc">Manually trigger a leaderboard snapshot (normally runs automatically on a weekly/monthly schedule).</p>
+        <div class="admin-btn-row">
+          <button class="admin-action-btn" data-action="admin-run-snapshot" data-type="weekly">Run Weekly</button>
+          <button class="admin-action-btn" data-action="admin-run-snapshot" data-type="monthly">Run Monthly</button>
+        </div>
+        <div id="admin-snapshot-result" class="admin-result"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Batch 5: moderation queue — GET/POST /admin/moderation/* are new
+       this batch (see routes/admin.py). Reports were being written
+       (post reports) or not persisted at all (message reports, fixed
+       this batch too) with nothing anywhere reviewing them. -->
+  <h2 class="admin-title" style="font-size:1.1rem;margin-top:2rem;">Moderation Queue</h2>
+
+  <div class="admin-mod-filters">
+    <select id="admin-mod-status-filter">
+      <option value="pending" selected>Pending</option>
+      <option value="reviewed">Reviewed</option>
+      <option value="all">All</option>
+    </select>
+    <select id="admin-mod-type-filter">
+      <option value="all" selected>All types</option>
+      <option value="post">Posts</option>
+      <option value="message">Messages</option>
+    </select>
+    <button class="admin-action-btn" data-action="admin-refresh-reports">Refresh</button>
+  </div>
+
+  <div id="admin-mod-reports" class="admin-mod-list">Loading…</div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module" src="{{ url_for('static', filename='js/admin/admin.init.js') }}"></script>
+{% endblock %}
