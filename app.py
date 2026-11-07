@@ -123,8 +123,7 @@ def create_app(config_class=None):
     # before Batch 5 — this call doesn't change that behavior, it just
     # makes initialize() actually get called so a real deployment with
     # real credentials in place would have this work for the first time.
-    from services.push_notifications import PushNotificationService
-    PushNotificationService.initialize(app)
+    
 
     # ========================================================================
     # CORS (AUDIT ENG-11)
