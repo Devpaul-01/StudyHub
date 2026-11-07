@@ -219,7 +219,7 @@ The role decorator answers "is this caller a student/admin at all" — it doesn'
 caller own this specific resource." That check happens per-domain in services instead:
 `connection_service.can_message` gates direct messaging behind a mutual-accept `Connection`;
 `thread_authorization.py` gates moderation actions inside a thread on membership/role; similar
-ownership checks exist per-resource for posts, homework assignments, and study sessions.
+ownership checks exist per-resource for posts and homework assignments.
 
 These are two deliberately separate layers. A valid student token proves who you are. It doesn't
 prove you're allowed to act on an arbitrary resource ID — that's a second check, every time.
