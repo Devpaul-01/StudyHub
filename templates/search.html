@@ -1,11 +1,15 @@
-{% extends "base.html" %}
+{% extends "shell_base.html" %}
 
 {#
-  Batch 4: this is the first page to ever extend base.html — see the
-  long comment on search_page() in routes/student/search.py for why that
-  matters (base.html was itself completely orphaned before this).
+  Switched from base.html to shell_base.html: base.html was dead code
+  (never rendered by anything before this page — see the old comment on
+  search_page() in routes/student/search.py) with a light theme that
+  doesn't match the app's real dark theme, and its navbar dropdown links
+  to several routes that 404 (confirmed against the running app).
+  shell_base.html fixes both. See static/css/shell/app-shell.css and
+  static/js/shell/app-shell.js for details.
 
-  base.html's #global-search input already redirects here
+  shell_base.html's #shell-search-input already redirects here
   (/student/search?q=...) on Enter; this page reads that ?q= (and
   ?type=, ?tags=, ?department=) on load and performs the search
   immediately, so landing here via the nav search bar actually shows

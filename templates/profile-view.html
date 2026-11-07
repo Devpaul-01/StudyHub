@@ -1,12 +1,16 @@
-{% extends "base.html" %}
+{% extends "shell_base.html" %}
 
 {#
-  Batch 4: public profile page. See the long comment on
-  view_profile_page() in routes/student/profile.py for why this is a
-  separate route/template from the existing GET /profile/<username> JSON
-  API, and the comment on viewProfile() in static/js/feed/feed.utils.js
-  for the two separate bugs that made clicking a username go nowhere
-  before this existed.
+  Public profile page. See the long comment on view_profile_page() in
+  routes/student/profile.py for why this is a separate route/template
+  from the existing GET /profile/<username> JSON API, and the comment on
+  viewProfile() in static/js/feed/feed.utils.js for the two separate
+  bugs that made clicking a username go nowhere before this existed.
+
+  Switched from base.html to shell_base.html: base.html was dead code
+  with a light theme that doesn't match the app's real dark theme, and
+  several broken nav links (confirmed 404). See
+  static/css/shell/app-shell.css / static/js/shell/app-shell.js.
 
   This page's username comes from the URL path itself
   (/student/profile/view/<username>) rather than a query string — JS
