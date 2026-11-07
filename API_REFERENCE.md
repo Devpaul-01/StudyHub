@@ -5,8 +5,8 @@ This covers the JSON HTTP API served by the Flask backend. It's the human-readab
 
 **What's not here:** routes that render HTML templates (login/register pages, onboarding page,
 profile page, the thread/learnora app shells, `/demo`, `/features`) — those aren't API calls.
-Socket.IO events (thread messaging, presence, typing, live-session sync) also aren't covered in
-detail; see the [WebSocket Events](#websocket-events) section at the end and `ARCHITECTURE.md`.
+Socket.IO events (thread messaging, presence, typing) also aren't covered in detail; see the
+[WebSocket Events](#websocket-events) section at the end and `ARCHITECTURE.md`.
 
 ## Conventions
 
@@ -68,8 +68,6 @@ file types are validated by extension only.
 - [Comments](#comments)
 - [Bookmarks](#bookmarks)
 - [Homework](#homework)
-- [Study Sessions](#study-sessions)
-- [Study Buddy](#study-buddy)
 - [Leaderboard](#leaderboard)
 - [Reputation](#reputation)
 - [Badges](#badges)
@@ -531,11 +529,6 @@ Accepted connections, capped at 200. **Auth:** required.
 ### `GET /student/connections/unseen/received` / `GET /student/connections/unseen/sent` / `GET /student/connections/unseen/all`
 Unseen-count badges for the connections UI. **Auth:** required.
 
-### `GET /student/study-sessions/unseen`
-Count of pending study-session requests addressed to you. (Named for a different underlying
-model historically — it counts `StudySessionCalendar` rows, not a `StudySession` table.)
-**Auth:** required.
-
 ### `POST /student/connections/mark-seen/{connection_id}` / `POST /student/connections/mark-received-seen` / `POST /student/connections/mark-sent-seen` / `POST /student/connections/mark-all-seen`
 Clear the various unseen badges. **Auth:** required.
 
@@ -609,7 +602,8 @@ if no AI provider is up — still a `200`, not an error.
 
 ### `GET /student/connections/{connection_id}/details`
 Full detail view: connection row, partner's public profile, mutual connections, shared threads,
-interaction metrics, a health score, and study-session history together. **Auth:** required
+interaction metrics, and a health score together (the response's `study_history` key is always
+an empty shape now — the study-sessions feature it covered has been removed). **Auth:** required
 (must be a party to the connection). **403** otherwise.
 
 ### `GET /student/connections/online?time_window=30` / `GET /student/connections/online/count` / `GET /student/connections/online/department`
@@ -1137,164 +1131,6 @@ Dashboard data — overall stats and chart-ready series (daily activity, subject
 reactions received, response time). **Auth:** required.
 
 ---
-
-## Study Sessions
-
-Two related but distinct systems: **scheduled** sessions (`study-session/*` — planned in advance,
-need confirmation) and **live** sessions (`live-session/*` — in-progress, real-time, with
-pomodoro timers, shared resources, and an AI assistant scoped to the session).
-
-### `POST /student/live-session/{session_id}/set-goal` / `.../update-progress` / `.../rate`
-Participant-only. **Auth:** required.
-
-- `set-goal` — `{ "session_goal": "Finish problems 1–10", "target_count": 10, "assignment_id": 7 }`.
-  All optional; `target_count` defaults to 0.
-- `update-progress` — `{ "completed_count": 4, "quick_note": "stuck on #3" }`. Both optional;
-  `quick_note` is appended to the session's notes with an `HH:MM` stamp, and a progress percentage
-  is derived from `target_count`. **400** if the session isn't active.
-- `rate` — `{ "rating": "thumbs_up" | "thumbs_down" }`. Only after the session has ended; **400**
-  otherwise, or for any other value. Each participant's rating is stored separately.
-
-### `POST /student/live-session/{session_id}/pomodoro/start` / `.../pomodoro/break`
-Start a fixed 25-minute focus cycle, or a fixed 5-minute break (no duration parameter). A break
-requires a focus cycle to be running (**400** otherwise) and increments the completed-cycle count.
-**Auth:** required, participant-only. **400** if the session isn't active.
-
-### `GET /student/study-session/templates`
-Pre-built session templates (subject/duration/structure presets). **Auth:** required.
-
-### `POST /student/study-session/schedule-with-template`
-Schedule using a template instead of specifying everything manually. `template_id` is one of
-`exam_prep`, `homework_help`, `concept_review`, `quick_study`.
-
-**Request:** `{ "template_id": "exam_prep", "partner_id": 45, "proposed_times": ["2026-09-25T18:00:00Z"], "title": "...", "subject": "..." }`
-(`title` defaults to the template name; `subject` is optional).
-
-**Auth:** required. **403** if `partner_id` isn't an accepted connection. **400** on a missing or
-unknown `template_id`/`partner_id`, or if no `proposed_times` parse.
-
-### `POST /student/live-session/{session_id}/link-assignment`
-Attach a homework assignment to a live session for context. **Auth:** required, participant-only.
-
-### `GET /student/study-session/{session_id}/details`
-**Auth:** required, participant-only.
-
-### `POST /student/study-session/{session_id}/reschedule`
-Edit a session you requested: `title`, `subject`, `description`, `duration_minutes`,
-`requester_notes`, `requester_resources`, `receiver_resources`, and/or `proposed_times` (1–10 ISO 8601
-times). Changing the set of proposed times flips a `confirmed` session to `rescheduled`, which needs
-the other party's re-confirmation; the response reports `times_changed` and the new `status`.
-
-**Auth:** required, requester-only (**403** otherwise). **400** if the session isn't `pending`,
-`confirmed` or `rescheduled`.
-
-### `POST /student/study-session/{session_id}/cancel` / `.../decline`
-`cancel` — requester-only (**403** otherwise); optional `{ "reason": "..." }`. `decline` — receiver-only;
-optional `{ "reason": "..." }`, and on an already-`confirmed` session it acts as a withdrawal. Both
-**400** unless the session is `pending`, `confirmed` or `rescheduled`. **Auth:** required.
-
-### `POST /student/study-session/request`
-**Request:**
-```json
-{
-  "receiver_id": 45,
-  "proposed_times": ["2026-09-25T18:00:00Z", "2026-09-26T18:00:00Z"],
-  "title": "Calculus review", "subject": "Calculus", "description": "",
-  "duration_minutes": 30, "resources": [], "notes": ""
-}
-```
-`receiver_id` and at least one parseable entry in `proposed_times` (max 10; unparseable entries are
-silently dropped) are required; `duration_minutes` defaults to 30.
-
-**Auth:** required. **403** if `receiver_id` isn't an accepted connection. **400** on a missing
-`receiver_id` or no valid times.
-
-### `POST /student/study-session/{session_id}/confirm`
-Receiver-only (**403** otherwise). **Request:** `{ "confirmed_time": "2026-09-25T18:00:00Z" }` — required,
-ISO 8601. **400** unless the session is `pending` or `rescheduled`. **Auth:** required.
-
-### `GET /student/study-session/upcoming` / `GET /student/study-session/all?status=...`
-Unpaginated lists. **Auth:** required.
-
-### `POST /student/live-session/start`
-Start an instant ad-hoc session with a connection, no scheduling. **Request:**
-`{ "partner_id": 45, "title": "Study Session", "subject": "Calculus" }` (`partner_id` required).
-**Auth:** required. **403** if not connected. **409** if you're already in an active session.
-
-### `GET /student/live-session/{session_id}` / `POST /student/live-session/{session_id}/end` / `.../cancel`
-**Auth:** required, participant-only.
-
-### `GET /student/live-session/{partner_id}/history`
-Past sessions with a specific partner, paginated. **Auth:** required.
-
-### `POST /student/live-session/{session_id}/ai/ask`
-Ask the AI a question scoped to the live session context. **Auth:** required, participant-only.
-**Rate limit:** `AI_EXPENSIVE`. **503** if AI's unavailable.
-
-### `GET /student/live-session/{session_id}/ai/history`
-**Auth:** required, participant-only.
-
-### `POST /student/live-session/{session_id}/resource/add` / `DELETE /student/live-session/{session_id}/resource/{resource_id}`
-Shared links/files within a live session. **Request:** `{ "url": "...", "name": "...", "type": "...", "size_bytes": 1024 }`
-— only `url` is required. **Auth:** required, participant-only.
-
----
-
-## Study Buddy
-
-A separate, preference-driven matching system from Connections — oriented around long-term study
-partnerships rather than general networking.
-
-### `POST /student/study-buddy/preferences` / `GET .../preferences` / `PATCH .../preferences`
-Matching preferences, stored on the user's metadata. Fields: `needs_help` and `good_at` (arrays, max 10
-each), `available_days`, `available_times`, `study_style` (arrays), and `goals` (string, max 500).
-
-`POST` saves a full set (replacing any existing one) and requires at least one of `needs_help` /
-`good_at` (**400** otherwise, or if either isn't an array); returns **201**. `PATCH` merges only the
-fields you send. `GET` returns `{}` if nothing is saved yet. **Auth:** required.
-
-### `GET /student/study-buddy/suggestions?limit=10`
-**Auth:** required. **400** if preferences aren't set.
-
-### `GET /student/study-buddy/suggestions/details/{user_id}`
-Detailed match breakdown for one suggested user. **Auth:** required.
-
-### `POST /student/study-buddy/request/{user_id}`
-**Auth:** required. **400** if you already have a pending/active match with them.
-
-### `GET /student/study-buddy/match/{match_id}`
-**Auth:** required, must be a party to the match.
-
-### `POST /student/study-buddy/session`
-Log a completed study session against an existing match — this records history and increments the
-match's session count; it does not schedule anything.
-
-**Request:** `{ "match_id": 12, "duration_minutes": 60, "subjects_covered": ["Physics"], "notes": "..." }`
-(`match_id` required; `duration_minutes` defaults to 60). **Auth:** required, must be a party to the
-match (**403** otherwise, **404** if it doesn't exist).
-
-### `GET /student/study-buddy/sessions`
-**Auth:** required.
-
-### `DELETE /student/study-buddy/remove/{match_id}`
-End an active match. **Auth:** required, must be a party.
-
-### `GET /student/study-buddy/requests/sent` / `.../received` / `.../connected`
-Sent requests, pending received requests (`{ "received_requests": [...], "total": N }`, each with the
-requester, `subjects`, `message`, `availability` (the requested days, as a list) and a computed `match_score`), and your matches
-(active first, then by match date), respectively. **Auth:** required.
-
-### `DELETE /student/study-buddy/cancel/{request_id}`
-Cancel a request you sent. **Auth:** required.
-
-### `GET /student/study-buddy/success-stories`
-Featured pairings. **Auth:** required.
-
-### `GET /student/study-buddy/stats`
-Program-wide stats. **Auth:** required.
-
----
-
 ## Leaderboard
 
 ### `GET /student/leaderboard/global?period=all_time&page=1&per_page=50`
@@ -1501,8 +1337,8 @@ one named setting rather than assigning a value: `{ "setting": "enable_notificat
 
 ## Learnora (AI Assistant)
 
-StudyHub's built-in AI chat assistant, separate from the post-level and session-level "ask AI"
-endpoints covered elsewhere.
+StudyHub's built-in AI chat assistant, separate from the post-level "ask AI" endpoint covered
+elsewhere.
 
 ### `POST /student/learnora/api/chat`
 Streams the response as **Server-Sent Events**. Creates a new conversation automatically if
@@ -1624,10 +1460,7 @@ returns an empty list and the current timestamp.
 ### Server pushes triggered by REST calls
 
 Some events are emitted by HTTP handlers rather than socket handlers: `thread_updated`,
-`thread_deleted` and `thread_joined` (thread edits, deletion and member adds), plus live-session
-events `session_goal_set`, `session_progress_updated`, `pomodoro_break_started`, `session_cancelled`
-(to the `live_session_{id}` room) and `study_session_declined` (to the requester's personal
-`user_{id}` room).
+`thread_deleted` and `thread_joined` (thread edits, deletion and member adds).
 
 Rate limits: thread messages default to 30 per 60s and thread AI actions to 10 per 300s per user, both
 tunable (see `THREAD_MSG_RATE_*` and `THREAD_AI_ACTION_RATE_*` in the README's environment table).
