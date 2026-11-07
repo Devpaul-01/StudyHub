@@ -52,6 +52,7 @@ from services.connection_service import (
 # Before this migration, notifications created via direct construction here
 # never triggered the increment, silently undercounting.
 from services import notification_service
+from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): send/accept/reject requests, help-broadcast/
 # volunteer, block-adjacent actions -> WRITE_HEAVY; mark-seen/status checks
 # -> BURST_OK; list/received/sent -> PUBLIC_READ; onboarding routes (no
@@ -1868,7 +1869,22 @@ def accept_connection(current_user, request_id):
         
         # Get requester info
         requester = User.query.get(connection.requester_id)
-        
+
+        # Activity feed: single row from the acceptor's side (current_user
+        # just "connected with" requester), not one per party — a party's
+        # own accepted connections are exactly who _broadcast_to_connections
+        # fans this out to, matching the "connections (both parties)" scope
+        # in the Live Activity design doc by reaching each side's own
+        # network, not by writing the row twice.
+        record_live_activity(
+            current_user.id,
+            'connection_accepted',
+            {
+                'other_user_id': requester.id,
+                'other_user_name': requester.name,
+            }
+        )
+
         return success_response(
             "Connection accepted",
             data={
