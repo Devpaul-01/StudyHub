@@ -27,6 +27,15 @@ record_live_activity needs the row's generated id and created_at before
 it can build the WebSocket payload, so the commit has to happen inside
 the function rather than being left to the caller.
 
+record_live_activity is the only function in this module (or anywhere
+else) that writes to ActivityFeed, and the only entry point for pushing
+its events over WebSocket — but "pushing the WebSocket event" is now two
+related paths, not one: _broadcast_to_connections (always, every call —
+the original _create_activity's entire behavior) and, additionally when
+scope="global", _broadcast_to_global_pulse, which sends an anonymized
+version (_anonymize_for_global) to anyone subscribed to the shared
+activity_pulse:global room, not just the actor's known connections.
+
 Consumers:
   - routes/student/homework_system.py::submit_solution — the existing
     caller, switched over from the old _create_activity in a follow-up
@@ -50,13 +59,32 @@ logger = logging.getLogger(__name__)
 ACTIVITY_EXPIRY_HOURS = 24
 
 
+# Activity types whose feed card needs the actor's real identity even on
+# the global/campus-pulse scope — e.g. user_signed_up's "Connect" button
+# needs a real user_id to send a connection request to. Every other
+# global-scope activity is anonymized (see _anonymize_for_global). Kept as
+# a small, explicit allowlist rather than a per-call flag, so adding a new
+# un-anonymized type later is a one-line, reviewable change here rather
+# than something a caller could opt into by accident.
+GLOBAL_SCOPE_IDENTITY_ALLOWED = frozenset({"user_signed_up"})
+
+
 def record_live_activity(
     user_id: int,
     activity_type: str,
     data: dict,
+    scope: str = "connections",
 ) -> ActivityFeed | None:
-    """Create an ActivityFeed entry and push it to the actor's accepted
-    connections over WebSocket. Auto-expires after ACTIVITY_EXPIRY_HOURS.
+    """Create an ActivityFeed entry and push it live over WebSocket.
+    Auto-expires after ACTIVITY_EXPIRY_HOURS.
+
+    scope="connections" (default): fan out via emit_to_user to the
+        actor's accepted connections only — this is the entire behavior
+        record_live_activity had before scope existed, unchanged here.
+    scope="global": do the above, AND ALSO broadcast an anonymized
+        version (see _anonymize_for_global) to the shared
+        "activity_pulse:global" room every subscribed client receives,
+        regardless of whether they're connected to the actor.
 
     Returns None, without writing anything, if the user has opted out via
     privacy_settings["show_in_activity_feed"] (default True — opt-out,
@@ -88,6 +116,8 @@ def record_live_activity(
         db.session.commit()
 
         _broadcast_to_connections(user_id, activity)
+        if scope == "global":
+            _broadcast_to_global_pulse(user, activity)
 
         return activity
     except Exception:
@@ -131,3 +161,63 @@ def _broadcast_to_connections(user_id: int, activity: ActivityFeed) -> None:
             conn.receiver_id if conn.requester_id == user_id else conn.requester_id
         )
         message_ws_manager.emit_to_user(other_id, "activity_feed_update", payload)
+
+
+def _broadcast_to_global_pulse(user: User, activity: ActivityFeed) -> None:
+    """Broadcast an anonymized version of `activity` to every socket
+    subscribed to the shared 'activity_pulse:global' room (see
+    services/websocket_messages.py's activity_feed:subscribe handler).
+
+    Imported locally for the same reason _broadcast_to_connections does.
+    """
+    from services.websocket_messages import message_ws_manager
+
+    message_ws_manager.emit_to_room(
+        "activity_pulse:global",
+        "activity_pulse_update",
+        _anonymize_for_global(user, activity),
+    )
+
+
+def _anonymize_for_global(user: User, activity: ActivityFeed) -> dict:
+    """Strip the actor's identity before broadcasting to strangers.
+
+    This is what makes the opt-out default (show_in_activity_feed=True)
+    safe to ship: a user who never opts out is still only ever *named* to
+    people they're actually connected with (_broadcast_to_connections,
+    which targets specific known recipients) — the global/campus-pulse
+    feed anyone can subscribe to gets department/subject-level aggregate
+    info only, never a name, by default.
+
+    The one deliberate exception is GLOBAL_SCOPE_IDENTITY_ALLOWED: a
+    user_signed_up card needs a real user_id for its "Connect" button to
+    send a connection request to, and a new member's name + department is
+    already public via Discovery search today (see
+    services/search_service.py's profile_private check, applied the same
+    way here) — there's no privacy reason to strip it, and stripping it
+    would leave the Connect button with nothing to act on. Still gated by
+    set_profile_private, same as Discovery, in case a user has that on.
+    """
+    data = activity.activity_data or {}
+
+    if activity.activity_type in GLOBAL_SCOPE_IDENTITY_ALLOWED:
+        profile_private = (user.privacy_settings or {}).get(
+            "set_profile_private", False
+        )
+        if not profile_private:
+            return {
+                "type": activity.activity_type,
+                "user_id": user.id,
+                "name": user.name,
+                "data": data,
+                "created_at": activity.created_at.isoformat(),
+            }
+        # profile_private wins even for an allowlisted type — fall through
+        # to the standard anonymized shape below.
+
+    return {
+        "type": activity.activity_type,
+        "subject": data.get("subject"),
+        "department": data.get("department"),
+        "created_at": activity.created_at.isoformat(),
+    }
