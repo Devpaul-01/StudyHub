@@ -11,13 +11,19 @@ zero socket ids -- every notification this module creates was correctly
 persisted to the DB but never actually pushed live. The same bug class
 was already fixed at three other call sites (routes/student/connections/
 crud.py, routes/student/homework_system.py,
-routes/student/study_sessions.py's _emit helper); this file was the one
+routes/student/study_sessions.py's _emit helper, since removed along
+with the rest of the study-sessions feature); this file was the one
 remaining call site still using the broken manager.
 
-These tests exist specifically so a future regression -- reintroducing a
-call through services.websocket_events.ws_manager, or silently dropping
-the broadcast call altogether -- fails loudly here instead of only
-showing up as "notifications don't arrive live in production."
+services/websocket_events.py (the module `ws_manager` lived in) has since
+been deleted entirely as unused legacy code, so the original regression
+this guarded against -- a future call reintroducing
+services.websocket_events.ws_manager -- is no longer something a mock
+patch can even target: there's no module left for `_broadcast()` to
+import from, so the only test below that asserted that path was never
+touched (by mock-patching it) has been removed, since `patch()` requires
+the target module to exist. What remains is coverage that _broadcast()
+correctly routes through services.websocket_messages.message_ws_manager.
 """
 
 from unittest.mock import patch, MagicMock
@@ -29,8 +35,7 @@ from models import Notification
 def test_notify_calls_message_ws_manager_emit_to_user(db_session, make_user):
     """The core regression guard: notify() must broadcast through
     services.websocket_messages.message_ws_manager (the genuinely
-    initialized manager), not services.websocket_events.ws_manager (which
-    is never initialized and silently no-ops)."""
+    initialized manager)."""
     user = make_user()
 
     with patch("services.websocket_messages.message_ws_manager") as mock_manager:
@@ -49,27 +54,6 @@ def test_notify_calls_message_ws_manager_emit_to_user(db_session, make_user):
     assert payload["title"] == "Test Title"
     assert payload["body"] == "Test body"
     assert payload["type"] == "test_type"
-
-
-def test_notify_never_imports_legacy_ws_manager(db_session, make_user):
-    """services.websocket_events.ws_manager must not be touched at all --
-    not just unused by assertion, but genuinely never imported from
-    _broadcast's code path. If this regresses, every notification in the
-    app silently stops reaching clients live again, exactly as before the
-    fix, with no exception and no visible symptom besides "it just
-    doesn't show up.\""""
-    user = make_user()
-
-    with patch("services.websocket_events.ws_manager") as legacy_mock, \
-         patch("services.websocket_messages.message_ws_manager"):
-        notification_service.notify(
-            user_id=user.id,
-            title="T",
-            body="B",
-            notification_type="test_type",
-        )
-
-    legacy_mock.emit_to_user.assert_not_called()
 
 
 def test_notify_persists_notification_even_if_broadcast_raises(db_session, make_user):

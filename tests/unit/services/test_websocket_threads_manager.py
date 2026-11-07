@@ -26,8 +26,8 @@ isolation with request/socketio/the ORM query objects mocked out, and had
 zero tests before this. This is a partial-coverage pass on a module
 flagged as a large gap in the codebase, not a claim of full coverage.
 
-services/websocket_events.py is explicitly out of scope (per product
-decision) and is not touched by this batch.
+services/websocket_events.py has since been deleted entirely as unused
+legacy code and is not touched by this batch.
 """
 
 from unittest.mock import Mock, patch
