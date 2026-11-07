@@ -8,7 +8,7 @@ See routes/student/posts/__init__.py for the sub-blueprint aggregation
 that re-exposes all routes under the same paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
+from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context, render_template
 import json
 from werkzeug.utils import secure_filename
 from sqlalchemy import or_, and_, func, desc
@@ -1408,6 +1408,32 @@ def quick_view_post(current_user, post_id):
         db.session.rollback()
         current_app.logger.error(f"Get post error: ", exc_info=True)
         return error_response("Failed to get post")
+
+@posts_crud_bp.route("/posts/view/<int:post_id>", methods=["GET"])
+@token_required
+def view_post_page(current_user, post_id):
+    """
+    Dedicated single-post detail PAGE (not a page before this — see the
+    long header comment this project's profile.py already has on
+    view_profile_page() for the matching precedent; this route follows
+    the same /<resource>/view/<id> convention so it doesn't collide with
+    the existing GET /posts/<id> JSON API directly below).
+
+    Before this page existed, a post opened from search.html or
+    profile-view.html could only show a lightweight read-only preview
+    modal (see the old search.preview.js), and feed2.html's own post
+    card UI (reactions, full comment thread, mark-solved, etc.) was never
+    reachable outside the main feed itself — not from search results, not
+    from another user's profile. This page gives posts one real,
+    shareable, fully-functional destination that both of those surfaces
+    (and the feed itself) can link to instead of duplicating that UI.
+
+    The page itself fetches GET /posts/<id> and GET /posts/<id>/comments
+    via the browser's own request (see static/js/post-view/post-view.js),
+    the same pattern profile-view.html and search.html already use.
+    """
+    return render_template("post-view.html")
+
 
 @posts_crud_bp.route("/posts/<int:post_id>", methods=["GET"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
