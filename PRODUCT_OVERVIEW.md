@@ -18,7 +18,7 @@ A new student signs up, completes onboarding (department, subjects, learning sty
 
 1. **The feed** — post a question, a resource, or a discussion; get help from peers, from an AI assistant, or both.
 2. **Homework** — track your own assignments, optionally share the hard ones for peer help, and see who's currently the fastest/most active helper this week.
-3. **People** — connections, threads, live co-study sessions, and direct messages, all gated by a real social graph rather than an open free-for-all.
+3. **People** — connections, threads, and direct messages, all gated by a real social graph rather than an open free-for-all.
 
 Reputation, badges, and leaderboard rank accumulate as a byproduct of using the platform normally — asking good questions, giving helpful answers, showing up consistently — rather than as a separate gamified layer bolted on top.
 
@@ -35,7 +35,6 @@ Reputation, badges, and leaderboard rank accumulate as a byproduct of using the 
 | **Threads** | Persistent group chats — course study groups, project teams, spun off from a post or created standalone |
 | **Direct Messages** | 1:1 chat, gated behind an accepted connection |
 | **Homework** | Personal assignment tracking + a peer-help marketplace layered on top |
-| **Live Study Sessions** | Synchronous, two-person co-study rooms with a shared timer and notepad |
 | **Learnora (AI)** | The platform's AI assistant, threaded through five distinct surfaces |
 | **Gamification** | Reputation, 18 badges, streaks, leaderboards, weekly champions |
 | **Notifications** | Real-time + persisted, across every domain above |
@@ -146,15 +145,7 @@ Smart suggestions surface automatically based on a student's current assignment 
 
 ---
 
-## 11. Live study sessions
-
-A synchronous, two-person co-study room: a shared notepad both participants can edit, a server-authoritative Pomodoro-style focus/break timer (state and elapsed time live on the server, not each client's local clock — so refreshing a tab or having your laptop sleep doesn't desync the timer from what your study partner sees), session templates (exam prep, homework help, concept review, quick sprint) that pre-fill a sensible duration and goal, and an AI assistant reachable from inside the session with the session's own notepad content as grounding context.
-
-Sessions can be scheduled in advance with multiple proposed times (a lightweight "does this time work" negotiation, not a full calendar integration) or started immediately. On completion, both participants can rate the session, and the full duration/notepad/topics-covered record persists for later reference.
-
----
-
-## 12. Gamification — reputation, badges, streaks, leaderboards
+## 11. Gamification — reputation, badges, streaks, leaderboards
 
 **Reputation** is an append-only ledger, not just a number — every point change is backed by an auditable `ReputationHistory` row recording the before/after value and the action that caused it (`ARCHITECTURE.md` §7). This isn't a cosmetic detail: it's what makes "why did my reputation change" answerable after the fact, and it's what makes the reputation total trustworthy as something other than a bare mutable counter that could silently drift.
 
@@ -172,7 +163,7 @@ Every reputation change behind these numbers is individually auditable, not just
 
 ---
 
-## 13. Notifications — synchronous UI, asynchronous reality
+## 12. Notifications — synchronous UI, asynchronous reality
 
 Nearly everything on the platform that happens to *you* — a connection request, a badge earned, a homework help offer, a thread `@mention`, a level-up — funnels through one notification service (`ARCHITECTURE.md` §10) that does three things every time, in the same call: writes a durable database row, atomically increments a Redis-backed unread counter, and attempts a best-effort real-time WebSocket push.
 
@@ -180,25 +171,25 @@ The product-facing guarantee this produces: **a notification is never lost becau
 
 ---
 
-## 14. Search
+## 13. Search
 
 Cross-domain search over users, posts, and threads from one entry point, with results grouped by type. Implementation detail and current limitations are covered in [`ARCHITECTURE.md` §5.6](ARCHITECTURE.md#56-two-honest-gaps-tables-that-exist-but-arent-load-bearing).
 
 ---
 
-## 15. Administration & moderation
+## 14. Administration & moderation
 
 An admin-only panel (gated by role, not by a hidden URL) surfaces platform health directly: current scheduler-lock status, AI provider health state, and a manual trigger for the denormalized-count reconciliation job outside its normal weekly schedule — genuinely useful for verifying a fix without waiting for the next scheduled tick. Reported posts and user warnings feed a real moderation queue, not a placeholder table.
 
 ---
 
-## 16. How the product domains map onto the architecture
+## 15. How the product domains map onto the architecture
 
 Most of what makes these features feel fast and reliable isn't visible in the product itself — it's the engineering underneath, documented in full in `ARCHITECTURE.md`:
 
 - Every domain above that shows a **live status indicator** (thread delivery ticks, "who's online," typing indicators) is backed by Redis-coordinated presence tracking that's correct across multiple app server instances, not a single process's best guess (`ARCHITECTURE.md` §14).
 - Every domain with a **denormalized count** (comments, bookmarks, thread members) has a weekly reconciliation job checking it against ground truth, with the auto-correct-vs-alert decision made per counter based on what the count actually gates (`ARCHITECTURE.md` §8, `BACKGROUND_JOBS.md` §2.2).
-- Every **AI-touching surface** — posts, threads, standalone chat, live sessions — shares one failure-classified retry engine rather than five independent implementations (`ARCHITECTURE.md` §11).
+- Every **AI-touching surface** — posts, threads, standalone chat — shares one failure-classified retry engine rather than five independent implementations (`ARCHITECTURE.md` §11).
 - Every **notification-producing action** across every domain funnels through the same durable-write-plus-best-effort-push pattern (`ARCHITECTURE.md` §10).
 
 The product surface is intentionally broad — social, content, homework, gamification, AI, real-time — but it's built on a comparatively small number of shared mechanisms reused consistently across domains, rather than each feature reinventing its own version of caching, notification delivery, or failure handling.
