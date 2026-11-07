@@ -33,6 +33,7 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key
 # services/auth_service.py (Document 2 §3.10); notification construction
 # goes through services/notification_service.py (Document 2 §3.9).
 from services import auth_service, notification_service
+from services.activity_service import record_live_activity
 from errors import ValidationError
 
 auth_bp = Blueprint("student_auth", __name__)
@@ -1445,6 +1446,25 @@ def complete_registration():
             student_profile.status   = "active"
 
         db.session.commit()
+
+        # Activity feed: fire only now, not in register() — this is the
+        # point a user actually becomes a real, connectable member
+        # (status="approved"), not when the pending_verification row was
+        # first created several steps earlier. scope="global" since a
+        # brand-new user has no connections yet for the default
+        # connections-only fan-out to reach; user_signed_up is also the
+        # one activity type anonymize_for_global passes identity through
+        # for, since a "Connect" button needs a real user_id to act on.
+        record_live_activity(
+            user.id,
+            'user_signed_up',
+            {
+                'name': user.name,
+                'department': student_profile.department if student_profile else None,
+                'avatar': user.avatar,
+            },
+            scope='global',
+        )
 
         # Auth-flow-audit fix (Finding #5): this is the final step of the
         # onboarding chain (account now "approved") — clear any leftover
