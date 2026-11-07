@@ -700,6 +700,31 @@ def open_thread(current_user):
 # GET SINGLE THREAD
 # ============================================================================
 
+@threads_discovery_bp.route("/threads/view/<int:thread_id>", methods=["GET"])
+@token_required
+def view_thread_page(current_user, thread_id):
+    """
+    Dedicated single-thread detail PAGE — same /<resource>/view/<id>
+    convention as /posts/view/<id> and the pre-existing
+    /profile/view/<username>, so it doesn't collide with the existing
+    GET /threads/<id> JSON API directly below.
+
+    Before this page existed, a thread opened from search.html could
+    only show a read-only preview modal with no join/apply button at all
+    (the old search.preview.js's showThreadPreview() literally said "This
+    is a read-only preview. To join or message this thread, find it in
+    the Threads section" — there was no way to apply from search). This
+    page gives threads a real destination with the actual join flow
+    (POST /threads/<id>/join, the same endpoint thread.delegation.js's
+    'thread-join' action already uses inside the main app) wired up.
+
+    The page fetches GET /threads/<id> via the browser's own request
+    (see static/js/thread-view/thread-view.js), the same pattern
+    profile-view.html and search.html already use.
+    """
+    return render_template("thread-view.html")
+
+
 @threads_discovery_bp.route("/threads/<int:thread_id>", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
