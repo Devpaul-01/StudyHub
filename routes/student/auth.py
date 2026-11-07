@@ -90,6 +90,7 @@ privacy_settings = {
     "show_active_status": True,
     "set_dark_mode": False,
     "send_weekly_notification": True,   # FIX: was "send_weeekly_notifications" (typo + wrong key)
+    "show_in_activity_feed": True,      # opt-out for the Live Activity feed (services/activity_service.py)
 }
 
 # ============================================================================

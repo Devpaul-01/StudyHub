@@ -920,11 +920,13 @@ def visibility_settings(current_user):
         show_active_status       = data.get("show_active_status",       True)
         dark_mode                = data.get("set_dark_mode",            False)
         send_weekly_notification = data.get("send_weekly_notification", True)
+        show_in_activity_feed    = data.get("show_in_activity_feed",    True)
 
         privacy["set_profile_private"]     = profile_private
         privacy["show_active_status"]      = show_active_status
         privacy["set_dark_mode"]           = dark_mode
         privacy["send_weekly_notification"] = send_weekly_notification
+        privacy["show_in_activity_feed"]   = show_in_activity_feed
 
         user.privacy_settings = privacy
         db.session.commit()
@@ -952,6 +954,10 @@ def get_visibility_settings(current_user):
         dark_mode                = privacy.get("set_dark_mode",            False)
         # FIX: variable was named weekly_notifications but used as weekly_summary → unified
         send_weekly_notification = privacy.get("send_weekly_notification", True)
+        # Opt-out for the Live Activity feed (services/activity_service.py).
+        # Defaults True (opt-out, not opt-in) to match existing users whose
+        # stored privacy_settings predate this key.
+        show_in_activity_feed    = privacy.get("show_in_activity_feed",    True)
 
         return jsonify({
             "status": "success",
@@ -960,6 +966,7 @@ def get_visibility_settings(current_user):
                 "show_active_status":      show_active_status,
                 "set_dark_mode":           dark_mode,
                 "send_weekly_notification": send_weekly_notification,  # FIX: was weekly_summary (NameError)
+                "show_in_activity_feed":   show_in_activity_feed,
             },
         })
 
