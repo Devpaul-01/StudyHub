@@ -18,7 +18,7 @@ loaded = load_dotenv()
 import random
 import json
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_migrate import Migrate
 from sqlalchemy import text
@@ -107,6 +107,24 @@ def create_app(config_class=None):
     # services/error_tracking.py's own docstring; this call never raises.
     from services.error_tracking import init_app as init_sentry
     init_sentry(app)
+
+    # Batch 5: Firebase Cloud Messaging — services/push_notifications.py's
+    # PushNotificationService was a complete, already-working wrapper
+    # (send_notification/send_multicast, already called in several places
+    # such as routes/student/connections/crud.py for connection-request
+    # alerts) whose initialize() was never actually called anywhere in
+    # this file. Every one of those existing send calls has silently been
+    # a no-op all along — send_notification() checks
+    # PushNotificationService._initialized and returns False immediately
+    # if it's not. Like Sentry above, this fails open: with no
+    # firebase-credentials.json present (the common case in dev, and in
+    # any environment without real Firebase project credentials),
+    # initialize() logs a warning and returns, exactly as it already did
+    # before Batch 5 — this call doesn't change that behavior, it just
+    # makes initialize() actually get called so a real deployment with
+    # real credentials in place would have this work for the first time.
+    from services.push_notifications import PushNotificationService
+    PushNotificationService.initialize(app)
 
     # ========================================================================
     # CORS (AUDIT ENG-11)
@@ -392,6 +410,21 @@ def create_app(config_class=None):
     def home():
         """Landing page"""
         return render_template("index.html")
+
+    # Batch 5: Firebase's service worker must be served from the site
+    # root (or carry a Service-Worker-Allowed header) to be allowed to
+    # control pages outside its own directory — a worker served from the
+    # default /static/... path would only ever have scope over
+    # /static/*, which is useless for showing notifications while the
+    # user is on any other page. Flask's default static handler can't
+    # serve a file at the bare root path, so this is a small dedicated
+    # route rather than a change to the app's static folder config.
+    @app.route("/firebase-messaging-sw.js")
+    def firebase_messaging_sw():
+        return send_from_directory(
+            app.static_folder, "firebase-messaging-sw.js",
+            mimetype="application/javascript",
+        )
 
     @app.route("/api/track-visit", methods=["POST"])
     @limiter.limit(RateLimitTier.BURST_OK, key_func=ip_key)

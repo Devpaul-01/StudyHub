@@ -232,6 +232,18 @@ token_required = role_required("student")
 # was the original (dead) inline check's role set in badges.py/reputation.py.
 admin_required = role_required("admin", "system")
 
+# Batch 5: for moderation-queue routes specifically, where "moderator" is
+# the natural primary user — not just a secondary admin capability.
+# Mirrors the existing admin/moderator split already established by
+# POST /leaderboard/snapshot's inline role check in
+# routes/student/leaderboard.py (role_required("admin", "moderator")
+# there, same two roles), the one existing precedent for a
+# moderator-accessible operator endpoint. Deliberately does NOT include
+# "system" the way admin_required does — a moderator reviewing reports
+# is a human reviewing human-submitted content, not a service account
+# acting on its own behalf.
+moderator_required = role_required("admin", "moderator")
+
 
 # ============================================================================
 # AUTH COOKIES  (Document 3 §1 — H-1 cookie redesign, §2 — CSRF cookie)
