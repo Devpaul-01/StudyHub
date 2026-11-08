@@ -163,11 +163,25 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
 
     old_level = get_reputation_level(reputation_before)
     new_level = get_reputation_level(user.reputation)
+    leveled_up = old_level["name"] != new_level["name"]
 
-    if old_level["name"] != new_level["name"]:
+    if leveled_up:
         # notify_level_up() calls db.session.add() + flush() only — it does
         # not commit, matching this function's own no-commit convention.
         notification_service.notify_level_up(user_id, new_level)
+
+    # Live-Activity addition: expose the level-up this function was
+    # already computing (leveled_up, above) to callers, as plain
+    # attributes on the ReputationHistory row rather than changing the
+    # return type — every existing caller currently discards the return
+    # value entirely (confirmed by reading all four call sites), so this
+    # is additive and doesn't risk breaking anything that pattern-matches
+    # or type-checks the old shape. A caller that wants to fire a
+    # reputation_level_up activity only on an actual level-up checks
+    # history.leveled_up; new_level_name is there so it doesn't need a
+    # second get_reputation_level(user.reputation) call to get the name.
+    history.leveled_up = leveled_up
+    history.new_level_name = new_level["name"] if leveled_up else None
 
     return history
 
