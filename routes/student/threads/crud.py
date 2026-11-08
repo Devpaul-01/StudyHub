@@ -36,6 +36,7 @@ from errors import ValidationError
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
 from services import notification_service
+from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): WRITE_HEAVY for thread create/update/delete/
 # settings mutations.
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
@@ -154,6 +155,18 @@ def create_thread(current_user):
 
         db.session.commit()
 
+        record_live_activity(
+            current_user.id,
+            'thread_created',
+            {
+                'thread_id': new_thread.id,
+                'thread_title': new_thread.title,
+                'department': new_thread.department,
+                'is_open': new_thread.is_open,
+            },
+            scope='global',
+        )
+
         return success_response(
             "Thread created successfully!",
             data={
@@ -262,6 +275,18 @@ def create_standalone_thread(current_user):
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
         db.session.commit()
+
+        record_live_activity(
+            current_user.id,
+            'thread_created',
+            {
+                'thread_id': new_thread.id,
+                'thread_title': new_thread.title,
+                'department': new_thread.department,
+                'is_open': new_thread.is_open,
+            },
+            scope='global',
+        )
 
         return success_response(
             "Standalone thread created!",
