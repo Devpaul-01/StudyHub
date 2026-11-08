@@ -33,6 +33,7 @@ from routes.student.helpers import (
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
 from services import notification_service
+from services.activity_service import record_live_activity
 # AUDIT BUG-5 FIX: require_moderator_or_creator raises AuthorizationError
 # (errors.py) on a failed permission check. Every route below wraps its
 # whole body in `except Exception`, which — because Python resolves the
@@ -94,6 +95,16 @@ def leave_thread(current_user, thread_id):
             related_id=thread_id,
         )
         db.session.commit()
+
+        record_live_activity(
+            current_user.id,
+            'thread_left',
+            {
+                'thread_id': thread_id,
+                'thread_title': thread.title,
+            }
+        )
+
         return success_response("You left the thread")
 
     except Exception as e:
@@ -599,6 +610,23 @@ def approve_join_request(current_user, thread_id, request_id):
             )
 
         requester = User.query.get(user_id)
+
+        # Live Activity: from the new member's side (thread_joined is
+        # about them joining, not about the approver approving), alongside
+        # the thread_ws_manager broadcasts above rather than replacing
+        # them — those push live thread-UI state (member list, unread
+        # badge), this is the separate, lower-frequency feed event.
+        record_live_activity(
+            user_id,
+            'thread_joined',
+            {
+                'thread_id': thread_id,
+                'thread_title': thread.title,
+                'department': thread.department,
+            },
+            scope='global',
+        )
+
         return success_response(
             "Join request approved",
             data={"new_member": {
@@ -886,6 +914,21 @@ def accept_thread_invite(current_user, invite_id):
             current_app.logger.warning(
                 f"[ACCEPT_INVITE_WS_FAILED] thread_id={thread.id} error={ws_err!r}"
             )
+
+        # Live Activity: same thread_joined type as approve_join_request's
+        # request-based path above — this is the invite-based path, fired
+        # from current_user (the one accepting), who already has the
+        # thread's full details in scope here.
+        record_live_activity(
+            current_user.id,
+            'thread_joined',
+            {
+                'thread_id': thread.id,
+                'thread_title': thread.title,
+                'department': thread.department,
+            },
+            scope='global',
+        )
 
         return success_response(
             "Invitation accepted! You're now a member.",
