@@ -113,6 +113,7 @@ from services import presence_service
 # `_tms.SomeError` references below short and visually distinct from this
 # file's own `_`-prefixed local helpers (_is_member, _sanitize, etc.).
 from services import thread_message_service as _tms
+from services.activity_service import record_live_activity
 
 from extensions import db
 from models import (
@@ -1560,6 +1561,28 @@ class ThreadWebSocketManager:
                     "text":       msg.text_content[:120],
                     "sender":     sender.name if sender else "Unknown"
                 })
+
+                # Live Activity: the one activity type in this codebase
+                # triggered from a Socket.IO handler rather than a Flask
+                # route — there is no REST equivalent for pinning (see the
+                # design doc's note on this). Placed right after
+                # broadcast_to_thread above, inside this same try block,
+                # same reasoning as every record_live_activity call in
+                # Flask routes elsewhere: only after the real operation
+                # (msg.is_pinned / db.session.commit a few lines up) has
+                # actually succeeded.
+                pin_thread = Thread.query.get(msg.thread_id)
+                record_live_activity(
+                    user_id,
+                    'message_pinned',
+                    {
+                        'thread_id': msg.thread_id,
+                        'thread_title': pin_thread.title if pin_thread else None,
+                        'department': pin_thread.department if pin_thread else None,
+                        'message_preview': msg.text_content[:120],
+                    },
+                    scope='global',
+                )
 
             except Exception as e:
                 current_app.logger.error(
