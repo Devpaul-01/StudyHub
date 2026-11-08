@@ -459,6 +459,16 @@ def broadcast_help_request(current_user):
 
         if not connection_ids:
             db.session.commit()
+
+            record_live_activity(
+                current_user.id,
+                'help_request_broadcast',
+                {
+                    'help_request_id': help_request.id,
+                    'subject': subject,
+                }
+            )
+
             return jsonify({
                 "status": "success",
                 "data": {
@@ -534,6 +544,15 @@ def broadcast_help_request(current_user):
 
         help_request.broadcast_sent = True
         db.session.commit()
+
+        record_live_activity(
+            current_user.id,
+            'help_request_broadcast',
+            {
+                'help_request_id': help_request.id,
+                'subject': subject,
+            }
+        )
 
         return jsonify({
             "status": "success",
