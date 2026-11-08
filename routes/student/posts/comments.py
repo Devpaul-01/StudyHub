@@ -47,6 +47,7 @@ from services.post_service import (
     update_user_activity,
 )
 from services import notification_service
+from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): like_comment/mark_comment_helpful -> BURST_OK
 # (low-risk, high-frequency); create/edit/delete comment, mark/unmark
 # solution -> WRITE_HEAVY; comment list/replies GETs -> BURST_OK.
@@ -157,6 +158,7 @@ def mark_solution(current_user, post_id):
         
         
         commenter = User.query.get(comment.student_id)
+        reputation_result = None
         if commenter and commenter.id != current_user.id:
             from routes.student.reputation import award_reputation
             # Document 2 §5: award_reputation() no longer commits internally.
@@ -164,12 +166,31 @@ def mark_solution(current_user, post_id):
             # db.session.commit() a few lines below covers this change too,
             # as one transaction alongside the solution-marking and
             # notification writes.
-            award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
+            reputation_result = award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
             
             # ✅ Check badge milestones
+            # check_and_award_badge commits internally (commit=True default,
+            # a deliberate exception to the "services don't commit"
+            # convention — see its own docstring), so each of these is
+            # already a separate, already-committed transaction by the time
+            # it returns. badge_earned activities fire right after each
+            # call below, not batched with the solution-marking activity
+            # after this route's own later commit — that matches the
+            # already-committed state each call leaves behind instead of
+            # pretending they're still part of one pending transaction.
             from services import badge_service
-            badge_service.check_and_award_badge(commenter.id, "Problem Solver")
-            badge_service.check_and_award_badge(commenter.id, "Genius")
+            for badge_name in ("Problem Solver", "Genius"):
+                awarded_badge = badge_service.check_and_award_badge(commenter.id, badge_name)
+                if awarded_badge is not None:
+                    record_live_activity(
+                        commenter.id,
+                        'badge_earned',
+                        {
+                            'badge_id': awarded_badge.badge_id,
+                            'badge_name': badge_name,
+                        },
+                        scope='global',
+                    )
             
             # Notify commenter
             # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
@@ -185,7 +206,27 @@ def mark_solution(current_user, post_id):
             )
         
         db.session.commit()
-        
+
+        if commenter and commenter.id != current_user.id:
+            record_live_activity(
+                commenter.id,
+                'answer_marked_solution',
+                {
+                    'post_id': post_id,
+                    'post_title': post.title,
+                    'comment_id': comment_id,
+                },
+                scope='global',
+            )
+
+            if reputation_result is not None and getattr(reputation_result, 'leveled_up', False):
+                record_live_activity(
+                    commenter.id,
+                    'reputation_level_up',
+                    {'new_level_name': reputation_result.new_level_name},
+                    scope='global',
+                )
+
         return success_response(
             "Post marked as solved",
             data={
