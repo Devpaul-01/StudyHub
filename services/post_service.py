@@ -222,6 +222,20 @@ def check_helpful_milestones(user_id):
     Moved from posts.py in the Phase 1 remediation pass now that
     services/badge_service.py exists — calls badge_service directly
     instead of importing routes.student.badges.
+
+    LIVE ACTIVITY NOTE: this function currently has zero call sites
+    anywhere in the app (confirmed by grepping every .py file for
+    check_helpful_milestones( outside this definition and its own unit
+    tests) — react_to_post, the route this was presumably meant to be
+    called from, never invokes it. That's a pre-existing gap, not
+    something introduced or being silently fixed here; it's out of scope
+    for the Live Activity backend work this change belongs to. The
+    badge_earned activity call below is wired in so it's correct and
+    ready the moment this function does get a real caller, matching
+    mark_solution's badge_earned wiring (routes/student/posts/comments.py)
+    — but until something actually calls check_helpful_milestones, this
+    activity type can never fire in production, same as the badges
+    themselves can never be awarded.
     """
     user = User.query.get(user_id)
     if not user:
@@ -234,10 +248,29 @@ def check_helpful_milestones(user_id):
     ).count()
 
     # Check badge criteria
+    badge_name = None
     if helpful_count == 10:
-        badge_service.check_and_award_badge(user_id, "Helpful Contributor")
+        badge_name = "Helpful Contributor"
     elif helpful_count == 50:
-        badge_service.check_and_award_badge(user_id, "Helpful Hero")
+        badge_name = "Helpful Hero"
+
+    if badge_name:
+        awarded_badge = badge_service.check_and_award_badge(user_id, badge_name)
+        # check_and_award_badge commits internally (commit=True default —
+        # see its own docstring), so by the time it returns this is
+        # already a separately-committed transaction, same reasoning as
+        # mark_solution's badge_earned wiring.
+        if awarded_badge is not None:
+            from services.activity_service import record_live_activity
+            record_live_activity(
+                user_id,
+                'badge_earned',
+                {
+                    'badge_id': awarded_badge.badge_id,
+                    'badge_name': badge_name,
+                },
+                scope='global',
+            )
 
 
 @cached("popular_tags", ttl_seconds=300)

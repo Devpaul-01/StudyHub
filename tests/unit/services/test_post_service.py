@@ -16,7 +16,7 @@ a testing mistake.
 """
 
 import datetime
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import pytest
 
@@ -219,10 +219,19 @@ def test_check_helpful_milestones_exactly_10_awards_contributor_badge(db_session
         db_session.add(PostReaction(post_id=post.id, student_id=make_user().id, reaction_type="helpful"))
     db_session.flush()
 
-    with patch("services.post_service.badge_service.check_and_award_badge") as mock_award:
+    # check_and_award_badge mocked with return_value=None (an unconfigured
+    # MagicMock is truthy and not None by default) so the new
+    # badge_earned activity call this function makes when a badge is
+    # actually awarded does NOT fire here — this test is about the badge
+    # milestone logic, not Live Activity, and a real
+    # record_live_activity() call would attempt a real DB write that
+    # doesn't belong in this unit test.
+    with patch("services.post_service.badge_service.check_and_award_badge", return_value=None) as mock_award, \
+         patch("services.activity_service.record_live_activity") as mock_activity:
         post_service.check_helpful_milestones(user.id)
 
     mock_award.assert_called_once_with(user.id, "Helpful Contributor")
+    mock_activity.assert_not_called()
 
 
 def test_check_helpful_milestones_exactly_50_awards_hero_badge(db_session, make_user, make_post):
@@ -232,10 +241,42 @@ def test_check_helpful_milestones_exactly_50_awards_hero_badge(db_session, make_
         db_session.add(PostReaction(post_id=post.id, student_id=make_user().id, reaction_type="helpful"))
     db_session.flush()
 
-    with patch("services.post_service.badge_service.check_and_award_badge") as mock_award:
+    with patch("services.post_service.badge_service.check_and_award_badge", return_value=None) as mock_award, \
+         patch("services.activity_service.record_live_activity") as mock_activity:
         post_service.check_helpful_milestones(user.id)
 
     mock_award.assert_called_once_with(user.id, "Helpful Hero")
+    mock_activity.assert_not_called()
+
+
+def test_check_helpful_milestones_records_activity_when_badge_awarded(db_session, make_user, make_post):
+    """
+    Companion to the two tests above: when check_and_award_badge DOES
+    return an awarded UserBadge (rather than None for "already earned" or
+    "doesn't qualify"), check_helpful_milestones should call
+    record_live_activity with that badge's id/name. The two tests above
+    intentionally mock check_and_award_badge to return None so they stay
+    focused on milestone-count logic; this test is the one that actually
+    exercises the new activity-recording branch.
+    """
+    user = make_user()
+    post = make_post(user)
+    for _ in range(10):
+        db_session.add(PostReaction(post_id=post.id, student_id=make_user().id, reaction_type="helpful"))
+    db_session.flush()
+
+    fake_badge = Mock(badge_id=42)
+
+    with patch("services.post_service.badge_service.check_and_award_badge", return_value=fake_badge), \
+         patch("services.activity_service.record_live_activity") as mock_activity:
+        post_service.check_helpful_milestones(user.id)
+
+    mock_activity.assert_called_once_with(
+        user.id,
+        'badge_earned',
+        {'badge_id': 42, 'badge_name': 'Helpful Contributor'},
+        scope='global',
+    )
 
 
 def test_check_helpful_milestones_past_threshold_no_retrigger(db_session, make_user, make_post):
