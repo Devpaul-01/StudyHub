@@ -280,6 +280,9 @@ function render() {
         <button class="postv-action-btn ${userInteraction.bookmarked ? 'is-active' : ''}" id="postv-bookmark-btn">
           🔖 ${userInteraction.bookmarked ? 'Saved' : 'Save'}
         </button>
+        <button class="postv-action-btn" id="postv-share-btn">
+          🔗 Share
+        </button>
         ${permissions.can_mark_solved && canSolveType ? `
           <button class="postv-action-btn postv-solved-btn" id="postv-solved-btn">
             ${post.is_solved ? 'Unmark solved' : 'Mark solved'}
@@ -355,6 +358,7 @@ function render() {
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
   $('postv-bookmark-btn')?.addEventListener('click', handleBookmark);
+  $('postv-share-btn')?.addEventListener('click', handleSharePost);
   $('postv-solved-btn')?.addEventListener('click', handleToggleSolved);
   $('postv-comment-focus-btn')?.addEventListener('click', () => $('postv-comment-input')?.focus());
   $('postv-comment-submit')?.addEventListener('click', handleSubmitComment);
@@ -588,6 +592,31 @@ async function handleBookmark() {
     showToast('Could not update bookmark.', 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function handleSharePost() {
+  const postId = getPostId();
+  const url = `${window.location.origin}/student/posts/view/${postId}`;
+  const title = state.post?.title || 'Check out this post on StudyHub';
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, url });
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        console.error('[post-view] Share failed:', error);
+      }
+    }
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Link copied to clipboard!', 'success');
+  } catch (error) {
+    console.error('[post-view] Clipboard copy failed:', error);
+    showToast('Could not copy link.', 'error');
   }
 }
 
