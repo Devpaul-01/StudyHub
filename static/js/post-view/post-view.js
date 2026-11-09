@@ -685,6 +685,15 @@ function commentHtml(c, postId) {
         <span class="postv-comment-author">${escapeHtml(c.author?.name || 'Anonymous')}</span>
         <span class="postv-comment-time">${formatTime(c.posted_at)}</span>
         ${c.is_solution ? `<span class="postv-comment-solution">✓ Solution</span>` : ''}
+        ${c.is_you ? `
+          <div class="postv-comment-options-wrap">
+            <button class="postv-comment-options-btn" data-action="toggle-comment-options" data-comment-id="${c.id}" aria-label="Comment options">⋮</button>
+            <div class="postv-comment-options-menu hidden" id="postv-comment-options-${c.id}">
+              <button class="postv-options-item" data-action="copy-comment-link" data-comment-id="${c.id}">🔗 Copy link</button>
+              <button class="postv-options-item postv-options-item-danger" data-action="delete-comment" data-comment-id="${c.id}">🗑️ Delete</button>
+            </div>
+          </div>
+        ` : ''}
       </div>
       <div class="postv-comment-body">${escapeHtml(c.text_content)}</div>
       ${commentResourcesHtml(c.resources, c.id)}
@@ -729,6 +738,52 @@ function renderComments() {
   list.querySelectorAll('[data-action="unmark-solution"]').forEach(btn => {
     btn.addEventListener('click', () => handleUnmarkSolution(btn.dataset.commentId));
   });
+  list.querySelectorAll('[data-action="toggle-comment-options"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = $(`postv-comment-options-${btn.dataset.commentId}`);
+      const isOpen = !menu?.classList.contains('hidden');
+      // Close any other open comment menus first.
+      list.querySelectorAll('.postv-comment-options-menu').forEach(m => m.classList.add('hidden'));
+      if (!isOpen) menu?.classList.remove('hidden');
+    });
+  });
+  list.querySelectorAll('[data-action="copy-comment-link"]').forEach(btn => {
+    btn.addEventListener('click', () => handleCopyCommentLink(btn.dataset.commentId));
+  });
+  list.querySelectorAll('[data-action="delete-comment"]').forEach(btn => {
+    btn.addEventListener('click', () => handleDeleteComment(btn.dataset.commentId));
+  });
+}
+
+// Closes any open comment options menu on an outside click. Registered once
+// (not inside renderComments, which re-runs on every comment reload) to
+// avoid stacking duplicate document-level listeners.
+document.addEventListener('click', () => {
+  document.querySelectorAll('.postv-comment-options-menu').forEach(m => m.classList.add('hidden'));
+});
+
+async function handleCopyCommentLink(commentId) {
+  const url = `${window.location.origin}/student/posts/view/${getPostId()}#comment-${commentId}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Comment link copied!', 'success');
+  } catch (error) {
+    console.error('[post-view] Copy comment link failed:', error);
+    showToast('Could not copy link.', 'error');
+  }
+}
+
+async function handleDeleteComment(commentId) {
+  if (!window.confirm('Delete this comment? This cannot be undone.')) return;
+  try {
+    await api.delete(`/comments/${commentId}`);
+    showToast('Comment deleted.', 'success');
+    loadComments(getPostId());
+  } catch (error) {
+    console.error('[post-view] Delete comment failed:', error);
+    showToast('Could not delete comment.', 'error');
+  }
 }
 
 async function handleLikeComment(commentId, btn) {

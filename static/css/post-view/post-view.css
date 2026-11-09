@@ -850,3 +850,36 @@
 .postv-modal-btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .postv-modal-text { margin: 0; font-size: 0.86rem; color: var(--shell-text-secondary); line-height: 1.5; }
+
+/* ── Comment options menu ("⋮", own comments only) ───────────────────────── */
+
+.postv-comment-options-wrap { position: relative; margin-left: auto; }
+
+.postv-comment-options-btn {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--shell-text-secondary);
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+}
+
+.postv-comment-options-btn:hover { color: var(--shell-text-primary); }
+
+.postv-comment-options-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 20;
+  min-width: 150px;
+  background: var(--shell-bg-elevated, var(--shell-bg-surface));
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.postv-comment-options-menu.hidden { display: none; }
