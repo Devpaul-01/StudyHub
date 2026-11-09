@@ -103,8 +103,8 @@ function renderActivityItem(activity) {
       <div class="activity-content">
         <div class="activity-header">
           <div class="activity-user-info">
-            <img src="${user.avatar || '/static/images/default-avatar.png'}" 
-                 alt="${user.name}" 
+            <img src="${user.avatar || '/static/default-avatar.png'}"
+                 alt="${user.name}"
                  class="activity-avatar" />
             ${onlineIndicator}
           </div>
@@ -180,9 +180,18 @@ function getActivityDisplay(type, user, data) {
       break;
       
     case 'achieved_streak':
+      // FIX: backend's record_live_activity call (give_feedback, in
+      // routes/student/homework_system.py) sends current_streak /
+      // longest_streak — there is no streak_count key anywhere in this
+      // payload. The old data.streak_count reference rendered
+      // "undefined-day helping streak!" on every real event.
       icon = '🔥';
-      message = `<strong>${user.name}</strong> reached a <strong>${data.streak_count}-day</strong> helping streak!`;
-      badge = '<span class="activity-badge badge-achievement">Achievement</span>';
+      message = `<strong>${user.name}</strong> reached a <strong>${data.current_streak}-day</strong> helping streak!`;
+      if (data.longest_streak && data.longest_streak > data.current_streak) {
+        badge = `<span class="activity-badge badge-achievement">Best: ${data.longest_streak}</span>`;
+      } else {
+        badge = '<span class="activity-badge badge-achievement">Personal Best!</span>';
+      }
       break;
       
     default:
