@@ -198,5 +198,9 @@ async getChampions() {
 
 async getActivityFeed() {
   return await api.get('/activity/feed');
+},
+
+async getActivityPulse() {
+  return await api.get('/activity/pulse');
 }
 };
