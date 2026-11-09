@@ -7,9 +7,11 @@
 
 import { homeworkAPI } from '../homework/homework.api.js';
 import { showHomeworkToast } from '../homework/homework.utils.js';
+import { socket } from '../core/socket.js';
 
 let activityCache = [];
 let lastActivityId = null;
+let _wsHandlersRegistered = false;
 
 /**
  * Load activity feed
@@ -257,23 +259,52 @@ export function addActivityToFeed(activity) {
 
 /**
  * Initialize activity feed WebSocket
+ *
+ * FIX: the old version of this function read window.socket, which is
+ * never assigned anywhere in this codebase (confirmed by grepping every
+ * .js file for "window.socket =" — zero matches), so it was dead code
+ * even when uncommented. The real, working pattern — used by
+ * static/js/message/message.websocket.js, the one module in this app
+ * that actually has live WebSocket messaging working — is a single
+ * shared Socket.IO client exported from static/js/core/socket.js as
+ * `socket` (an ES module export, not a window global). That client
+ * calls io(...) at module-load time with no autoConnect: false, so the
+ * connection itself is already starting as soon as any module imports
+ * it; this function only needs to register handlers on it, not connect
+ * it.
+ *
+ * Idempotent (_wsHandlersRegistered guard), same reasoning as
+ * MessageWebSocket's own _handlersRegistered flag — safe to call every
+ * time the Activity Feed section is activated.
  */
- /*
 export function initActivityFeedWebSocket() {
-  if (!window.socket) {
-    console.warn('Socket not initialized for activity feed');
-    return;
-  }
-  
-  console.log('✅ Activity feed WebSocket initialized');
-  
-  // Listen for new activities
-  window.socket.on('new_activity', (data) => {
-    console.log('📡 New activity received:', data);
-    addActivityToFeed(data);
-  });
+  if (_wsHandlersRegistered) return;
+  _wsHandlersRegistered = true;
+
+  socket.on('activity_feed_update', (data) => addActivityToFeed(data));
+  // activity_pulse_update listener is added in a follow-up commit once
+  // addActivityToFeed can actually handle the anonymized pulse payload
+  // shape (no `user` object for most types) — see normalizePulseItem.
 }
-*/
+
+/**
+ * Join the shared global/campus-pulse broadcast room. Only call this
+ * while the Campus Pulse tab is actually visible — subscription is
+ * deliberately opt-in server-side (see
+ * services/websocket_messages.py's activity_feed:subscribe handler) so
+ * a user who never opens that tab never pays for the broadcast traffic.
+ */
+export function subscribeToGlobalPulse() {
+  socket.emit('activity_feed:subscribe');
+}
+
+/**
+ * Leave the global/campus-pulse broadcast room. Call this when
+ * switching away from the Campus Pulse tab or leaving the section.
+ */
+export function unsubscribeFromGlobalPulse() {
+  socket.emit('activity_feed:unsubscribe');
+}
 
 /**
  * Auto-refresh feed (backup for WebSocket)
