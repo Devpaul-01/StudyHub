@@ -30,6 +30,129 @@ function formatTime(timestamp) {
   return date.toLocaleDateString();
 }
 
+const DOC_META = {
+  pdf: { color: '#ef4444', icon: '📕' },
+  doc: { color: '#3b82f6', icon: '📘' }, docx: { color: '#3b82f6', icon: '📘' },
+  xls: { color: '#10b981', icon: '📗' }, xlsx: { color: '#10b981', icon: '📗' }, csv: { color: '#10b981', icon: '📗' },
+  ppt: { color: '#f59e0b', icon: '📙' }, pptx: { color: '#f59e0b', icon: '📙' },
+  zip: { color: '#8b5cf6', icon: '🗜️' }, rar: { color: '#8b5cf6', icon: '🗜️' }, '7z': { color: '#8b5cf6', icon: '🗜️' },
+};
+
+function docMeta(ext) {
+  return DOC_META[ext] || { color: '#64748b', icon: '📄' };
+}
+
+function buildPostResourcesHtml(resources) {
+  if (!resources || !resources.length) return '';
+  const normalized = resources.map(r => typeof r === 'string' ? { url: r, type: 'document', filename: 'Resource' } : r);
+  const mediaItems = normalized.filter(r => r.type === 'image' || r.type === 'video');
+  const docItems = normalized.filter(r => r.type !== 'image' && r.type !== 'video');
+
+  let carouselHtml = '';
+  if (mediaItems.length) {
+    const slides = mediaItems.map((r, i) => {
+      if (r.type === 'image') {
+        return `<div class="postv-resource-slide" data-index="${i}">
+          <img class="postv-resource-media" src="${escapeHtml(r.url)}" alt="${escapeHtml(r.filename || 'Image')}" loading="lazy">
+        </div>`;
+      }
+      return `<div class="postv-resource-slide" data-index="${i}">
+        <video class="postv-resource-media" src="${escapeHtml(r.url)}" playsinline preload="metadata"></video>
+        <div class="postv-resource-play">▶</div>
+      </div>`;
+    }).join('');
+
+    const dots = mediaItems.length > 1
+      ? `<div class="postv-carousel-dots">${mediaItems.map((_, i) => `<span class="postv-carousel-dot ${i === 0 ? 'active' : ''}" data-index="${i}"></span>`).join('')}</div>`
+      : '';
+    const nav = mediaItems.length > 1
+      ? `<button class="postv-carousel-nav postv-carousel-prev" data-direction="left" disabled>‹</button>
+         <button class="postv-carousel-nav postv-carousel-next" data-direction="right">›</button>`
+      : '';
+    const indicator = mediaItems.length > 1 ? `<div class="postv-carousel-indicator">1/${mediaItems.length}</div>` : '';
+
+    carouselHtml = `
+      <div class="postv-resources-carousel" data-total="${mediaItems.length}">
+        <div class="postv-resources-scroll">${slides}</div>
+        ${dots}${indicator}${nav}
+      </div>`;
+  }
+
+  const docsHtml = docItems.length ? `<div class="postv-doc-resources">${docItems.map(r => {
+    const ext = (r.filename || '').split('.').pop().toLowerCase();
+    const meta = docMeta(ext);
+    return `<a class="postv-doc-card" href="${escapeHtml(r.url)}" target="_blank" rel="noopener" style="--doc-color:${meta.color}">
+      <span class="postv-doc-icon">${meta.icon}</span>
+      <span class="postv-doc-name">${escapeHtml(r.filename || 'Document')}</span>
+      ${ext ? `<span class="postv-doc-ext">${escapeHtml(ext.toUpperCase())}</span>` : ''}
+    </a>`;
+  }).join('')}</div>` : '';
+
+  const linksHtml = normalized.map(r => {
+    if (!r.url) return '';
+    return `<a class="postv-resource-link" href="${escapeHtml(r.url)}" target="_blank" rel="noopener">📎 ${escapeHtml(r.filename || 'Resource')}</a>`;
+  }).join('');
+
+  return `
+    <div class="postv-resources">
+      ${carouselHtml}
+      ${docsHtml}
+      <button class="postv-resource-links-toggle" id="postv-resource-links-toggle" type="button">Show download links</button>
+      <div class="postv-resource-links hidden" id="postv-resource-links">${linksHtml}</div>
+    </div>`;
+}
+
+function wirePostResourcesCarousel(content) {
+  const carousel = content.querySelector('.postv-resources-carousel');
+  if (carousel) {
+    const scroll = carousel.querySelector('.postv-resources-scroll');
+    const dots = carousel.querySelectorAll('.postv-carousel-dot');
+    const indicator = carousel.querySelector('.postv-carousel-indicator');
+    const prevBtn = carousel.querySelector('.postv-carousel-prev');
+    const nextBtn = carousel.querySelector('.postv-carousel-next');
+    const total = Number(carousel.dataset.total || 0);
+
+    function updateIndicator() {
+      const slideWidth = scroll.offsetWidth || 1;
+      const index = Math.max(0, Math.min(Math.round(scroll.scrollLeft / slideWidth), total - 1));
+      if (indicator) indicator.textContent = `${index + 1}/${total}`;
+      dots.forEach((d, i) => d.classList.toggle('active', i === index));
+      if (prevBtn) prevBtn.disabled = index === 0;
+      if (nextBtn) nextBtn.disabled = index >= total - 1;
+    }
+
+    function scrollToIndex(index) {
+      const slideWidth = scroll.offsetWidth || 0;
+      scroll.scrollTo({ left: slideWidth * index, behavior: 'smooth' });
+      setTimeout(updateIndicator, 150);
+    }
+
+    prevBtn?.addEventListener('click', () => {
+      const slideWidth = scroll.offsetWidth || 0;
+      scroll.scrollBy({ left: -slideWidth, behavior: 'smooth' });
+      setTimeout(updateIndicator, 150);
+    });
+    nextBtn?.addEventListener('click', () => {
+      const slideWidth = scroll.offsetWidth || 0;
+      scroll.scrollBy({ left: slideWidth, behavior: 'smooth' });
+      setTimeout(updateIndicator, 150);
+    });
+    dots.forEach(dot => dot.addEventListener('click', () => scrollToIndex(Number(dot.dataset.index))));
+    scroll?.addEventListener('scroll', () => {
+      clearTimeout(scroll._postvScrollTimer);
+      scroll._postvScrollTimer = setTimeout(updateIndicator, 100);
+    });
+    updateIndicator();
+  }
+
+  const linksToggle = $('postv-resource-links-toggle');
+  const linksPanel = $('postv-resource-links');
+  linksToggle?.addEventListener('click', () => {
+    const hidden = linksPanel.classList.toggle('hidden');
+    linksToggle.textContent = hidden ? 'Show download links' : 'Hide download links';
+  });
+}
+
 function getPostId() {
   // /student/posts/view/<id>
   const match = window.location.pathname.match(/\/posts\/view\/(\d+)/);
@@ -101,14 +224,7 @@ function render() {
     `<span class="postv-tag">#${escapeHtml(t)}</span>`
   ).join('');
 
-  const resourcesHtml = (post.resources || []).map(r => {
-    const url = typeof r === 'string' ? r : r.url;
-    const filename = typeof r === 'string' ? 'Resource' : (r.filename || 'Resource');
-    if (!url) return '';
-    return `<a class="postv-resource-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">
-      📎 ${escapeHtml(filename)}
-    </a>`;
-  }).join('');
+  const resourcesHtml = buildPostResourcesHtml(post.resources);
 
   const canSolveType = ['question', 'problem'].includes(post.post_type);
 
@@ -133,7 +249,7 @@ function render() {
       <div class="postv-text">${escapeHtml(post.text_content || '')}</div>
 
       ${tagsHtml ? `<div class="postv-tags">${tagsHtml}</div>` : ''}
-      ${resourcesHtml ? `<div class="postv-resources">${resourcesHtml}</div>` : ''}
+      ${resourcesHtml}
 
       <div class="postv-actions">
         <button class="postv-action-btn ${userInteraction.reaction ? 'is-active' : ''}" id="postv-react-btn">
@@ -194,6 +310,7 @@ function render() {
       }
     });
   });
+  wirePostResourcesCarousel(content);
 }
 
 async function handleReact() {
