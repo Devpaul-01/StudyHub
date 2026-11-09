@@ -12,6 +12,7 @@
  */
 
 import { initResourceViewer, openResourceViewer } from '../resource.viewer.js';
+import { initPostViewVideoAutoplay, notifyPostViewSlideChange } from './post-view.video_autoplay.js';
 
 function $(id) { return document.getElementById(id); }
 
@@ -115,6 +116,7 @@ function wirePostResourcesCarousel(content) {
     const nextBtn = carousel.querySelector('.postv-carousel-next');
     const total = Number(carousel.dataset.total || 0);
 
+    let lastIndex = 0;
     function updateIndicator() {
       const slideWidth = scroll.offsetWidth || 1;
       const index = Math.max(0, Math.min(Math.round(scroll.scrollLeft / slideWidth), total - 1));
@@ -122,6 +124,10 @@ function wirePostResourcesCarousel(content) {
       dots.forEach((d, i) => d.classList.toggle('active', i === index));
       if (prevBtn) prevBtn.disabled = index === 0;
       if (nextBtn) nextBtn.disabled = index >= total - 1;
+      if (index !== lastIndex) {
+        lastIndex = index;
+        notifyPostViewSlideChange(index);
+      }
     }
 
     function scrollToIndex(index) {
@@ -158,6 +164,8 @@ function wirePostResourcesCarousel(content) {
     const hidden = linksPanel.classList.toggle('hidden');
     linksToggle.textContent = hidden ? 'Show download links' : 'Hide download links';
   });
+
+  initPostViewVideoAutoplay();
 }
 
 function getPostId() {
