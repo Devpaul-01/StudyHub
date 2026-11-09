@@ -253,6 +253,7 @@ function commentHtml(c, postId) {
         </button>
         ${c.can_reply ? `<button class="postv-comment-action" data-action="reply-comment" data-comment-id="${c.id}" data-username="${escapeHtml(c.author?.username || '')}">Reply</button>` : ''}
         ${state.permissions?.can_mark_solved && !c.is_solution ? `<button class="postv-comment-action" data-action="mark-solution" data-comment-id="${c.id}">Mark as solution</button>` : ''}
+        ${state.permissions?.can_mark_solved && c.is_solution ? `<button class="postv-comment-action" data-action="unmark-solution" data-comment-id="${c.id}">Unmark as solution</button>` : ''}
       </div>
       ${repliesHtml ? `<div class="postv-replies">${repliesHtml}</div>` : ''}
     </div>
@@ -280,6 +281,9 @@ function renderComments() {
   });
   list.querySelectorAll('[data-action="mark-solution"]').forEach(btn => {
     btn.addEventListener('click', () => handleMarkSolution(btn.dataset.commentId));
+  });
+  list.querySelectorAll('[data-action="unmark-solution"]').forEach(btn => {
+    btn.addEventListener('click', () => handleUnmarkSolution(btn.dataset.commentId));
   });
 }
 
@@ -315,6 +319,17 @@ async function handleMarkSolution(commentId) {
   } catch (error) {
     console.error('[post-view] Mark solution failed:', error);
     showToast('Could not mark as solution.', 'error');
+  }
+}
+
+async function handleUnmarkSolution(commentId) {
+  try {
+    await api.post(`/posts/${getPostId()}/unmark-solution`, { comment_id: commentId });
+    showToast('Unmarked as solution.', 'success');
+    loadComments(getPostId());
+  } catch (error) {
+    console.error('[post-view] Unmark solution failed:', error);
+    showToast('Could not unmark as solution.', 'error');
   }
 }
 
