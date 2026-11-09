@@ -43,7 +43,26 @@ let state = {
   userInteraction: null,
   permissions: null,
   comments: [],
+  commentResources: [], // staged attachments for the comment composer: [{url, type, filename}]
 };
+
+const MAX_COMMENT_RESOURCES = 10;
+const FILE_SIZE_LIMITS = {
+  image: 5 * 1024 * 1024,   // 5MB
+  video: 50 * 1024 * 1024,  // 50MB
+  other: 10 * 1024 * 1024,  // 10MB
+};
+
+function validateCommentFile(file) {
+  const maxSize = file.type.startsWith('image/') ? FILE_SIZE_LIMITS.image
+    : file.type.startsWith('video/') ? FILE_SIZE_LIMITS.video
+    : FILE_SIZE_LIMITS.other;
+  if (file.size > maxSize) {
+    showToast(`File "${file.name}" exceeds size limit (${maxSize / 1024 / 1024}MB max)`, 'error');
+    return false;
+  }
+  return true;
+}
 
 async function loadPost() {
   const postId = getPostId();
@@ -139,7 +158,22 @@ function render() {
       <div class="postv-comment-form">
         <textarea class="postv-comment-input" id="postv-comment-input"
                   placeholder="Write a comment…" ${permissions.can_comment ? '' : 'disabled'}></textarea>
-        <button class="postv-comment-submit" id="postv-comment-submit" ${permissions.can_comment ? '' : 'disabled'}>Post</button>
+        <div class="postv-comment-toolbar">
+          <label class="postv-upload-btn" title="Attach image">
+            <input type="file" id="postv-comment-image-input" accept="image/*" hidden ${permissions.can_comment ? '' : 'disabled'}>
+            🖼️
+          </label>
+          <label class="postv-upload-btn" title="Attach video">
+            <input type="file" id="postv-comment-video-input" accept="video/*" hidden ${permissions.can_comment ? '' : 'disabled'}>
+            🎬
+          </label>
+          <label class="postv-upload-btn" title="Attach document">
+            <input type="file" id="postv-comment-doc-input" accept=".pdf,.doc,.docx,.txt" hidden ${permissions.can_comment ? '' : 'disabled'}>
+            📎
+          </label>
+          <button class="postv-comment-submit" id="postv-comment-submit" ${permissions.can_comment ? '' : 'disabled'}>Post</button>
+        </div>
+        <div id="postv-comment-preview-area" class="postv-comment-preview-area"></div>
       </div>
       <div id="postv-comments-list"><div class="postv-empty-comments">Loading comments…</div></div>
     </div>
@@ -150,6 +184,9 @@ function render() {
   $('postv-solved-btn')?.addEventListener('click', handleToggleSolved);
   $('postv-comment-focus-btn')?.addEventListener('click', () => $('postv-comment-input')?.focus());
   $('postv-comment-submit')?.addEventListener('click', handleSubmitComment);
+  $('postv-comment-image-input')?.addEventListener('change', handleCommentFileSelect);
+  $('postv-comment-video-input')?.addEventListener('change', handleCommentFileSelect);
+  $('postv-comment-doc-input')?.addEventListener('change', handleCommentFileSelect);
   content.querySelectorAll('[data-action="open-author"]').forEach(el => {
     el.addEventListener('click', () => {
       if (author?.username) {
@@ -344,22 +381,103 @@ function startReply(commentId, username) {
   }
 }
 
+async function handleCommentFileSelect(e) {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  if (!files.length) return;
+
+  const previewArea = $('postv-comment-preview-area');
+  if (!previewArea) return;
+
+  for (const file of files) {
+    if (state.commentResources.length >= MAX_COMMENT_RESOURCES) {
+      showToast(`Maximum ${MAX_COMMENT_RESOURCES} files per comment`, 'error');
+      break;
+    }
+    if (!validateCommentFile(file)) continue;
+
+    const item = document.createElement('div');
+    item.className = 'postv-preview-item';
+
+    let media;
+    if (file.type.startsWith('image/')) {
+      media = document.createElement('img');
+      media.src = URL.createObjectURL(file);
+      media.className = 'postv-preview-media';
+    } else if (file.type.startsWith('video/')) {
+      media = document.createElement('video');
+      media.src = URL.createObjectURL(file);
+      media.controls = true;
+      media.className = 'postv-preview-media';
+    } else {
+      media = document.createElement('div');
+      media.className = 'postv-preview-file';
+      media.textContent = file.name;
+    }
+    item.appendChild(media);
+
+    const loader = document.createElement('div');
+    loader.className = 'postv-preview-loader';
+    loader.textContent = 'Uploading…';
+    item.appendChild(loader);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'postv-preview-remove';
+    removeBtn.textContent = '×';
+    removeBtn.style.display = 'none';
+    item.appendChild(removeBtn);
+
+    previewArea.appendChild(item);
+
+    try {
+      const res = await api.post('/posts/resource/upload', (() => {
+        const fd = new FormData();
+        fd.append('file', file);
+        return fd;
+      })(), true);
+      if (res?.status === 'success' || res?.data?.url) {
+        const resource = { url: res.data.url, type: res.data.type, filename: res.data.filename };
+        state.commentResources.push(resource);
+        loader.remove();
+        removeBtn.style.display = '';
+        removeBtn.addEventListener('click', () => {
+          item.remove();
+          state.commentResources = state.commentResources.filter(r => r.url !== resource.url);
+        });
+      } else {
+        loader.textContent = 'Failed';
+        loader.classList.add('is-error');
+        showToast('Upload failed: ' + (res?.message || 'Unknown error'), 'error');
+      }
+    } catch (error) {
+      console.error('[post-view] Comment attachment upload failed:', error);
+      loader.textContent = 'Error';
+      loader.classList.add('is-error');
+      showToast('Could not upload file.', 'error');
+    }
+  }
+}
+
 async function handleSubmitComment() {
   const postId = getPostId();
   const input = $('postv-comment-input');
   const btn = $('postv-comment-submit');
   const text = input?.value.trim();
-  if (!text) return;
+  if (!text && !state.commentResources.length) return;
 
   btn.disabled = true;
   try {
     await api.post('/comments/create', {
       post_id: Number(postId),
-      text_content: text,
+      text_content: text || '',
       parent_id: replyTarget ? Number(replyTarget.commentId) : null,
+      resources: state.commentResources,
     });
     input.value = '';
     replyTarget = null;
+    state.commentResources = [];
+    const previewArea = $('postv-comment-preview-area');
+    if (previewArea) previewArea.innerHTML = '';
     showToast('Comment posted.', 'success');
     loadComments(postId);
     // Refresh the comment count shown in the action bar.

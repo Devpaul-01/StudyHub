@@ -184,8 +184,96 @@
 
 .postv-comment-form {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   margin-bottom: 1.25rem;
+}
+
+.postv-comment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.postv-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  background: var(--shell-bg-surface);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.postv-upload-btn:hover { border-color: var(--shell-accent-border); }
+
+.postv-comment-toolbar .postv-comment-submit {
+  margin-left: auto;
+  align-self: auto;
+}
+
+.postv-comment-preview-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.postv-preview-item {
+  position: relative;
+  display: inline-block;
+}
+
+.postv-preview-media {
+  max-width: 110px;
+  max-height: 110px;
+  border-radius: var(--shell-radius-md);
+  object-fit: cover;
+  display: block;
+}
+
+.postv-preview-file {
+  padding: 0.6rem 0.8rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  font-size: 0.78rem;
+  color: var(--shell-text-primary);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.postv-preview-loader {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+}
+
+.postv-preview-loader.is-error { background: #ef4444; }
+
+.postv-preview-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
 }
 
 .postv-comment-input {
