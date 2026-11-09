@@ -335,6 +335,22 @@ function render() {
         </div>
       </div>
     </div>
+
+    <div class="postv-modal-backdrop hidden" id="postv-delete-modal">
+      <div class="postv-modal">
+        <div class="postv-modal-header">
+          <h3>Delete post?</h3>
+          <button class="postv-modal-close" id="postv-delete-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="postv-modal-body">
+          <p class="postv-modal-text">This can't be undone. The post and its comments will be permanently removed.</p>
+        </div>
+        <div class="postv-modal-footer">
+          <button class="postv-modal-btn postv-modal-btn-secondary" id="postv-delete-cancel">Cancel</button>
+          <button class="postv-modal-btn postv-modal-btn-danger" id="postv-delete-confirm">Delete post</button>
+        </div>
+      </div>
+    </div>
   `;
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
@@ -355,6 +371,7 @@ function render() {
   wirePostResourcesCarousel(content);
   wirePostOptionsMenu();
   wireReportModal();
+  wireDeleteModal();
 }
 
 // ─── Post options menu ──────────────────────────────────────────────────────
@@ -403,10 +420,18 @@ function renderOptionsMenu(data) {
 
   const items = [];
 
+  if (data.permissions?.can_delete) {
+    items.push(`<button class="postv-options-item postv-options-item-danger" data-menu-action="delete-post">🗑️ Delete post</button>`);
+  }
+
   items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
 
   menu.innerHTML = items.join('');
 
+  menu.querySelector('[data-menu-action="delete-post"]')?.addEventListener('click', () => {
+    closeOptionsMenu();
+    openDeleteModal();
+  });
   menu.querySelector('[data-menu-action="report-post"]')?.addEventListener('click', () => {
     closeOptionsMenu();
     openReportModal();
@@ -457,6 +482,45 @@ async function handleSubmitReport() {
     const message = error?.message || 'Could not submit report.';
     showToast(message, 'error');
   } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── Delete post modal ──────────────────────────────────────────────────────
+
+function openDeleteModal() {
+  const modal = $('postv-delete-modal');
+  modal?.classList.remove('hidden');
+  modal?.classList.add('postv-modal-open');
+}
+
+function closeDeleteModal() {
+  const modal = $('postv-delete-modal');
+  modal?.classList.remove('postv-modal-open');
+  modal?.classList.add('hidden');
+}
+
+function wireDeleteModal() {
+  $('postv-delete-modal-close')?.addEventListener('click', closeDeleteModal);
+  $('postv-delete-cancel')?.addEventListener('click', closeDeleteModal);
+  $('postv-delete-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'postv-delete-modal') closeDeleteModal();
+  });
+  $('postv-delete-confirm')?.addEventListener('click', handleDeletePost);
+}
+
+async function handleDeletePost() {
+  const btn = $('postv-delete-confirm');
+  btn.disabled = true;
+  try {
+    await api.delete(`/posts/${getPostId()}`);
+    showToast('Post deleted.', 'success');
+    setTimeout(() => {
+      window.location.href = '/student/search';
+    }, 600);
+  } catch (error) {
+    console.error('[post-view] Delete post failed:', error);
+    showToast('Could not delete post.', 'error');
     btn.disabled = false;
   }
 }

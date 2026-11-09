@@ -848,3 +848,5 @@
 .postv-modal-btn-secondary { background: var(--shell-bg-surface); color: var(--shell-text-primary); border: 1px solid var(--shell-border); }
 .postv-modal-btn-danger { background: #ef4444; color: #fff; }
 .postv-modal-btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.postv-modal-text { margin: 0; font-size: 0.86rem; color: var(--shell-text-secondary); line-height: 1.5; }
