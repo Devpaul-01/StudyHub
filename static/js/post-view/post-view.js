@@ -419,6 +419,11 @@ function renderOptionsMenu(data) {
   if (!menu) return;
 
   const items = [];
+  const followed = !!data.interactions?.followed;
+
+  items.push(`<button class="postv-options-item" data-menu-action="toggle-follow-post" data-followed="${followed}">
+    ${followed ? '🔕 Unfollow post' : '🔔 Follow post'}
+  </button>`);
 
   if (data.permissions?.can_delete) {
     items.push(`<button class="postv-options-item postv-options-item-danger" data-menu-action="delete-post">🗑️ Delete post</button>`);
@@ -428,6 +433,11 @@ function renderOptionsMenu(data) {
 
   menu.innerHTML = items.join('');
 
+  menu.querySelector('[data-menu-action="toggle-follow-post"]')?.addEventListener('click', (e) => {
+    closeOptionsMenu();
+    const isFollowed = e.currentTarget.dataset.followed === 'true';
+    handleToggleFollowPost(isFollowed);
+  });
   menu.querySelector('[data-menu-action="delete-post"]')?.addEventListener('click', () => {
     closeOptionsMenu();
     openDeleteModal();
@@ -436,6 +446,22 @@ function renderOptionsMenu(data) {
     closeOptionsMenu();
     openReportModal();
   });
+}
+
+async function handleToggleFollowPost(isFollowed) {
+  const postId = getPostId();
+  try {
+    if (isFollowed) {
+      await api.delete(`/posts/${postId}/unfollow`);
+      showToast('Unfollowed post.', 'success');
+    } else {
+      await api.post(`/posts/${postId}/follow`, {});
+      showToast('Following post. You\'ll be notified of new activity.', 'success');
+    }
+  } catch (error) {
+    console.error('[post-view] Toggle follow post failed:', error);
+    showToast('Could not update follow status.', 'error');
+  }
 }
 
 // ─── Report post modal ──────────────────────────────────────────────────────
