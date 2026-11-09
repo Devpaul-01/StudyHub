@@ -349,6 +349,42 @@
   color: var(--shell-text-primary);
 }
 
+.postv-comment-resources {
+  margin: 0.5rem 0 0 2.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.postv-comment-resource-image img,
+.postv-comment-resource-video video {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: var(--shell-radius-md);
+  display: block;
+  object-fit: cover;
+}
+
+.postv-comment-resource-doc {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  color: var(--shell-text-primary);
+  font-size: 0.78rem;
+  text-decoration: none;
+  max-width: 200px;
+}
+
+.postv-comment-resource-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .postv-comment-footer {
   margin-left: 2.5rem;
   margin-top: 0.35rem;

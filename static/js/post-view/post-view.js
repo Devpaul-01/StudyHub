@@ -267,6 +267,28 @@ async function loadComments(postId) {
   }
 }
 
+function commentResourcesHtml(resources, commentId) {
+  if (!resources || !resources.length) return '';
+  const items = resources.map(r => {
+    const filename = escapeHtml(r.filename || 'Resource');
+    const url = escapeHtml(r.url || '');
+    if (r.type === 'image') {
+      return `<a class="postv-comment-resource postv-comment-resource-image" href="${url}" target="_blank" rel="noopener">
+        <img src="${url}" alt="${filename}" loading="lazy">
+      </a>`;
+    }
+    if (r.type === 'video') {
+      return `<div class="postv-comment-resource postv-comment-resource-video">
+        <video src="${url}" playsinline preload="metadata" controls></video>
+      </div>`;
+    }
+    return `<a class="postv-comment-resource postv-comment-resource-doc" href="${url}" target="_blank" rel="noopener" download="${filename}">
+      📄 <span class="postv-comment-resource-name">${filename}</span>
+    </a>`;
+  }).join('');
+  return `<div class="postv-comment-resources" data-comment-id="${commentId}">${items}</div>`;
+}
+
 function commentHtml(c, postId) {
   const liked = c.user_interactions?.has_liked;
   const helpful = c.user_interactions?.has_marked_helpful;
@@ -281,6 +303,7 @@ function commentHtml(c, postId) {
         ${c.is_solution ? `<span class="postv-comment-solution">✓ Solution</span>` : ''}
       </div>
       <div class="postv-comment-body">${escapeHtml(c.text_content)}</div>
+      ${commentResourcesHtml(c.resources, c.id)}
       <div class="postv-comment-footer">
         <button class="postv-comment-action ${liked ? 'is-active' : ''}" data-action="like-comment" data-comment-id="${c.id}">
           👍 ${c.likes_count || 0}
