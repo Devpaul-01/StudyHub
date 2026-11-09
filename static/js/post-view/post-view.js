@@ -11,6 +11,8 @@
  * ============================================================================
  */
 
+import { initResourceViewer, openResourceViewer } from '../resource.viewer.js';
+
 function $(id) { return document.getElementById(id); }
 
 function escapeHtml(text) {
@@ -50,13 +52,14 @@ function buildPostResourcesHtml(resources) {
 
   let carouselHtml = '';
   if (mediaItems.length) {
+    const mediaJSON = JSON.stringify(mediaItems).replace(/'/g, '&#39;');
     const slides = mediaItems.map((r, i) => {
       if (r.type === 'image') {
-        return `<div class="postv-resource-slide" data-index="${i}">
+        return `<div class="postv-resource-slide" data-index="${i}" data-action="view-post-resource" data-resources='${mediaJSON}' role="button" aria-label="View image ${i + 1} of ${mediaItems.length}">
           <img class="postv-resource-media" src="${escapeHtml(r.url)}" alt="${escapeHtml(r.filename || 'Image')}" loading="lazy">
         </div>`;
       }
-      return `<div class="postv-resource-slide" data-index="${i}">
+      return `<div class="postv-resource-slide" data-index="${i}" data-action="view-post-resource" data-resources='${mediaJSON}' role="button" aria-label="View video ${i + 1} of ${mediaItems.length}">
         <video class="postv-resource-media" src="${escapeHtml(r.url)}" playsinline preload="metadata"></video>
         <div class="postv-resource-play">▶</div>
       </div>`;
@@ -143,6 +146,10 @@ function wirePostResourcesCarousel(content) {
       scroll._postvScrollTimer = setTimeout(updateIndicator, 100);
     });
     updateIndicator();
+
+    carousel.querySelectorAll('[data-action="view-post-resource"]').forEach(slide => {
+      slide.addEventListener('click', () => openResourceViewer(slide));
+    });
   }
 
   const linksToggle = $('postv-resource-links-toggle');
@@ -636,5 +643,6 @@ async function handleSubmitComment() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initResourceViewer();
   loadPost();
 });
