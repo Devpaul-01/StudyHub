@@ -258,6 +258,10 @@ function render() {
             ${post.is_solved ? `<span class="postv-badge postv-badge-solved">✓ Solved</span>` : ''}
           </div>
         </div>
+        <div class="postv-options-wrap">
+          <button class="postv-options-btn" id="postv-options-btn" aria-label="Post options" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div class="postv-options-menu hidden" id="postv-options-menu"></div>
+        </div>
       </div>
 
       ${post.title ? `<div class="postv-title">${escapeHtml(post.title)}</div>` : ''}
@@ -308,6 +312,29 @@ function render() {
       </div>
       <div id="postv-comments-list"><div class="postv-empty-comments">Loading comments…</div></div>
     </div>
+
+    <div class="postv-modal-backdrop hidden" id="postv-report-modal">
+      <div class="postv-modal">
+        <div class="postv-modal-header">
+          <h3>Report post</h3>
+          <button class="postv-modal-close" id="postv-report-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="postv-modal-body">
+          <div class="postv-report-reasons">
+            <label class="postv-report-reason"><input type="radio" name="postv-report-reason" value="spam"> Spam</label>
+            <label class="postv-report-reason"><input type="radio" name="postv-report-reason" value="harassment"> Harassment</label>
+            <label class="postv-report-reason"><input type="radio" name="postv-report-reason" value="inappropriate"> Inappropriate content</label>
+            <label class="postv-report-reason"><input type="radio" name="postv-report-reason" value="misinformation"> Misinformation</label>
+            <label class="postv-report-reason"><input type="radio" name="postv-report-reason" value="other"> Other</label>
+          </div>
+          <textarea class="postv-report-description" id="postv-report-description" placeholder="Add details (optional)…" rows="3"></textarea>
+        </div>
+        <div class="postv-modal-footer">
+          <button class="postv-modal-btn postv-modal-btn-secondary" id="postv-report-cancel">Cancel</button>
+          <button class="postv-modal-btn postv-modal-btn-danger" id="postv-report-submit">Submit report</button>
+        </div>
+      </div>
+    </div>
   `;
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
@@ -326,6 +353,112 @@ function render() {
     });
   });
   wirePostResourcesCarousel(content);
+  wirePostOptionsMenu();
+  wireReportModal();
+}
+
+// ─── Post options menu ──────────────────────────────────────────────────────
+
+function wirePostOptionsMenu() {
+  const btn = $('postv-options-btn');
+  const menu = $('postv-options-menu');
+  if (!btn || !menu) return;
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const isOpen = !menu.classList.contains('hidden');
+    if (isOpen) {
+      closeOptionsMenu();
+      return;
+    }
+    menu.innerHTML = `<div class="postv-options-loading">Loading…</div>`;
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    try {
+      const res = await api.get(`/posts/${getPostId()}/options-menu`);
+      renderOptionsMenu(res?.data || {});
+    } catch (error) {
+      console.error('[post-view] Failed to load options menu:', error);
+      menu.innerHTML = `<div class="postv-options-loading">Could not load options.</div>`;
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
+      closeOptionsMenu();
+    }
+  });
+}
+
+function closeOptionsMenu() {
+  const menu = $('postv-options-menu');
+  const btn = $('postv-options-btn');
+  menu?.classList.add('hidden');
+  btn?.setAttribute('aria-expanded', 'false');
+}
+
+function renderOptionsMenu(data) {
+  const menu = $('postv-options-menu');
+  if (!menu) return;
+
+  const items = [];
+
+  items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
+
+  menu.innerHTML = items.join('');
+
+  menu.querySelector('[data-menu-action="report-post"]')?.addEventListener('click', () => {
+    closeOptionsMenu();
+    openReportModal();
+  });
+}
+
+// ─── Report post modal ──────────────────────────────────────────────────────
+
+function openReportModal() {
+  const modal = $('postv-report-modal');
+  modal?.classList.remove('hidden');
+  modal?.classList.add('postv-modal-open');
+}
+
+function closeReportModal() {
+  const modal = $('postv-report-modal');
+  modal?.classList.remove('postv-modal-open');
+  modal?.classList.add('hidden');
+  const desc = $('postv-report-description');
+  if (desc) desc.value = '';
+  document.querySelectorAll('input[name="postv-report-reason"]').forEach(r => { r.checked = false; });
+}
+
+function wireReportModal() {
+  $('postv-report-modal-close')?.addEventListener('click', closeReportModal);
+  $('postv-report-cancel')?.addEventListener('click', closeReportModal);
+  $('postv-report-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'postv-report-modal') closeReportModal();
+  });
+  $('postv-report-submit')?.addEventListener('click', handleSubmitReport);
+}
+
+async function handleSubmitReport() {
+  const selected = document.querySelector('input[name="postv-report-reason"]:checked');
+  if (!selected) {
+    showToast('Please select a reason.', 'error');
+    return;
+  }
+  const description = $('postv-report-description')?.value.trim() || '';
+  const btn = $('postv-report-submit');
+  btn.disabled = true;
+  try {
+    await api.post(`/posts/${getPostId()}/report`, { reason: selected.value, description });
+    showToast('Report submitted. Our team will review it.', 'success');
+    closeReportModal();
+  } catch (error) {
+    console.error('[post-view] Report post failed:', error);
+    const message = error?.message || 'Could not submit report.';
+    showToast(message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function handleReact() {

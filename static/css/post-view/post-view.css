@@ -704,3 +704,147 @@
   .prv-nav--prev { left: 0.4rem; }
   .prv-nav--next { right: 0.4rem; }
 }
+
+/* ── Post options menu ("⋯") ──────────────────────────────────────────── */
+
+.postv-options-wrap { position: relative; margin-left: auto; }
+
+.postv-options-btn {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--shell-text-secondary);
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--shell-radius-md);
+}
+
+.postv-options-btn:hover { background: var(--shell-bg-surface); color: var(--shell-text-primary); }
+
+.postv-options-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 200px;
+  background: var(--shell-bg-elevated, var(--shell-bg-surface));
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.postv-options-menu.hidden { display: none; }
+
+.postv-options-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--shell-text-primary);
+  border-radius: var(--shell-radius-sm, 6px);
+  cursor: pointer;
+}
+
+.postv-options-item:hover { background: var(--shell-bg-hover, rgba(127, 127, 127, 0.12)); }
+.postv-options-item.postv-options-item-danger { color: #ef4444; }
+.postv-options-loading { padding: 0.7rem; font-size: 0.82rem; color: var(--shell-text-secondary); }
+
+/* ── Generic modal shell (report / delete-confirm / fork / etc.) ─────────── */
+
+.postv-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease;
+  padding: 1rem;
+}
+
+.postv-modal-backdrop.postv-modal-open { opacity: 1; visibility: visible; }
+
+.postv-modal {
+  width: 100%;
+  max-width: 420px;
+  background: var(--shell-bg-elevated, var(--shell-bg-surface));
+  border-radius: var(--shell-radius-lg, 16px);
+  overflow: hidden;
+}
+
+.postv-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--shell-border);
+}
+
+.postv-modal-header h3 { margin: 0; font-size: 1rem; color: var(--shell-text-primary); }
+
+.postv-modal-close {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--shell-text-secondary);
+  cursor: pointer;
+}
+
+.postv-modal-body { padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+
+.postv-report-reasons { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.postv-report-reason {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--shell-text-primary);
+  cursor: pointer;
+}
+
+.postv-report-description {
+  width: 100%;
+  resize: vertical;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  padding: 0.6rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--shell-text-primary);
+  font-family: inherit;
+}
+
+.postv-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.9rem 1.1rem;
+  border-top: 1px solid var(--shell-border);
+}
+
+.postv-modal-btn {
+  padding: 0.5rem 1rem;
+  border-radius: var(--shell-radius-md);
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.postv-modal-btn-secondary { background: var(--shell-bg-surface); color: var(--shell-text-primary); border: 1px solid var(--shell-border); }
+.postv-modal-btn-danger { background: #ef4444; color: #fff; }
+.postv-modal-btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
