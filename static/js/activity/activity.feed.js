@@ -9,28 +9,75 @@ import { homeworkAPI } from '../homework/homework.api.js';
 import { showHomeworkToast } from '../homework/homework.utils.js';
 import { socket } from '../core/socket.js';
 
-let activityCache = [];
+// Two separate caches, not one shared array — connections-scope
+// (My Network tab, from GET /activity/feed + activity_feed_update) and
+// global-scope (Campus Pulse tab, from GET /activity/pulse +
+// activity_pulse_update) are different data with different payload
+// shapes (see normalizePulseItem below); mixing them into one array
+// would mean renderActivityFeed(activityCache) shows both tabs' items
+// at once regardless of which tab is actually selected.
+let connectionsCache = [];
+let pulseCache = [];
 let lastActivityId = null;
 let _wsHandlersRegistered = false;
 
+// Which tab is currently on screen — 'connections' (default, matches
+// this feature's original/only behavior before Campus Pulse existed)
+// or 'global'. Exported so the tab-switcher (added in a later commit)
+// can set it; addActivityToFeed below reads it to decide whether a
+// just-arrived WebSocket event should render immediately. An event for
+// the tab that isn't on screen is still cached (so switching to it
+// later shows it without a re-fetch), just not rendered right now.
+export let activeScope = 'connections';
+export function setActiveScope(scope) {
+  activeScope = scope;
+}
+
+function cacheFor(scope) {
+  return scope === 'global' ? pulseCache : connectionsCache;
+}
+
 /**
- * Load activity feed
+ * Load activity feed (connections scope — My Network tab)
  */
 export async function loadActivityFeed() {
   try {
     const response = await homeworkAPI.getActivityFeed();
     
     if (response.status === 'success') {
-      activityCache = response.data.activities || [];
-      renderActivityFeed(activityCache);
-      
-      if (activityCache.length > 0) {
-        lastActivityId = activityCache[0].id;
+      connectionsCache = response.data.activities || [];
+      if (activeScope === 'connections') renderActivityFeed(connectionsCache);
+
+      if (connectionsCache.length > 0) {
+        lastActivityId = connectionsCache[0].id;
       }
     }
   } catch (error) {
     console.error('Error loading activity feed:', error);
-    renderActivityError();
+    if (activeScope === 'connections') renderActivityError();
+  }
+}
+
+/**
+ * Load activity pulse (global scope — Campus Pulse tab). Items from
+ * GET /activity/pulse are already in the anonymized shape
+ * normalizePulseItem produces for WebSocket pulse events — the route
+ * (get_activity_pulse in homework_system.py) runs every row through
+ * the same anonymize_for_global this file's normalizer is modeled on —
+ * so no extra normalization is needed here, just passed straight to
+ * renderActivityFeed.
+ */
+export async function loadActivityPulse() {
+  try {
+    const response = await homeworkAPI.getActivityPulse();
+
+    if (response.status === 'success') {
+      pulseCache = response.data.activities || [];
+      if (activeScope === 'global') renderActivityFeed(pulseCache);
+    }
+  } catch (error) {
+    console.error('Error loading activity pulse:', error);
+    if (activeScope === 'global') renderActivityError();
   }
 }
 
@@ -85,6 +132,40 @@ function renderActivityError() {
       </button>
     </div>
   `;
+}
+
+/**
+ * Normalize a GET /activity/pulse item or an activity_pulse_update
+ * WebSocket payload into the same { id, type, user, data, time_ago }
+ * shape renderActivityItem already expects for connections-scoped
+ * activities — so one render path serves both, instead of branching
+ * inside renderActivityItem itself.
+ *
+ * Most global-scope types are anonymized server-side down to
+ * department/subject only (see
+ * services/activity_service.py::anonymize_for_global) — there is no
+ * real user to show for those, so `user` here is a synthetic
+ * placeholder (id: null, no avatar) rather than null, so
+ * renderActivityItem's existing `user.name`/`user.avatar` reads don't
+ * need their own null-checks. user_signed_up is the one allowlisted
+ * type that keeps a real user_id/name; it gets a real user object.
+ *
+ * This is a reasonable starting point, not a final visual design —
+ * anonymized items showing a generic "Someone in {department}" row
+ * work but may be worth a visually distinct card style later (no
+ * avatar to show is a real UI gap, not just a data-shape one).
+ */
+function normalizePulseItem(item) {
+  const hasIdentity = !!item.user_id;
+  return {
+    id: item.id,
+    type: item.type,
+    data: item.data || {},
+    time_ago: item.time_ago || 'just now',
+    user: hasIdentity
+      ? { id: item.user_id, name: item.name, avatar: null, is_online: false }
+      : { id: null, name: item.department || 'Someone', avatar: null, is_online: false },
+  };
 }
 
 /**
@@ -206,16 +287,35 @@ function getActivityDisplay(type, user, data) {
 
 /**
  * Add new activity to feed (from WebSocket)
+ *
+ * @param {object} rawActivity - the raw event payload. Connections-scope
+ *   (activity_feed_update) is already in the { id, type, user, data,
+ *   time_ago } shape renderActivityItem expects; pulse-scope
+ *   (activity_pulse_update) is the anonymized shape and needs
+ *   normalizePulseItem first.
+ * @param {object} [options]
+ * @param {boolean} [options.pulse] - true when rawActivity came from
+ *   activity_pulse_update rather than activity_feed_update.
  */
-export function addActivityToFeed(activity) {
-  // Add to cache
-  activityCache.unshift(activity);
-  
+export function addActivityToFeed(rawActivity, options = {}) {
+  const activity = options.pulse ? normalizePulseItem(rawActivity) : rawActivity;
+  const eventScope = options.pulse ? 'global' : 'connections';
+  const cache = cacheFor(eventScope);
+
+  // Add to the matching tab's cache, regardless of which tab is active
+  // right now — this is what lets switching tabs later show items that
+  // arrived while the person was looking at the other one.
+  cache.unshift(activity);
+
   // Keep only last 50
-  if (activityCache.length > 50) {
-    activityCache.pop();
+  if (cache.length > 50) {
+    cache.pop();
   }
-  
+
+  // An event for the tab that isn't currently on screen is cached above
+  // but shouldn't be rendered into the visible list right now.
+  if (eventScope !== activeScope) return;
+
   // Get container
   const container = document.getElementById('activity-feed-list');
   if (!container) return;
@@ -223,7 +323,7 @@ export function addActivityToFeed(activity) {
   // If feed was empty, replace empty state
   const emptyState = container.querySelector('.activity-empty');
   if (emptyState) {
-    renderActivityFeed(activityCache);
+    renderActivityFeed(cache);
     return;
   }
   
@@ -282,9 +382,7 @@ export function initActivityFeedWebSocket() {
   _wsHandlersRegistered = true;
 
   socket.on('activity_feed_update', (data) => addActivityToFeed(data));
-  // activity_pulse_update listener is added in a follow-up commit once
-  // addActivityToFeed can actually handle the anonymized pulse payload
-  // shape (no `user` object for most types) — see normalizePulseItem.
+  socket.on('activity_pulse_update', (data) => addActivityToFeed(data, { pulse: true }));
 }
 
 /**
@@ -307,17 +405,26 @@ export function unsubscribeFromGlobalPulse() {
 }
 
 /**
- * Auto-refresh feed (backup for WebSocket)
+ * Auto-refresh feed (backup for WebSocket). Refreshes whichever tab is
+ * active, same fix as handleActivityRefresh above — this always called
+ * loadActivityFeed() regardless of the active tab before this change.
  */
 export function startActivityFeedAutoRefresh() {
   // Refresh every 2 minutes
   setInterval(() => {
-    loadActivityFeed();
+    if (activeScope === 'global') {
+      loadActivityPulse();
+    } else {
+      loadActivityFeed();
+    }
   }, 120000);
 }
 
 /**
- * Pull to refresh handler
+ * Pull to refresh handler. Reloads whichever tab is currently active —
+ * previously always called loadActivityFeed(), which would silently
+ * refresh the wrong tab's data if the person pulled to refresh while on
+ * Campus Pulse.
  */
 export function handleActivityRefresh() {
   const container = document.getElementById('activity-feed-container');
@@ -325,9 +432,10 @@ export function handleActivityRefresh() {
   
   // Add refreshing class
   container.classList.add('refreshing');
-  
-  // Reload feed
-  loadActivityFeed().then(() => {
+
+  const reload = activeScope === 'global' ? loadActivityPulse() : loadActivityFeed();
+
+  reload.then(() => {
     // Remove refreshing class after short delay
     setTimeout(() => {
       container.classList.remove('refreshing');
@@ -337,43 +445,67 @@ export function handleActivityRefresh() {
 }
 
 /**
- * Initialize activity feed section
+ * Initialize activity feed section.
+ *
+ * FIX: previously bound to document's DOMContentLoaded unconditionally
+ * (see the bottom of this file, before this change), meaning it ran
+ * once on every page load regardless of whether the Activity Feed
+ * section was ever opened — including firing a GET /activity/feed
+ * request and starting a 2-minute polling loop for users who never
+ * visit this section at all. Proper section-activation gating (mirror
+ * of static/js/message/message.init.js's MutationObserver-on-`active`-
+ * class pattern) is added in a later commit; this function itself is
+ * unchanged in what it does, just no longer auto-invoked — see the
+ * bottom of this file.
  */
-function initActivityFeedSection() {
-  // Load initial data
-  loadActivityFeed();
-  
-  // Setup WebSocket
+export function initActivityFeedSection() {
+  // Load initial data for whichever tab is active (defaults to
+  // 'connections' until the tab switcher exists)
+  if (activeScope === 'global') {
+    loadActivityPulse();
+  } else {
+    loadActivityFeed();
+  }
 
-  
+  initActivityFeedWebSocket();
+
   // Setup auto-refresh
   startActivityFeedAutoRefresh();
-  
-  console.log('✅ Activity feed initialized');
 }
 
 /**
  * Cleanup activity feed (when section hidden)
  */
 export function cleanupActivityFeed() {
-  // Clear cache
-  activityCache = [];
+  connectionsCache = [];
+  pulseCache = [];
   lastActivityId = null;
 }
 
 /**
- * Get activity feed stats for summary
+ * Get activity feed stats for summary. Stats for whichever tab is
+ * currently active — previously read a single shared cache that no
+ * longer exists now that connections and pulse data are kept separate.
  */
 export function getActivityFeedStats() {
-  const activityTypes = activityCache.reduce((acc, activity) => {
+  const cache = cacheFor(activeScope);
+  const activityTypes = cache.reduce((acc, activity) => {
     acc[activity.type] = (acc[activity.type] || 0) + 1;
     return acc;
   }, {});
   
   return {
-    total: activityCache.length,
+    total: cache.length,
     types: activityTypes,
-    latest: activityCache[0] || null
+    latest: cache[0] || null
   };
 }
-document.addEventListener("DOMContentLoaded", initActivityFeedSection);
+
+// The unconditional DOMContentLoaded -> initActivityFeedSection call that
+// used to be here is removed as part of this fix (see
+// initActivityFeedSection's docstring above for why it was wrong).
+// Proper section-activation gating, so this only runs when the person
+// actually opens the Activity Feed section, is added in the very next
+// commit on this branch — until that lands, this section has no init
+// trigger at all, which is a deliberately small, momentary gap rather
+// than this commit trying to also own the section-lifecycle wiring.
