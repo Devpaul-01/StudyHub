@@ -959,3 +959,29 @@
 
 .postv-modal-btn-primary { background: var(--shell-accent, #6366f1); color: #fff; }
 .postv-modal-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Join thread modal ────────────────────────────────────────────────── */
+
+.postv-thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.postv-thread-header h4 { margin: 0; font-size: 1.05rem; color: var(--shell-text-primary); }
+
+.postv-thread-visibility {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--shell-bg-surface);
+  color: var(--shell-text-secondary);
+  white-space: nowrap;
+}
+
+.postv-modal-footer-inline {
+  border-top: none;
+  padding: 0.5rem 0 0;
+  margin: 0;
+}

@@ -387,6 +387,18 @@ function render() {
         </div>
       </div>
     </div>
+
+    <div class="postv-modal-backdrop hidden" id="postv-thread-modal">
+      <div class="postv-modal postv-modal-wide">
+        <div class="postv-modal-header">
+          <h3>Thread</h3>
+          <button class="postv-modal-close" id="postv-thread-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="postv-modal-body" id="postv-thread-content">
+          <div class="postv-options-loading">Loading thread…</div>
+        </div>
+      </div>
+    </div>
   `;
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
@@ -410,6 +422,7 @@ function render() {
   wireReportModal();
   wireDeleteModal();
   wireForkModal();
+  wireThreadModal();
 }
 
 // ─── Post options menu ──────────────────────────────────────────────────────
@@ -467,11 +480,19 @@ function renderOptionsMenu(data) {
     items.push(`<button class="postv-options-item postv-options-item-danger" data-menu-action="delete-post">🗑️ Delete post</button>`);
   }
 
+  if (data.thread && !data.thread.is_member) {
+    items.push(`<button class="postv-options-item" data-menu-action="view-thread" data-thread-id="${data.thread.thread_id}">🧵 Join Thread</button>`);
+  }
+
   items.push(`<button class="postv-options-item" data-menu-action="fork-post">🔁 Repost / Fork</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
 
   menu.innerHTML = items.join('');
 
+  menu.querySelector('[data-menu-action="view-thread"]')?.addEventListener('click', (e) => {
+    closeOptionsMenu();
+    openThreadModal(e.currentTarget.dataset.threadId);
+  });
   menu.querySelector('[data-menu-action="fork-post"]')?.addEventListener('click', () => {
     closeOptionsMenu();
     openForkModal();
@@ -654,6 +675,80 @@ async function handleSubmitFork() {
   } finally {
     btn.disabled = false;
   }
+}
+
+// ─── Join thread modal ──────────────────────────────────────────────────────
+
+async function openThreadModal(threadId) {
+  const modal = $('postv-thread-modal');
+  const content = $('postv-thread-content');
+  modal?.classList.remove('hidden');
+  modal?.classList.add('postv-modal-open');
+  modal.dataset.threadId = threadId;
+  content.innerHTML = `<div class="postv-options-loading">Loading thread…</div>`;
+
+  try {
+    const res = await api.post(`/threads/${threadId}/details`, { type: 'post' });
+    const thread = res?.data;
+    if (!thread) {
+      content.innerHTML = `<p class="postv-modal-text">No data found for this thread.</p>`;
+      return;
+    }
+    content.innerHTML = `
+      <div class="postv-thread-header">
+        <h4>${escapeHtml(thread.title || '')}</h4>
+        <span class="postv-thread-visibility">${thread.requires_approval ? '🔒 Private' : '🌎 Public'}</span>
+      </div>
+      <p class="postv-modal-text">${escapeHtml(thread.description || 'No description')}</p>
+      ${thread.tags?.length ? `<div class="postv-tags">${thread.tags.map(t => `<span class="postv-tag">#${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+      <p class="postv-modal-text"><strong>Department:</strong> ${escapeHtml(thread.department || 'None')}</p>
+      <p class="postv-modal-text"><strong>Members:</strong> ${thread.total_users ?? 0} / ${thread.max_members || '∞'}</p>
+      <div class="postv-modal-footer postv-modal-footer-inline">
+        <button class="postv-modal-btn postv-modal-btn-secondary" id="postv-thread-cancel">Cancel</button>
+        <button class="postv-modal-btn postv-modal-btn-primary" id="postv-thread-join">Join Thread</button>
+      </div>
+    `;
+    $('postv-thread-cancel')?.addEventListener('click', closeThreadModal);
+    $('postv-thread-join')?.addEventListener('click', () => handleJoinThread(threadId));
+  } catch (error) {
+    console.error('[post-view] Load thread details failed:', error);
+    content.innerHTML = `<p class="postv-modal-text">Could not load thread details.</p>`;
+  }
+}
+
+async function handleJoinThread(threadId) {
+  const btn = $('postv-thread-join');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Joining…';
+  }
+  try {
+    const res = await api.post(`/threads/${threadId}/join`, { type: 'post' });
+    if (res?.status === 'success') {
+      showToast('Successfully joined thread!', 'success');
+      closeThreadModal();
+    } else {
+      showToast(res?.message || 'Could not join thread.', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Join Thread'; }
+    }
+  } catch (error) {
+    console.error('[post-view] Join thread failed:', error);
+    showToast(error?.message || 'Could not join thread.', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Join Thread'; }
+  }
+}
+
+function closeThreadModal() {
+  const modal = $('postv-thread-modal');
+  modal?.classList.remove('postv-modal-open');
+  modal?.classList.add('hidden');
+}
+
+function wireThreadModal() {
+  $('postv-thread-modal-close')?.addEventListener('click', closeThreadModal);
+  $('postv-thread-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'postv-thread-modal') closeThreadModal();
+  });
 }
 
 // ─── Delete post modal ──────────────────────────────────────────────────────
