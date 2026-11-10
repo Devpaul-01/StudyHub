@@ -996,3 +996,82 @@
 }
 
 .postv-learnora-error { border: 1px solid #ef4444; }
+
+/* ── Author analytics panel ("Post insights") ─────────────────────────── */
+
+.postv-analytics { margin-top: 1rem; }
+
+.postv-analytics-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--shell-text-primary);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.postv-analytics-chevron { margin-left: auto; transition: transform 0.15s ease; }
+.postv-analytics-toggle[aria-expanded="true"] .postv-analytics-chevron { transform: rotate(180deg); }
+
+.postv-analytics-body {
+  margin-top: 0.5rem;
+  padding: 0.9rem;
+  background: var(--shell-bg-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: var(--shell-radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.postv-analytics-body.hidden { display: none; }
+
+.postv-analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.7rem;
+}
+
+.postv-analytics-stat { display: flex; flex-direction: column; align-items: center; gap: 0.1rem; }
+.postv-analytics-value { font-size: 1.1rem; font-weight: 700; color: var(--shell-text-primary); }
+.postv-analytics-label { font-size: 0.68rem; color: var(--shell-text-secondary); text-transform: uppercase; letter-spacing: 0.02em; }
+
+.postv-analytics-trending {
+  align-self: flex-start;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #f59e0b;
+}
+
+.postv-analytics-reactions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.postv-analytics-reaction {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+  background: var(--shell-bg-elevated, var(--shell-bg-hover, rgba(127, 127, 127, 0.1)));
+  border-radius: 999px;
+  color: var(--shell-text-secondary);
+}
+
+.postv-analytics-daily { display: flex; flex-direction: column; gap: 0.4rem; }
+
+.postv-analytics-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 44px;
+}
+
+.postv-analytics-bar {
+  flex: 1;
+  background: var(--shell-accent, #6366f1);
+  border-radius: 2px 2px 0 0;
+  min-height: 4px;
+}

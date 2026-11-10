@@ -289,6 +289,17 @@ function render() {
           </button>
         ` : ''}
       </div>
+
+      ${permissions.can_delete ? `
+        <div class="postv-analytics">
+          <button class="postv-analytics-toggle" id="postv-analytics-toggle" aria-expanded="false">
+            📊 Post insights <span class="postv-analytics-chevron">▾</span>
+          </button>
+          <div class="postv-analytics-body hidden" id="postv-analytics-body">
+            <div class="postv-options-loading">Loading insights…</div>
+          </div>
+        </div>
+      ` : ''}
     </div>
 
     <div class="postv-comments-section">
@@ -447,6 +458,7 @@ function render() {
   wireForkModal();
   wireThreadModal();
   wireLearnoraModal();
+  wireAnalyticsPanel();
 }
 
 // ─── Post options menu ──────────────────────────────────────────────────────
@@ -709,6 +721,70 @@ async function handleSubmitFork() {
     showToast(error?.message || 'Could not create post.', 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+// ─── Author analytics panel ─────────────────────────────────────────────────
+
+let analyticsLoaded = false;
+
+function wireAnalyticsPanel() {
+  const toggle = $('postv-analytics-toggle');
+  const body = $('postv-analytics-body');
+  if (!toggle || !body) return;
+
+  toggle.addEventListener('click', async () => {
+    const isOpen = !body.classList.contains('hidden');
+    if (isOpen) {
+      body.classList.add('hidden');
+      toggle.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    body.classList.remove('hidden');
+    toggle.setAttribute('aria-expanded', 'true');
+    if (!analyticsLoaded) {
+      await loadAnalytics();
+    }
+  });
+}
+
+async function loadAnalytics() {
+  const body = $('postv-analytics-body');
+  if (!body) return;
+  try {
+    const res = await api.get(`/posts/${getPostId()}/metrics`);
+    const m = res?.data;
+    if (!m) throw new Error('No metrics returned');
+    analyticsLoaded = true;
+
+    const breakdown = Object.entries(m.reaction_breakdown || {});
+    body.innerHTML = `
+      <div class="postv-analytics-grid">
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${m.total_views ?? 0}</span><span class="postv-analytics-label">Views</span></div>
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${m.total_reactions ?? 0}</span><span class="postv-analytics-label">Reactions</span></div>
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${m.total_comments ?? 0}</span><span class="postv-analytics-label">Comments</span></div>
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${m.total_bookmarks ?? 0}</span><span class="postv-analytics-label">Saves</span></div>
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${Math.round((m.engagement_rate || 0) * 100)}%</span><span class="postv-analytics-label">Engagement</span></div>
+        <div class="postv-analytics-stat"><span class="postv-analytics-value">${m.comment_rate_per_hour ?? 0}</span><span class="postv-analytics-label">Comments/hr</span></div>
+      </div>
+      ${m.is_trending ? `<div class="postv-analytics-trending">🔥 Trending</div>` : ''}
+      ${breakdown.length ? `
+        <div class="postv-analytics-reactions">
+          ${breakdown.map(([type, count]) => `<span class="postv-analytics-reaction">${escapeHtml(type)}: ${count}</span>`).join('')}
+        </div>
+      ` : ''}
+      ${m.daily_views?.length ? `
+        <div class="postv-analytics-daily">
+          <span class="postv-field-label">Views, last 7 days</span>
+          <div class="postv-analytics-sparkline">
+            ${m.daily_views.map(d => `<span class="postv-analytics-bar" style="height:${Math.max(4, Math.min(40, d.views * 4))}px" title="${escapeHtml(d.date)}: ${d.views}"></span>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+    `;
+  } catch (error) {
+    console.error('[post-view] Load analytics failed:', error);
+    body.innerHTML = `<p class="postv-modal-text">Could not load post insights.</p>`;
   }
 }
 
