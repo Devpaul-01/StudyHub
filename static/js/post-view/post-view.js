@@ -354,6 +354,39 @@ function render() {
         </div>
       </div>
     </div>
+
+    <div class="postv-modal-backdrop hidden" id="postv-fork-modal">
+      <div class="postv-modal postv-modal-wide">
+        <div class="postv-modal-header">
+          <h3>Repost / Fork</h3>
+          <button class="postv-modal-close" id="postv-fork-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="postv-modal-body">
+          <label class="postv-field-label">Title</label>
+          <input type="text" class="postv-fork-title" id="postv-fork-title" maxlength="200" placeholder="Post title (5-200 characters)">
+          <label class="postv-field-label">Content</label>
+          <textarea class="postv-fork-content" id="postv-fork-content" rows="5" placeholder="What's on your mind?"></textarea>
+          <label class="postv-field-label">Post type</label>
+          <select class="postv-fork-type" id="postv-fork-type">
+            <option value="discussion">Discussion</option>
+            <option value="question">Question</option>
+            <option value="announcement">Announcement</option>
+            <option value="resource">Resource</option>
+            <option value="problem">Problem</option>
+          </select>
+          <label class="postv-fork-thread-toggle">
+            <input type="checkbox" id="postv-fork-thread-enabled"> Enable thread collaboration
+          </label>
+          <label class="postv-field-label">Tags (up to 5)</label>
+          <div class="postv-fork-tags" id="postv-fork-tags"></div>
+          <input type="text" class="postv-fork-tag-input" id="postv-fork-tag-input" placeholder="Type a tag and press Enter">
+        </div>
+        <div class="postv-modal-footer">
+          <button class="postv-modal-btn postv-modal-btn-secondary" id="postv-fork-cancel">Cancel</button>
+          <button class="postv-modal-btn postv-modal-btn-primary" id="postv-fork-submit">Post</button>
+        </div>
+      </div>
+    </div>
   `;
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
@@ -376,6 +409,7 @@ function render() {
   wirePostOptionsMenu();
   wireReportModal();
   wireDeleteModal();
+  wireForkModal();
 }
 
 // ─── Post options menu ──────────────────────────────────────────────────────
@@ -433,9 +467,15 @@ function renderOptionsMenu(data) {
     items.push(`<button class="postv-options-item postv-options-item-danger" data-menu-action="delete-post">🗑️ Delete post</button>`);
   }
 
+  items.push(`<button class="postv-options-item" data-menu-action="fork-post">🔁 Repost / Fork</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
 
   menu.innerHTML = items.join('');
+
+  menu.querySelector('[data-menu-action="fork-post"]')?.addEventListener('click', () => {
+    closeOptionsMenu();
+    openForkModal();
+  });
 
   menu.querySelector('[data-menu-action="toggle-follow-post"]')?.addEventListener('click', (e) => {
     closeOptionsMenu();
@@ -511,6 +551,106 @@ async function handleSubmitReport() {
     console.error('[post-view] Report post failed:', error);
     const message = error?.message || 'Could not submit report.';
     showToast(message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── Fork / repost modal ────────────────────────────────────────────────────
+
+const MAX_FORK_TAGS = 5;
+let forkTags = [];
+
+function openForkModal() {
+  const post = state.post;
+  $('postv-fork-title').value = post.title || '';
+  $('postv-fork-content').value = post.text_content || '';
+  $('postv-fork-type').value = post.post_type || 'discussion';
+  $('postv-fork-thread-enabled').checked = !!post.thread_enabled;
+  forkTags = (post.tags || []).slice(0, MAX_FORK_TAGS);
+  renderForkTags();
+
+  const modal = $('postv-fork-modal');
+  modal?.classList.remove('hidden');
+  modal?.classList.add('postv-modal-open');
+}
+
+function closeForkModal() {
+  const modal = $('postv-fork-modal');
+  modal?.classList.remove('postv-modal-open');
+  modal?.classList.add('hidden');
+}
+
+function renderForkTags() {
+  const container = $('postv-fork-tags');
+  if (!container) return;
+  container.innerHTML = forkTags.map(tag => `
+    <span class="postv-fork-tag">#${escapeHtml(tag)} <button type="button" data-remove-tag="${escapeHtml(tag)}">×</button></span>
+  `).join('');
+  container.querySelectorAll('[data-remove-tag]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      forkTags = forkTags.filter(t => t !== btn.dataset.removeTag);
+      renderForkTags();
+    });
+  });
+}
+
+function wireForkModal() {
+  $('postv-fork-modal-close')?.addEventListener('click', closeForkModal);
+  $('postv-fork-cancel')?.addEventListener('click', closeForkModal);
+  $('postv-fork-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'postv-fork-modal') closeForkModal();
+  });
+  $('postv-fork-submit')?.addEventListener('click', handleSubmitFork);
+
+  const tagInput = $('postv-fork-tag-input');
+  tagInput?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const value = tagInput.value.trim().replace(/^#/, '');
+    if (!value) return;
+    if (forkTags.length >= MAX_FORK_TAGS) {
+      showToast(`You can only add up to ${MAX_FORK_TAGS} tags`, 'info');
+      return;
+    }
+    if (!forkTags.includes(value)) {
+      forkTags.push(value);
+      renderForkTags();
+    }
+    tagInput.value = '';
+  });
+}
+
+async function handleSubmitFork() {
+  const title = $('postv-fork-title').value.trim();
+  const content = $('postv-fork-content').value.trim();
+  const postType = $('postv-fork-type').value;
+  const threadEnabled = $('postv-fork-thread-enabled').checked;
+
+  if (title.length < 5 || title.length > 200) {
+    showToast('Title must be between 5 and 200 characters.', 'error');
+    return;
+  }
+
+  const btn = $('postv-fork-submit');
+  btn.disabled = true;
+  try {
+    const res = await api.post('/posts/create', {
+      title,
+      text_content: content,
+      post_type: postType,
+      thread_enabled: threadEnabled,
+      tags: forkTags,
+    });
+    if (res?.status === 'success') {
+      showToast('Post created!', 'success');
+      closeForkModal();
+    } else {
+      showToast(res?.message || 'Could not create post.', 'error');
+    }
+  } catch (error) {
+    console.error('[post-view] Fork post failed:', error);
+    showToast(error?.message || 'Could not create post.', 'error');
   } finally {
     btn.disabled = false;
   }
