@@ -484,10 +484,16 @@ function renderOptionsMenu(data) {
     items.push(`<button class="postv-options-item" data-menu-action="view-thread" data-thread-id="${data.thread.thread_id}">🧵 Join Thread</button>`);
   }
 
+  items.push(`<button class="postv-options-item" data-menu-action="listen-post">${window.speechSynthesis?.speaking ? '⏹️ Stop listening' : '🔊 Listen'}</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="fork-post">🔁 Repost / Fork</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
 
   menu.innerHTML = items.join('');
+
+  menu.querySelector('[data-menu-action="listen-post"]')?.addEventListener('click', () => {
+    closeOptionsMenu();
+    handleListenPost();
+  });
 
   menu.querySelector('[data-menu-action="view-thread"]')?.addEventListener('click', (e) => {
     closeOptionsMenu();
@@ -675,6 +681,30 @@ async function handleSubmitFork() {
   } finally {
     btn.disabled = false;
   }
+}
+
+// ─── Listen (text-to-speech) ────────────────────────────────────────────────
+
+function handleListenPost() {
+  if (!window.speechSynthesis) {
+    showToast('Text-to-speech is not supported in this browser.', 'error');
+    return;
+  }
+
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+    return;
+  }
+
+  const post = state.post;
+  const text = `${post?.title || ''} ${post?.text_content || ''}`.trim();
+  if (!text) return;
+
+  const speech = new SpeechSynthesisUtterance(text);
+  speech.rate = 1;
+  speech.pitch = 1;
+  speech.lang = 'en-US';
+  window.speechSynthesis.speak(speech);
 }
 
 // ─── Join thread modal ──────────────────────────────────────────────────────
