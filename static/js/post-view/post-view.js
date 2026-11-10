@@ -399,6 +399,29 @@ function render() {
         </div>
       </div>
     </div>
+
+    <div class="postv-modal-backdrop hidden" id="postv-learnora-modal">
+      <div class="postv-modal postv-modal-wide">
+        <div class="postv-modal-header">
+          <h3>✨ Ask Learnora</h3>
+          <button class="postv-modal-close" id="postv-learnora-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="postv-modal-body">
+          <input type="text" class="postv-fork-tag-input" id="postv-learnora-input" placeholder="Ask a question about this post…">
+          <div class="postv-options-loading" id="postv-learnora-loading" style="display:none;">Thinking…</div>
+          <div id="postv-learnora-answer" class="postv-learnora-answer" style="display:none;">
+            <p id="postv-learnora-answer-text" class="postv-modal-text"></p>
+          </div>
+          <div id="postv-learnora-error" class="postv-learnora-error" style="display:none;">
+            <p class="postv-modal-text" id="postv-learnora-error-msg"></p>
+          </div>
+        </div>
+        <div class="postv-modal-footer">
+          <button class="postv-modal-btn postv-modal-btn-secondary" id="postv-learnora-ask">Ask</button>
+          <button class="postv-modal-btn postv-modal-btn-primary" id="postv-learnora-create-chat" style="display:none;">Continue in chat →</button>
+        </div>
+      </div>
+    </div>
   `;
 
   $('postv-react-btn')?.addEventListener('click', handleReact);
@@ -423,6 +446,7 @@ function render() {
   wireDeleteModal();
   wireForkModal();
   wireThreadModal();
+  wireLearnoraModal();
 }
 
 // ─── Post options menu ──────────────────────────────────────────────────────
@@ -484,12 +508,17 @@ function renderOptionsMenu(data) {
     items.push(`<button class="postv-options-item" data-menu-action="view-thread" data-thread-id="${data.thread.thread_id}">🧵 Join Thread</button>`);
   }
 
+  items.push(`<button class="postv-options-item" data-menu-action="ask-learnora">✨ Ask Learnora</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="listen-post">${window.speechSynthesis?.speaking ? '⏹️ Stop listening' : '🔊 Listen'}</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="fork-post">🔁 Repost / Fork</button>`);
   items.push(`<button class="postv-options-item" data-menu-action="report-post">🚩 Report post</button>`);
 
   menu.innerHTML = items.join('');
 
+  menu.querySelector('[data-menu-action="ask-learnora"]')?.addEventListener('click', () => {
+    closeOptionsMenu();
+    openAskLearnoraModal();
+  });
   menu.querySelector('[data-menu-action="listen-post"]')?.addEventListener('click', () => {
     closeOptionsMenu();
     handleListenPost();
@@ -680,6 +709,95 @@ async function handleSubmitFork() {
     showToast(error?.message || 'Could not create post.', 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+// ─── Ask Learnora ───────────────────────────────────────────────────────────
+
+let learnoraLastQuestion = '';
+let learnoraLastAnswer = '';
+
+function openAskLearnoraModal() {
+  const modal = $('postv-learnora-modal');
+  modal?.classList.remove('hidden');
+  modal?.classList.add('postv-modal-open');
+  $('postv-learnora-answer').style.display = 'none';
+  $('postv-learnora-error').style.display = 'none';
+  $('postv-learnora-create-chat').style.display = 'none';
+}
+
+function closeAskLearnoraModal() {
+  const modal = $('postv-learnora-modal');
+  modal?.classList.remove('postv-modal-open');
+  modal?.classList.add('hidden');
+}
+
+function wireLearnoraModal() {
+  $('postv-learnora-modal-close')?.addEventListener('click', closeAskLearnoraModal);
+  $('postv-learnora-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'postv-learnora-modal') closeAskLearnoraModal();
+  });
+  $('postv-learnora-ask')?.addEventListener('click', handleAskLearnora);
+  $('postv-learnora-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleAskLearnora(); }
+  });
+  $('postv-learnora-create-chat')?.addEventListener('click', handleCreateLearnoraChat);
+}
+
+async function handleAskLearnora() {
+  const question = $('postv-learnora-input')?.value.trim() || '';
+  const loadingEl = $('postv-learnora-loading');
+  const answerEl = $('postv-learnora-answer');
+  const answerTextEl = $('postv-learnora-answer-text');
+  const errorEl = $('postv-learnora-error');
+  const errorMsgEl = $('postv-learnora-error-msg');
+  const createChatBtn = $('postv-learnora-create-chat');
+
+  loadingEl.style.display = 'flex';
+  answerEl.style.display = 'none';
+  errorEl.style.display = 'none';
+  createChatBtn.style.display = 'none';
+
+  try {
+    const res = await api.post(`/posts/${getPostId()}/ask-learnora`, { question });
+    if (!res || res.status !== 'success') {
+      throw new Error(res?.message || 'Failed to get an answer from Learnora');
+    }
+    const answer = res?.data?.answer || '';
+    answerTextEl.textContent = answer;
+    learnoraLastAnswer = answer;
+    learnoraLastQuestion = res?.data?.question || question;
+
+    loadingEl.style.display = 'none';
+    answerEl.style.display = 'block';
+    createChatBtn.style.display = 'inline-flex';
+  } catch (error) {
+    console.error('[post-view] Ask Learnora failed:', error);
+    errorMsgEl.textContent = error?.message || 'Please try again.';
+    loadingEl.style.display = 'none';
+    errorEl.style.display = 'block';
+  }
+}
+
+async function handleCreateLearnoraChat() {
+  const btn = $('postv-learnora-create-chat');
+  const seed = learnoraLastQuestion
+    ? `Regarding the post I was just reading:\n\nQ: ${learnoraLastQuestion}\n\nA: ${learnoraLastAnswer}\n\nLet's continue from here.`
+    : learnoraLastAnswer;
+
+  btn.disabled = true;
+  btn.textContent = 'Creating chat…';
+  try {
+    const res = await api.post('/learnora/api/conversation/new', { initial_message: seed });
+    if (!res || res.status !== 'success') {
+      throw new Error(res?.message || 'Failed to create chat');
+    }
+    window.location.href = `/student/learnora?conversation_id=${res.data.conversation_id}`;
+  } catch (error) {
+    console.error('[post-view] Create Learnora chat failed:', error);
+    showToast('Failed to create chat. Please try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Continue in chat →';
   }
 }
 
