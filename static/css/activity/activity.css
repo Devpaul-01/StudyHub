@@ -1,0 +1,343 @@
+/**
+ * ============================================================================
+ * LIVE ACTIVITY FEED — STYLES
+ * ============================================================================
+ *
+ * Every class name here is read directly from
+ * static/js/activity/activity.feed.js's actual render functions
+ * (renderActivityItem, renderEmptyState, renderActivityError) — this file
+ * didn't exist before (confirmed: no static/css/activity/ directory was
+ * present anywhere in the repo), so every one of these classes was
+ * rendering completely unstyled until now.
+ *
+ * Variables (--text-primary, --text-secondary, --border, --bg-secondary,
+ * --primary, --accent, etc.) come from static/css/homework/homework.css's
+ * :root block, already loaded on this page — not redefined here, reused
+ * directly, same fallback-value convention the replaced mock markup in
+ * feed2.html already used (var(--border, #e5e7eb) style).
+ */
+
+.activity-feed-wrapper {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+}
+
+/* ---------- Header + tabs ---------- */
+
+.activity-feed-header {
+  padding: 20px 0 24px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  margin-bottom: 20px;
+}
+
+.activity-feed-header h2 {
+  margin: 0 0 4px;
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--text-primary, #111827);
+}
+
+.activity-feed-header > p {
+  margin: 0 0 16px;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #6b7280);
+}
+
+.activity-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.activity-tab {
+  flex: 1;
+  padding: 10px 16px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg-secondary, #f9fafb);
+  color: var(--text-secondary, #6b7280);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.activity-tab:hover {
+  background: var(--bg-hover, #f3f4f6);
+}
+
+.activity-tab.active {
+  background: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+  color: #fff;
+}
+
+/* ---------- Feed container ---------- */
+
+.activity-feed-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-feed-container.refreshing {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+#activity-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---------- Activity card ---------- */
+
+.activity-item {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-secondary, #f9fafb);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 14px;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Highlight pulse for an item that just arrived over WebSocket —
+   activity.feed.js adds this class for 2s then removes it
+   (addActivityToFeed, newItem.classList.add('activity-new')). */
+.activity-item.activity-new {
+  background: var(--accent-subtle, rgba(99, 102, 241, 0.08));
+  box-shadow: 0 0 0 1px var(--accent-border, rgba(99, 102, 241, 0.3));
+  animation: activitySlideIn 0.3s ease;
+}
+
+@keyframes activitySlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.activity-icon-wrapper {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--bg-tertiary, #f3f4f6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.activity-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.activity-content {
+  flex: 1;
+  min-width: 0; /* allow message text to wrap/truncate instead of overflowing */
+}
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.activity-user-info {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.activity-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+/* Small online-status dot anchored to the avatar's corner — matches the
+   online-indicator treatment used elsewhere in this app (e.g.
+   connection cards), same visual language, not a new pattern. */
+.activity-online-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 2px solid var(--bg-secondary, #f9fafb);
+}
+
+.activity-time {
+  font-size: 0.72rem;
+  color: var(--text-tertiary, #9ca3af);
+  white-space: nowrap;
+}
+
+.activity-message {
+  font-size: 0.85rem;
+  color: var(--text-primary, #111827);
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.activity-message strong {
+  font-weight: 700;
+}
+
+/* ---------- Badges ---------- */
+
+.activity-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.activity-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  background: var(--bg-tertiary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+
+.activity-badge.badge-hard,
+.activity-badge.badge-help {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.activity-badge.badge-medium {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
+.activity-badge.badge-easy {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+
+.activity-badge.badge-achievement {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+
+.activity-badge.badge-subject,
+.activity-badge.badge-helpers {
+  background: var(--accent-subtle, rgba(99, 102, 241, 0.1));
+  color: var(--accent, #6366f1);
+}
+
+/* ---------- Action buttons ---------- */
+
+.activity-action {
+  margin-top: 10px;
+}
+
+.activity-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--accent, #6366f1);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent, #6366f1);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.activity-btn:hover {
+  background: var(--accent, #6366f1);
+  color: #fff;
+}
+
+.activity-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  background: transparent;
+  color: var(--text-tertiary, #9ca3af);
+  border-color: var(--border, #e5e7eb);
+}
+
+/* ---------- Empty state ---------- */
+
+.activity-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 56px 24px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.activity-empty-icon {
+  margin-bottom: 14px;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.activity-empty-title {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary, #111827);
+}
+
+.activity-empty-text {
+  margin: 0 0 4px;
+  font-size: 0.82rem;
+  max-width: 320px;
+}
+
+.activity-empty-hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+/* ---------- Error state ---------- */
+
+.activity-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.activity-error-icon {
+  font-size: 2rem;
+  margin-bottom: 10px;
+}
+
+.activity-error p {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 480px) {
+  .activity-feed-wrapper {
+    padding: 0 12px 32px;
+  }
+
+  .activity-item {
+    padding: 12px;
+    gap: 10px;
+  }
+}
