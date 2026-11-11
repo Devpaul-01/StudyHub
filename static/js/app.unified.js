@@ -13,6 +13,7 @@ import { HomeworkHandlers }     from '../js/homework/homework.delegation.js';
 import { MessageHandlers }      from '../js/message/message.delegation.js';
 import { AnalyticsHandlers }    from '../js/analytics/analytics.delegation.js';
 import { ConnectionHandlers }   from '../js/connection/connection.delegation.js';
+import { ActivityHandlers }     from '../js/activity/activity.delegation.js';
 import { NotificationHandlers } from '../js/notification/notification.delegation.js';
 import { ProfileHandlers }      from '../js/profile/profile.delegation.js';
 import { FeedHandlers }         from '../js/feed/feed.delegation.js';
@@ -50,7 +51,8 @@ const UNIFIED_ACTIONS = {
 
   // ── NEW ──────────────────────────────────────────────────────────────────
   ...LeaderboardHandlers,
-  ...ConnectionHandlers
+  ...ConnectionHandlers,
+  ...ActivityHandlers
   
   // ─────────────────────────────────────────────────────────────────────────
 };
