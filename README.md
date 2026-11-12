@@ -17,7 +17,7 @@ StudyHub is a peer-to-peer academic platform for a university student body, buil
 
 A student stuck on a problem set at 11pm has no reliable way to find a classmate who already understands the material, is online right now, and is willing to help — outside of scattered group chats with no structure, no accountability, and no way to reward the people who actually show up. StudyHub's bet is that peer tutoring is abundant but undiscoverable: every class has students who are strong in a subject and students who need help in that same subject, but there's no matching layer and no reputation signal for who's reliable. The product surfaces the right people to connect with (department, subject overlap, complementary skills, mutual connections), gives every helpful action a transparent point value, and wraps embedded AI tutoring directly around the connections graph instead of leaving students to coordinate over unrelated tools.
 
-The backend is a Flask monolith on PostgreSQL (SQLAlchemy), with real-time features over Socket.IO, Cloudinary for media, Flask-Mail for transactional email, Firebase Cloud Messaging for push, and a self-built multi-provider AI layer (Gemini, Groq, Cohere, Cloudflare Workers AI, Mistral, OpenRouter) with automatic classified failover. Redis backs four structurally different roles across the app — AI provider state, WebSocket presence, distributed job locking, and durable background job queues — following a horizontal-scaling pass that moved every piece of previously single-process state onto Redis (see [Status & Recent Changes](#status--recent-changes)). The frontend is vanilla JavaScript (no framework) — a deliberate choice to keep the client lightweight and to force the backend API to be genuinely self-sufficient.
+The backend is a Flask monolith on PostgreSQL (SQLAlchemy), with real-time features over Socket.IO, Cloudinary for media, Flask-Mail for transactional email, Firebase Cloud Messaging for push, and all AI calls routed through a self-hosted [llm-gateway](https://github.com/Devpaul-01/llm-gateway) instance (classified failover, key rotation, caching, and budgets now live there instead of in this codebase). Redis backs four structurally different roles across the app — the gateway client's cooldown state, WebSocket presence, distributed job locking, and durable background job queues — following a horizontal-scaling pass that moved every piece of previously single-process state onto Redis (see [Status & Recent Changes](#status--recent-changes)). The frontend is vanilla JavaScript (no framework) — a deliberate choice to keep the client lightweight and to force the backend API to be genuinely self-sufficient.
 
 ![Learnora responding live inside a group study thread, grounded in that thread's own conversation history](assets/product/thread-ai-mention.png)
 
@@ -161,7 +161,13 @@ The scheduler runs in-process inside `app.py`/`start-all.py` whenever `SCHEDULER
 | `REDIS_SSL_INSECURE` | Opt-out flag to disable TLS cert verification for `rediss://` URLs behind a proxy that breaks hostname matching |
 | `SCHEDULER_ENABLED` | Whether this process runs the APScheduler cron jobs |
 | `RATE_LIMIT_ENABLED` | Toggles Flask-Limiter enforcement |
-| `AI_PROVIDER_REDIS_STATE_ENABLED` | Kill switch for Redis-shared AI provider failover state — falls back to per-process in-memory state |
+| `AI_PROVIDER_REDIS_STATE_ENABLED` | Kill switch for the Redis-shared llm-gateway cooldown state — falls back to per-process in-memory state |
+| `LLM_GATEWAY_BASE_URL` | Base URL of your [llm-gateway](https://github.com/Devpaul-01/llm-gateway) instance (no `/v1` suffix — it's appended automatically) |
+| `LLM_GATEWAY_API_KEY` | The project's gateway key, created via the gateway's `POST /admin/gateway-keys` API. This is the only AI credential StudyHub itself holds now |
+| `LLM_GATEWAY_PROJECT_ID` | Optional — the gateway project id this key belongs to. Not sent on chat requests (the gateway derives the project from the key itself); kept for logging/diagnostics only |
+| `LLM_GATEWAY_TEXT_MODELS` / `LLM_GATEWAY_VISION_MODELS` | Optional comma-separated `provider:model` override for the built-in text/vision fallback chains sent as the request's `fallback_models` |
+| `LLM_GATEWAY_COOLDOWN_SECONDS` | Optional — how long `provider_manager` waits after a failed gateway call before trying again (default `20`) |
+| `LLM_GATEWAY_TIMEOUT_SECONDS` / `LLM_GATEWAY_STREAM_TIMEOUT_SECONDS` | Optional request timeouts for non-streaming / streaming gateway calls (defaults `30` / `60`) |
 | `FLASK_ENV` / `APP_ENV` | Selects the config class (checked in that order); defaults to `production` |
 | `ACCESS_TOKEN_HTTPONLY` | Whether the access-token cookie is JS-readable; governs whether a separate CSRF cookie is issued |
 | `CORS_ALLOWED_ORIGINS` | Required to be the real frontend origin(s) — `Access-Control-Allow-Credentials` cannot pair with a wildcard origin |
@@ -173,7 +179,6 @@ The scheduler runs in-process inside `app.py`/`start-all.py` whenever `SCHEDULER
 | `SENTRY_RELEASE` | Optional release tag (e.g. a git SHA) attached to Sentry events |
 | `CURRENT_URL` / `PORT` | Public base URL used in emailed links (default `http://127.0.0.1:5001/`) and the listen port (default 5001) |
 | `SENTRY_DSN` | Optional — error tracking is fully fail-open if unset |
-| Provider API keys (Gemini, Groq, Cohere, Cloudflare, Mistral, OpenRouter) | Multiple keys per provider supported for rotation |
 | Cloudinary / Flask-Mail / Firebase credentials | Media storage, email, and push notification integrations |
 
 ## Testing

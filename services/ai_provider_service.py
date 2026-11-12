@@ -1,48 +1,66 @@
 """
 services/ai_provider_service.py
 
-Multi-provider AI access layer. Moved out of learnora.py per Document 1
-§2.4 — this is the module every blueprint that needs an AI call now
-imports from, instead of reaching into learnora.py's internals.
+AI access layer. Moved out of learnora.py per Document 1 §2.4 — this is
+the module every blueprint that needs an AI call now imports from, instead
+of reaching into learnora.py's internals.
+
+GATEWAY MIGRATION: this module no longer talks to Gemini/Groq/Cohere/
+Cloudflare/Mistral/OpenRouter directly with per-provider API keys. Every
+call now goes through one self-hosted llm-gateway instance
+(https://github.com/Devpaul-01/llm-gateway) over its OpenAI-compatible
+`POST {LLM_GATEWAY_BASE_URL}/v1/chat/completions` endpoint, authenticated
+with a single project-scoped gateway key (`LLM_GATEWAY_API_KEY`). The
+gateway itself now owns everything that used to live here: provider/key
+rotation, circuit breaking, cooldowns, and model discovery, across
+whichever real providers are configured on that gateway project. This
+module's job shrinks to: build an OpenAI-shaped request (optionally with
+a `fallback_models` chain for the gateway to walk server-side), send it to
+the one gateway endpoint, and classify the one HTTP response that comes
+back.
 
 Owns:
-  - ProviderCallError, classify_provider_error (AUDIT horizontal-scaling
-    completion pass — direct port of the reference multiProvider.js
-    project's utils/providerErrors.js taxonomy: KEY_FAULT /
-    PROVIDER_TRANSIENT / BAD_MODEL / NON_RETRYABLE)
-  - MultiProviderManager (provider loading, rotation, cooldown/blacklist —
-    cooldown/blacklist/rotation-index/model-discovery-cache state is now
-    Redis-backed, shared cross-instance, with a kill switch —
-    AI_PROVIDER_REDIS_STATE_ENABLED — mirroring multiProvider.js's own
-    MULTIPROVIDER_REDIS_STATE_ENABLED)
+  - ProviderCallError, classify_provider_error — same four-category
+    taxonomy as before (KEY_FAULT / PROVIDER_TRANSIENT / BAD_MODEL /
+    NON_RETRYABLE), re-mapped against the GATEWAY's own error surface
+    (see apierror.go / providers/errors.go in llm-gateway) rather than
+    each vendor's raw API — see the status-set comments below for exactly
+    what changed and why.
+  - MultiProviderManager — now a thin client wrapper around the one
+    gateway endpoint (class name kept for backward compatibility with
+    existing imports/tests). Owns the short client-side cooldown that
+    keeps this process from hammering a gateway that's currently down,
+    Redis-backed and cross-instance via the same AI_PROVIDER_REDIS_STATE_ENABLED
+    kill switch as before.
   - StudyAssistant (per-conversation streaming assistant; stream_response
-    now classifies pre-stream/header-stage failures via
-    classify_provider_error the same way call_ai_response does)
+    classifies pre-stream/header-stage failures via classify_provider_error
+    the same way call_ai_response does)
   - _call_provider_sync (non-streaming, ORIGINAL name/contract preserved
     exactly — used by websocket_threads.py's Thread-WebSocket meeting-
     notes/action-AI background callers) and _call_provider_sync_raising
-    (the new classified engine underneath it, used directly by
-    call_ai_response's queue-walking loop)
-  - call_ai_response (the retry/rotation consolidation described in
-    Document 1 §2.4 — now rebuilt around a flattened provider×model queue,
-    _build_call_queue, matching multiProvider.js's buildProviderQueue/
-    callWithFallback structure)
+    (the classified engine underneath it, used directly by
+    call_ai_response)
+  - call_ai_response — same external contract (text, diagnostics) as
+    before; internally now a single gateway call per attempt, since the
+    gateway already walks its own fallback_models chain server-side.
   - clean_ai_response, generate_conversation_title
-  - Model priority lists
+  - Model catalog (GATEWAY_TEXT_MODELS / GATEWAY_VISION_MODELS) — the
+    `fallback_models` chain sent to the gateway on every request.
 
 Per Document 2 §2's layering rule, this module has zero Flask dependency:
 no `from flask import ...`, no `request`/`session`/`g`. Anything HTTP-layer
 (routes, request parsing, response serialization) stays in
 routes/student/learnora/*.
 
-Import-time network call fix (Document 1 §5): the previous version of this
-code (in learnora.py) called self._warm_model_discovery() from
-MultiProviderManager.__init__, meaning a background thread hitting live
-provider APIs was started the moment the module was imported — this broke
-unit-testing/importing the module in CI without network access. That call
-is now REMOVED from __init__. app.py's create_app() must call
-`provider_manager.warm_model_discovery()` explicitly once, after blueprint
-registration, as its own visible startup step.
+Import-time network call fix (Document 1 §5, preserved through the gateway
+migration): MultiProviderManager.__init__ performs no network I/O — it
+only reads env vars and sets up in-memory/Redis-backed state, so importing
+this module in a test/CI context without network access still works.
+app.py's create_app() still calls `provider_manager.warm_model_discovery()`
+once, after blueprint registration; against the gateway this is now a
+cheap, best-effort reachability check (see its docstring) rather than a
+per-provider /v1/models crawl, but the call site and method name are kept
+so app.py needs no changes.
 """
 
 import os
@@ -58,188 +76,134 @@ logger = logging.getLogger(__name__)
 
 
 # ===========================================================
-# MODEL PRIORITY LISTS
+# MODEL CATALOG
 #
-# These serve two purposes:
-#   1. Static fallback when dynamic discovery is unavailable.
-#   2. Ranking template for discovered models (known models appear first
-#      in priority order; unknown new models are appended as extras).
+# llm-gateway resolves a model by bare name, by an explicit "provider"
+# field, or by the unambiguous "provider:model" form (see its README's
+# Providers section and internal/providers/resolve.go's parseModelRef).
+# Every entry below is written in the explicit "provider:model" form so
+# routing never depends on the gateway's own model->provider inference
+# table staying in sync with this list.
 #
-# Mistral exception: uses provider-managed alias IDs that are always
-# current — no dynamic discovery needed, no manual updates required.
+# The gateway's built-in provider registry (internal/providers/registry.go)
+# supports: groq, mistral, openrouter, gemini, openai, deepseek, together,
+# fireworks, cerebras, xai, deepinfra, sambanova. Cohere and Cloudflare
+# Workers AI — both present in the old direct-call provider list — are
+# NOT in that registry, so they have no equivalent here; if either is ever
+# added to llm-gateway's registry, add its models to the catalog below the
+# same way the other four are.
 #
-# Cohere and Cloudflare are static-only too, to keep their curated lists
-# exact. OpenRouter is static by construction now — it points at the
-# openrouter/free auto-router instead of specific model IDs (see the
-# OPENROUTER section below), so there's nothing to discover.
+# PRIMARY_MODEL is the first entry the gateway is asked to use; the rest
+# of each list is sent as that request's `fallback_models`, so the gateway
+# walks the whole chain server-side in one HTTP call — this module no
+# longer loops over providers/models itself (see _build_call_queue).
+#
+# Override either list from the environment with a comma-separated
+# "provider:model" list — LLM_GATEWAY_TEXT_MODELS / LLM_GATEWAY_VISION_MODELS
+# — without a redeploy; see _load_gateway_provider() below.
 # ===========================================================
 
 # ============================================================
-# GROQ
+# GEMINI — via the gateway's "gemini" provider id.
 # ============================================================
-
-# None of the current Groq models below support image input — the old
-# vision entries (llama-4-scout / llama-4-maverick) aren't in this lineup
-# anymore. Left as an explicit empty set (rather than removed) so
-# _load_providers' "primary_vision = None → supports_vision = False"
-# wiring keeps working exactly like it does for any vision-less provider.
-GROQ_VISION_MODELS = set()
-
-GROQ_MODELS = [
-    "openai/gpt-oss-120b",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "moonshotai/kimi-k2-instruct-0905",
-]
-
-
-# ============================================================
-# GEMINI
-#
-# Uses Google's OpenAI-compatible endpoint
-# (https://generativelanguage.googleapis.com/v1beta/openai/) so it slots
-# into the exact same /chat/completions request/response shape every
-# other provider here already uses — no separate request-building or
-# streaming-parsing path needed. Auth still goes through the standard
-# `Authorization: Bearer <key>` header via that compatibility layer.
-# ============================================================
-
-GEMINI_VISION_MODELS = {
-    "gemini-3.7-flash",
-    "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
-}
-
 GEMINI_MODELS = [
-    "gemini-3.7-flash",
-    "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
+    "gemini:gemini-3.7-flash",
+    "gemini:gemini-3.5-flash",
+    "gemini:gemini-3.1-flash-lite",
 ]
-
+GEMINI_VISION_MODELS = set(GEMINI_MODELS)  # all three are multimodal
 
 # ============================================================
-# MISTRAL
-#
-# Trimmed to the one model confirmed working on the current key/plan —
-# mistral-medium-latest (currently resolves to Mistral Medium 3.5, which
-# is multimodal, so it doubles as the text AND vision model here).
+# GROQ — via the gateway's "groq" provider id. No vision-capable models
+# in the current Groq lineup (left out of the vision chain entirely).
 # ============================================================
+GROQ_MODELS = [
+    "groq:openai/gpt-oss-120b",
+    "groq:llama-3.3-70b-versatile",
+    "groq:llama-3.1-8b-instant",
+    "groq:moonshotai/kimi-k2-instruct-0905",
+]
+GROQ_VISION_MODELS: set = set()
 
-MISTRAL_VISION_MODELS = {
-    "mistral-medium-latest",
-}
-
+# ============================================================
+# MISTRAL — via the gateway's "mistral" provider id. Trimmed to the one
+# model confirmed working on the current plan — mistral-medium-latest
+# (resolves to Mistral Medium 3.5, which is multimodal).
+# ============================================================
 MISTRAL_MODELS = [
-    "mistral-medium-latest",
+    "mistral:mistral-medium-latest",
 ]
-
-
-# ============================================================
-# COHERE
-#
-# Uses Cohere's OpenAI-compatible endpoint
-# (https://api.cohere.ai/compatibility/v1) — same /chat/completions
-# request/response shape as every other provider in this file.
-# ============================================================
-
-COHERE_VISION_MODELS = set()
-
-COHERE_MODELS = [
-    "command-a-03-2025",
-    "command-r7b-12-2024",
-]
-
+MISTRAL_VISION_MODELS = set(MISTRAL_MODELS)
 
 # ============================================================
-# CLOUDFLARE WORKERS AI
-#
-# Uses Cloudflare's OpenAI-compatible endpoint
-# (https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1).
-# Unlike every other provider here, the base URL itself is account-scoped
-# — set CLOUDFLARE_ACCOUNT_ID (in addition to CLOUDFLARE_API_KEY, which
-# holds a Cloudflare API Token) or this provider is skipped entirely at
-# load time. See _load_providers() below.
+# OPENROUTER — via the gateway's "openrouter" provider id, pointed at the
+# Free Models Router (openrouter/free) rather than a hand-picked list of
+# specific ":free" model IDs, which goes stale as OpenRouter's free-tier
+# catalog turns over. openrouter/free auto-selects from whatever free
+# models are live right now and already filters for what the request
+# needs (vision, tool calling, structured outputs), so it doubles as the
+# vision entry too.
 # ============================================================
-
-CLOUDFLARE_VISION_MODELS = set()
-
-CLOUDFLARE_MODELS = [
-    "@cf/openai/gpt-oss-120b",
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "@cf/meta/llama-3.1-8b-instruct-fast",
-]
-
-
-# ============================================================
-# OPENROUTER
-#
-# Points at the Free Models Router (openrouter/free) instead of a
-# hand-picked list of specific ":free" model IDs. OpenRouter's free-tier
-# catalog turns over fast enough that a static list goes stale within
-# weeks — models get delisted with little notice. openrouter/free
-# auto-selects from whatever free models are actually live right now, and
-# it already filters that pool for what the request needs (vision, tool
-# calling, structured outputs) — which is also why it can safely stand in
-# as the vision entry below instead of naming one specific multimodal
-# model that might itself get delisted.
-# ============================================================
-
-OPENROUTER_FREE_ROUTER = "openrouter/free"
-
+OPENROUTER_FREE_ROUTER = "openrouter:openrouter/free"
+OPENROUTER_MODELS = [OPENROUTER_FREE_ROUTER]
 OPENROUTER_VISION_MODELS = {OPENROUTER_FREE_ROUTER}
 
-OPENROUTER_MODELS = [OPENROUTER_FREE_ROUTER]
+# Provider order — the order these four catalogs are concatenated into
+# the gateway text/vision fallback chains below. Kept as a constant for
+# logging/display parity with the pre-gateway version.
+PROVIDER_ORDER = ["gemini", "groq", "mistral", "openrouter"]
 
-
-# Non-chat model filter: skip these during dynamic model discovery.
-NON_CHAT_PATTERN = re.compile(
-    r"whisper|embed|guard|tts|moderation|transcribe|ocr|safeguard|vision-only",
-    re.IGNORECASE,
-)
-
-# Provider order — actual call/fallback order is driven by the
-# PROVIDER_DEFS list order inside _load_providers() below; this constant
-# mirrors it for logging/display only (see the loaded-providers log line
-# at the end of _load_providers). Keep the two in sync.
-PROVIDER_ORDER = ["gemini", "groq", "cohere", "cloudflare", "mistral", "openrouter"]
+# Full aggregated catalogs (provider order above, model order within each
+# provider) — this IS the fallback_models chain sent to the gateway,
+# unless overridden by LLM_GATEWAY_TEXT_MODELS / LLM_GATEWAY_VISION_MODELS.
+GATEWAY_TEXT_MODELS = GEMINI_MODELS + GROQ_MODELS + MISTRAL_MODELS + OPENROUTER_MODELS
+GATEWAY_VISION_MODELS = [
+    m for m in GATEWAY_TEXT_MODELS
+    if m in GEMINI_VISION_MODELS | GROQ_VISION_MODELS | MISTRAL_VISION_MODELS | OPENROUTER_VISION_MODELS
+]
 
 
 # ===========================================================
-# PROVIDER ERROR CLASSIFICATION
+# GATEWAY ERROR CLASSIFICATION
 #
-# Direct Python port of utils/providerErrors.js from the reference
-# multiProvider.js project (supplied, read in full). Replaces the old
-# per-call-site exception handling (_call_provider_sync's bare
-# Timeout/HTTPError/Exception split, StudyAssistant._do_stream's
-# _is_model_error string-matching) — every one of those old paths
-# treated a failure identically regardless of WHY it failed, which is
-# exactly the problem this taxonomy fixes: a 500 from a provider-wide
-# outage used to cool the specific key exactly like a genuinely bad
-# API key would, wasting that key's availability for an hour over a
-# failure that had nothing to do with it.
+# Same four-category taxonomy as the pre-gateway version (KEY_FAULT /
+# PROVIDER_TRANSIENT / BAD_MODEL / NON_RETRYABLE), but the status-set
+# membership below is re-derived against llm-gateway's OWN error surface
+# (internal/httpserver/apierror.go + internal/providers/errors.go), not
+# each vendor's raw API, because there is now exactly one upstream and
+# exactly one key (LLM_GATEWAY_API_KEY):
 #
-# The four categories and their handling (see call_ai_response's fallback
-# loop and StudyAssistant.stream_response below) mirror the reference
-# file's classifyProviderError docstring exactly:
-#
-#   KEY_FAULT          — cool the specific key, try next key/provider.
-#                        Attributable to the key itself (bad credentials,
-#                        this key specifically hit its rate limit, or this
-#                        key/account is out of quota — 402 Payment Required
-#                        included, since that's an account-billing state,
-#                        not a provider-wide outage).
-#   PROVIDER_TRANSIENT — do NOT cool the key, try next key/provider.
-#                        Provider-wide or network condition unrelated to
-#                        this key's validity — penalizing the key would
-#                        be incorrect and would waste its availability.
-#   BAD_MODEL          — do NOT cool the key, skip this model specifically
-#                        (not just this key), evict the model from the
-#                        Redis-backed discovery cache so other requests/
-#                        instances stop hitting it until the next natural
-#                        refresh.
-#   NON_RETRYABLE      — do not retry, raise immediately. Most likely a
-#                        genuine application bug in how the request was
-#                        built, not routine provider flakiness.
+#   KEY_FAULT          — NOT used for anything the gateway itself returns
+#                        anymore. The old meaning ("cool this one key,
+#                        try the next key/provider") doesn't apply when
+#                        there's only one gateway key: "cooling" it would
+#                        just block every subsequent call for the cooldown
+#                        window instead of rotating to a working
+#                        alternative. 401/403 (invalid/revoked gateway
+#                        key) is a hard misconfiguration — see
+#                        NON_RETRYABLE below — not a per-key fault to
+#                        rotate away from.
+#   PROVIDER_TRANSIENT — do NOT cool the key; the gateway's own admission
+#                        control (429 rate_limit_exceeded /
+#                        too_many_concurrent_requests /
+#                        daily_token_budget_exceeded) and its upstream
+#                        failures once EVERY configured provider/credential
+#                        is exhausted (502 upstream_error, 503
+#                        service_unavailable, 504) land here. These are
+#                        worth a short retry later — see
+#                        MultiProviderManager's cooldown, which exists to
+#                        protect a struggling gateway, not to pick a
+#                        different key.
+#   BAD_MODEL          — a model this code asked for doesn't exist on any
+#                        configured provider. Evicted from this process's
+#                        in-memory fallback list (see evict_model) so the
+#                        same dead model name isn't retried every request
+#                        until the next deploy.
+#   NON_RETRYABLE      — malformed/rejected request (400), the gateway
+#                        key itself is missing/invalid/revoked (401/403),
+#                        or the request body was too large (413). Retrying
+#                        the same request against the same single gateway
+#                        would fail identically every time.
 # ===========================================================
 
 class ProviderCallError(Exception):
@@ -259,8 +223,10 @@ class ProviderCallError(Exception):
         self.raw_message = message                    # kept for logging ONLY — never used for classification
 
 
-_KEY_FAULT_STATUSES = {401, 402, 403, 429}
-_PROVIDER_TRANSIENT_STATUSES = {500, 502, 503, 504}
+# See the "GATEWAY ERROR CLASSIFICATION" comment above for why these
+# status sets differ from the pre-gateway, per-vendor version.
+_KEY_FAULT_STATUSES: set = set()  # no gateway status maps to "rotate to a different key" anymore
+_PROVIDER_TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 # Python's requests library raises ConnectionError/Timeout as exception
 # TYPES, not as a networkErrorCode string the way Node's fetch does via
 # err.cause.code — see _classify_network_exception below, which maps
@@ -371,123 +337,61 @@ def _wrap_request_exception(exc, provider_id: str) -> "ProviderCallError":
 
 
 # ===========================================================
-# MULTI-PROVIDER API KEY MANAGER
+# GATEWAY CLIENT MANAGER
 # ===========================================================
+
+def _parse_model_list_env(var_name: str) -> list:
+    """Parse a comma-separated LLM_GATEWAY_*_MODELS env override (a list
+    of explicit "provider:model" strings) into a Python list, dropping
+    blanks/whitespace. Returns [] when the env var is unset/empty, so
+    callers can `_parse_model_list_env(...) or <built-in default>`."""
+    raw = os.environ.get(var_name, "")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
 
 class MultiProviderManager:
     """
-    Manage multiple API providers and rotate between them.
+    Thin client around a single llm-gateway instance (class name kept for
+    backward compatibility with existing imports/tests — it no longer
+    manages "multiple providers" itself; the gateway does that now).
 
-    HORIZONTAL SCALING (AUDIT §5/§6 — MultiProviderManager runtime state):
-    Previously, self.failed_providers / self._provider_type_failures /
-    self._blacklisted_types / self.current_provider_index were plain
-    instance attributes on this module-level singleton — each application
-    instance had an independent view of which provider keys were failing
-    or blacklisted. The audit flagged this exactly as multiProvider.js's
-    own header comment (this codebase's sibling Node.js project, supplied
-    as a reference pattern, NOT a file to run directly here — StudyHub is
-    Flask/Python) already solved via Redis: "an instance that saw a key
-    fail had no way to tell any other instance, so other instances kept
-    sending traffic to a known-bad key."
+    GATEWAY MIGRATION: every vendor-specific key, base URL, and the whole
+    per-key cooldown / provider-type blacklist / background model-discovery
+    machinery that used to live here has moved server-side, into the
+    llm-gateway project (https://github.com/Devpaul-01/llm-gateway) — see
+    its ARCHITECTURE.md for the failover engine, circuit breaker, and
+    encrypted credential storage that now do this job. This class's only
+    remaining state is:
 
-    This class now mirrors that pattern using services/cache_service.py's
-    real, already-proven get(key) / set(key, value, ttl_seconds=N) /
-    delete(key) primitives (confirmed via their existing use across
-    leaderboard_service.py, study_buddy.py, Threads_discovery.py,
-    connection_service.py, post_service.py in this same codebase) — NOT
-    multiProvider.js's own Node-specific redis.js helper names, which
-    don't exist in this Python codebase.
+      - self.providers: a list with zero or one dict, built once from env
+        at construction (see _load_gateway_provider) — zero when
+        LLM_GATEWAY_BASE_URL/LLM_GATEWAY_API_KEY aren't set, exactly like
+        the old "no provider configured" case.
+      - a short, Redis-backed (cross-instance), kill-switch-respecting
+        cooldown — see mark_provider_failed/_is_key_cooling — that exists
+        purely so this process doesn't hammer a gateway that just failed,
+        NOT to pick a different key (there is only one).
 
     KILL SWITCH: AI_PROVIDER_REDIS_STATE_ENABLED (default enabled — set to
-    the literal string 'false' to disable). Mirrors multiProvider.js's own
-    MULTIPROVIDER_REDIS_STATE_ENABLED kill switch and its stated reasoning
-    verbatim: this manager is the single highest-traffic file for every AI
-    feature in the app, so a single environment-variable toggle that
-    reverts to the previously-working, well-understood in-memory behavior,
-    with no code deploy required, is the highest-value risk mitigation
-    available for a change this central. When disabled, every method below
-    falls back to the original plain-dict, per-process behavior — that
-    code path is kept, not deleted, specifically so this switch works.
-
-    FAIL-OPEN: every new Redis call here follows the same philosophy
-    cache_service.py's own callers already rely on throughout this
-    codebase — a Redis hiccup degrades precision (an instance may briefly
-    retry a key another instance already knows is bad), it never raises
-    out and breaks an AI call. Any cache_service.get/set that raises is
-    caught and treated as a cache miss / no-op.
-
-    NOT changed: self.providers (the pool itself) and _load_providers()
-    stay exactly as they were — this is configuration read from
-    os.getenv(...) at construction time, not runtime state. Every
-    correctly-configured instance has identical environment variables, so
-    there's nothing to synchronize there; multiProvider.js's own header
-    comment makes this identical distinction for its own pool construction
-    ("DELIBERATELY left local / per-process, unchanged").
+    the literal string 'false' to fall back to a plain in-process cooldown
+    with no cross-instance sharing). Same switch/semantics as before the
+    gateway migration.
     """
 
-    # How many failures within the sliding window triggers a provider-level blacklist
-    PROVIDER_FAILURE_THRESHOLD = 3
-    # Sliding window for counting failures (seconds)
-    PROVIDER_FAILURE_WINDOW = 300   # 5 minutes
-    # How long a blacklisted provider stays locked out (seconds)
-    PROVIDER_BLACKLIST_DURATION = 1800  # 30 minutes
+    DEFAULT_COOLDOWN_SECONDS = 20  # short: see class docstring above
 
-    # Redis key prefixes — mirrors this codebase's existing "sh:{version}:"
-    # convention (see cache_service.py's own callers, e.g. leaderboard_service.py's
-    # "sh:1:lb:..." keys).
-    _REDIS_COOLDOWN_PREFIX    = "sh:1:ai:cooldown:"       # per-key cooldown
-    _REDIS_TYPE_FAILS_PREFIX  = "sh:1:ai:typefails:"      # provider-type failure timestamps
-    _REDIS_BLACKLIST_PREFIX   = "sh:1:ai:blacklist:"      # provider-type blacklist flag
-    _REDIS_ROTATION_KEY       = "sh:1:ai:rotation_index"  # shared round-robin index
-    _REDIS_MODELS_PREFIX      = "sh:1:ai:models:"         # discovered model list cache
-    _ROTATION_TTL_SECONDS     = 6 * 60 * 60  # rotation index itself isn't inherently
-                                              # time-bound, but a TTL means a stale key
-                                              # from a since-reconfigured deployment
-                                              # (fewer providers than before) can't
-                                              # wedge forever — self-heals within 6h.
-    MODEL_CACHE_TTL_SECONDS   = 6 * 60 * 60  # matches multiProvider.js's MODEL_CACHE_TTL_S
+    _REDIS_COOLDOWN_KEY = "sh:1:ai:gateway:cooldown"
 
     def __init__(self):
-        self.providers = self._load_providers()
-        self.current_provider_index = 0
-
-        # Per-key cooldown  {provider_name: datetime} — used as the
-        # in-memory fallback ONLY (kill switch off, or a Redis call
-        # itself fails at runtime). The Redis-backed path never reads
-        # this dict; see is_redis_state_enabled()/_is_key_cooling_redis
-        # below.
-        self.failed_providers: dict = {}
-        self.cooldown_period = 3600   # 1-hour per-key cooldown
-
-        # Per-provider-type failure tracking — in-memory fallback only,
-        # same as above.
-        # {provider_type: [datetime, ...]}  — rolling list of failure timestamps
-        self._provider_type_failures: dict = {}
-        # {provider_type: datetime}  — when the type was blacklisted
-        self._blacklisted_types: dict = {}
-
-        # NOTE (Document 1 §5 fix): _warm_model_discovery() is deliberately
-        # NOT called here anymore. Starting a background thread that makes
-        # live network calls as a side effect of __init__ (which itself ran
-        # as a side effect of merely importing this module, since
-        # `provider_manager = MultiProviderManager()` is instantiated at
-        # module level below) made the module unsafe to import in a
-        # test/CI context without network access. Model discovery is now an
-        # explicit startup step — call `provider_manager.warm_model_discovery()`
-        # once from app.py's create_app(), after blueprints are registered.
-
-    # ----------------------------------------------------------
-    # HORIZONTAL SCALING — kill switch + Redis helpers
-    # ----------------------------------------------------------
+        self.cooldown_period = int(os.environ.get("LLM_GATEWAY_COOLDOWN_SECONDS", self.DEFAULT_COOLDOWN_SECONDS))
+        self._cooled_at = None  # in-memory fallback only (kill switch off)
+        self.providers = self._load_gateway_provider()
 
     @staticmethod
     def is_redis_state_enabled() -> bool:
-        """Mirrors multiProvider.js's isRedisStateEnabled() — default
-        enabled, disabled only when the env var is the literal string
-        'false'."""
+        """Mirrors the pre-gateway kill switch — default enabled, disabled
+        only when the env var is the literal string 'false'."""
         return os.environ.get("AI_PROVIDER_REDIS_STATE_ENABLED", "true").lower() != "false"
-        
-
 
     @staticmethod
     def _redis_get(key):
@@ -501,633 +405,265 @@ class MultiProviderManager:
 
     @staticmethod
     def _redis_set(key, value, ttl_seconds):
-        """Fail-open write: any exception is swallowed — a write that
-        doesn't land just means the in-memory fallback path (if the kill
-        switch is later flipped) or the next successful write is the
-        source of truth instead."""
+        """Fail-open write: any exception is swallowed."""
         try:
             from services import cache_service
             cache_service.set(key, value, ttl_seconds=ttl_seconds)
         except Exception as e:
             logger.warning(f"[AI_PROVIDER_REDIS] set({key}) failed (non-fatal): {e}")
 
-    @staticmethod
-    def _redis_delete(key):
-        try:
-            from services import cache_service
-            cache_service.delete(key)
-        except Exception as e:
-            logger.warning(f"[AI_PROVIDER_REDIS] delete({key}) failed (non-fatal): {e}")
-
     # ----------------------------------------------------------
-    # Provider loading
+    # Gateway provider loading
     # ----------------------------------------------------------
 
-    def _load_providers(self):
-        """Load Gemini, Groq, Cohere, Cloudflare, Mistral, and OpenRouter providers
-        from environment variables.
-        Each provider supports multiple keys (e.g. GEMINI_API_KEY_1 … _5).
-        Falls back to the no-suffix var (GEMINI_API_KEY) when only one key exists.
-        Provider order: gemini → groq → cohere → cloudflare → mistral → openrouter.
-        Cloudflare additionally requires CLOUDFLARE_ACCOUNT_ID since its base URL
-        is account-scoped — that provider is skipped (with a warning) if the var
-        isn't set, same as any provider with no key configured.
+    def _load_gateway_provider(self) -> list:
         """
-        providers = []
+        Build the single provider slot that represents the llm-gateway
+        endpoint, entirely from environment variables:
 
-        PROVIDER_DEFS = [
-            {
-                "id":         "gemini",
-                "type":       "gemini",
-                # Google's OpenAI-compatible endpoint — lets Gemini use the
-                # exact same /chat/completions request/response handling as
-                # every other provider in this file.
-                "base_url":   "https://generativelanguage.googleapis.com/v1beta/openai",
-                "env_prefix": "GEMINI_API_KEY",
-                "max_keys":   10,
-                "models":     GEMINI_MODELS,
-                "vision_models": GEMINI_VISION_MODELS,
-            },
-            {
-                "id":         "groq",
-                "type":       "groq",
-                "base_url":   "https://api.groq.com/openai/v1",
-                "env_prefix": "GROQ_API_KEY",
-                "max_keys":   10,
-                "models":     GROQ_MODELS,
-                # No vision-capable models in the current Groq lineup.
-                "vision_models": GROQ_VISION_MODELS,
-            },
-            {
-                "id":         "cohere",
-                "type":       "cohere",
-                "base_url":   "https://api.cohere.ai/compatibility/v1",
-                "env_prefix": "COHERE_API_KEY",
-                "max_keys":   5,
-                "models":     COHERE_MODELS,
-                "vision_models": COHERE_VISION_MODELS,
-            },
-        ]
+          LLM_GATEWAY_BASE_URL    (required) e.g. https://gateway.example.com
+                                   — no trailing slash needed, and no "/v1"
+                                   suffix; that's appended here, matching
+                                   the gateway's own
+                                   `POST {base}/v1/chat/completions` route.
+          LLM_GATEWAY_API_KEY     (required) the project's gateway key —
+                                   create one with
+                                   `POST /admin/gateway-keys {"project_id": "..."}`
+                                   against the gateway's admin API (see its
+                                   README's Quickstart). This is the ONLY
+                                   credential StudyHub needs; it is sent as
+                                   `Authorization: Bearer <key>` exactly
+                                   like every OpenAI-compatible call this
+                                   file already made before the migration.
+          LLM_GATEWAY_PROJECT_ID  (optional) the gateway project id this
+                                   key belongs to. The gateway derives the
+                                   project from the key itself on every
+                                   `/v1/chat/completions` call
+                                   (internal/httpserver/auth.go) — this is
+                                   NOT sent on chat requests and does not
+                                   affect routing. It's read here purely
+                                   for logging/diagnostics (get_stats(),
+                                   startup logs) and so this codebase has
+                                   the id on hand for any future
+                                   `GET /admin/metrics?project_id=...` or
+                                   `GET /public/metrics` integration,
+                                   without needing another round trip to
+                                   discover it.
+          LLM_GATEWAY_TEXT_MODELS / LLM_GATEWAY_VISION_MODELS (optional)
+                                   comma-separated "provider:model" override
+                                   for the built-in GATEWAY_TEXT_MODELS /
+                                   GATEWAY_VISION_MODELS catalogs defined
+                                   near the top of this file — lets ops
+                                   change which models/fallback order are
+                                   requested from the gateway without a
+                                   code deploy.
 
-        # Cloudflare's OpenAI-compatible endpoint is account-scoped — the
-        # account ID lives in the URL path itself, not a header/param — so
-        # it needs its own env var on top of the usual API-key one. Skip
-        # the provider entirely (same outcome as a provider with no key
-        # at all) rather than build a malformed URL if it's missing.
-        cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
-        if cloudflare_account_id:
-            PROVIDER_DEFS.append({
-                "id":         "cloudflare",
-                "type":       "cloudflare",
-                "base_url":   f"https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1",
-                "env_prefix": "CLOUDFLARE_API_KEY",
-                "max_keys":   5,
-                "models":     CLOUDFLARE_MODELS,
-                "vision_models": CLOUDFLARE_VISION_MODELS,
-            })
-        else:
-            logger.warning("⚠️ CLOUDFLARE_ACCOUNT_ID not set — skipping Cloudflare provider")
+        Returns a list with zero or one provider dict — zero when the
+        gateway isn't configured, so get_working_provider() reports "no
+        provider available" exactly like the old zero-keys-configured case.
+        """
+        base_url = os.environ.get("LLM_GATEWAY_BASE_URL", "").strip().rstrip("/")
+        api_key = os.environ.get("LLM_GATEWAY_API_KEY", "").strip()
+        project_id = os.environ.get("LLM_GATEWAY_PROJECT_ID", "").strip() or None
 
-        PROVIDER_DEFS += [
-            {
-                "id":         "mistral",
-                "type":       "mistral",
-                "base_url":   "https://api.mistral.ai/v1",
-                "env_prefix": "MISTRAL_API_KEY",
-                "max_keys":   5,
-                "models":     MISTRAL_MODELS,
-                # Was hardcoded to set() before — mistral-medium-latest is
-                # actually multimodal, so this now wires in the real list.
-                "vision_models": MISTRAL_VISION_MODELS,
-            },
-            {
-                "id":         "openrouter",
-                "type":       "openrouter",
-                "base_url":   "https://openrouter.ai/api/v1",
-                "env_prefix": "OPENROUTER_API_KEY",
-                "max_keys":   5,
-                "models":     OPENROUTER_MODELS,
-                # openrouter/free filters for vision itself — see the
-                # OPENROUTER section near the top of the file.
-                "vision_models": OPENROUTER_VISION_MODELS,
-            },
-        ]
+        if not base_url or not api_key:
+            logger.error(
+                "❌ LLM_GATEWAY_BASE_URL and/or LLM_GATEWAY_API_KEY are not set — "
+                "no AI provider configured. Point these at a running llm-gateway "
+                "instance (https://github.com/Devpaul-01/llm-gateway) and a "
+                "project gateway key created via its /admin/gateway-keys API."
+            )
+            return []
 
-        for defn in PROVIDER_DEFS:
-            keys = []
-            for i in range(1, defn["max_keys"] + 1):
-                key = os.getenv(f"{defn['env_prefix']}_{i}")
-                if key and key.strip():
-                    keys.append((i, key.strip()))
+        text_models = _parse_model_list_env("LLM_GATEWAY_TEXT_MODELS") or list(GATEWAY_TEXT_MODELS)
+        vision_models = _parse_model_list_env("LLM_GATEWAY_VISION_MODELS") or list(GATEWAY_VISION_MODELS)
 
-            # Single-key fallback (no suffix)
-            if not keys:
-                key = os.getenv(defn["env_prefix"])
-                if key and key.strip():
-                    keys.append((0, key.strip()))
+        logger.info(
+            f"🔧 llm-gateway configured: {base_url} "
+            f"(project={project_id or 'derived server-side from the gateway key'}) — "
+            f"{len(text_models)} text model(s), {len(vision_models)} vision model(s) in the fallback chain"
+        )
 
-            if not keys:
-                continue
-
-            logger.info(f"🔧 {defn['id']}: {len(keys)} key(s) loaded")
-
-            primary_model   = defn["models"][0]
-            vision_models   = defn.get("vision_models", set())
-            # Primary vision model: first model in models list that supports vision,
-            # or None if none of the listed models support vision.
-            primary_vision  = next((m for m in defn["models"] if m in vision_models), None)
-            supports_vision = primary_vision is not None
-
-            for key_index, api_key in keys:
-                providers.append({
-                    "name":                   f"{defn['id']}_{key_index}",
-                    "api_key":                api_key,
-                    "base_url":               defn["base_url"],
-                    "text_model":             primary_model,
-                    "vision_model":           primary_vision,
-                    "supports_vision":        supports_vision,
-                    "type":                   defn["type"],
-                    "text_model_fallbacks":   defn["models"],
-                    "vision_model_fallbacks": [m for m in defn["models"] if m in vision_models],
-                    # Store reference to provider definition for dynamic updates
-                    "_provider_id":           defn["id"],
-                    "_vision_models":         vision_models,
-                })
-
-        logger.info(f"🔧 Loaded {len(providers)} provider slot(s) across {PROVIDER_ORDER}")
-        return providers
-
-    # ----------------------------------------------------------
-    # Dynamic model discovery (background)
-    # ----------------------------------------------------------
+        return [{
+            "name": "llm-gateway",
+            "api_key": api_key,
+            "base_url": f"{base_url}/v1",
+            "text_model": text_models[0] if text_models else None,
+            "vision_model": vision_models[0] if vision_models else None,
+            "supports_vision": bool(vision_models),
+            "type": "gateway",
+            "text_model_fallbacks": text_models,
+            "vision_model_fallbacks": vision_models,
+            "_provider_id": "gateway",
+            "project_id": project_id,
+        }]
 
     def warm_model_discovery(self):
         """
-        PUBLIC entry point for kicking off background model discovery.
+        PUBLIC entry point kept for app.py's create_app(), which calls this
+        once at startup, after blueprint registration, as its own visible
+        startup step (see this module's header docstring).
 
-        Document 1 §5: this used to be a private method (_warm_model_discovery)
-        called automatically from __init__. It's now public and must be called
-        explicitly — app.py's create_app() calls this once, after all
-        blueprints are registered, as a visible startup step rather than an
-        import side effect.
+        Against a gateway there is no per-provider /v1/models crawl left to
+        do here — the gateway owns model validity/discovery for whichever
+        real providers it's configured with. This is now a cheap,
+        synchronous, best-effort log of the resolved configuration (no
+        background thread, no network call) rather than the old
+        multi-provider /v1/models fetch.
         """
-        self._warm_model_discovery()
-
-    def _warm_model_discovery(self):
-        """
-        Spawn a background thread to discover available models from each
-        provider's /v1/models endpoint. Updates each provider slot's model
-        lists in-place once discovery completes.
-
-        Mistral, Cohere, Cloudflare, and OpenRouter are skipped — Mistral uses
-        provider-managed aliases that are already self-updating; Cohere and
-        Cloudflare stick to their small curated lists on purpose; OpenRouter
-        points at the openrouter/free auto-router, so there's no fixed model
-        id to discover against. Gemini is also skipped — its OpenAI-compatible
-        /models endpoint naming doesn't line up with the priority-ranking
-        logic below (built around Groq's flat chat-model id list), so Gemini
-        relies on its static GEMINI_MODELS priority list instead.
-
-        HORIZONTAL SCALING: before fetching, checks the shared Redis cache
-        (populated by any instance within the last MODEL_CACHE_TTL_SECONDS)
-        first. On a hit, applies the cached ranked list directly with no
-        HTTP call at all — closing the gap the audit names explicitly:
-        "two instances could independently discover slightly different
-        model lists from a transiently-inconsistent provider response,
-        meaning two requests to the same feature, routed to different
-        instances, could silently use different underlying models." On a
-        miss, this instance fetches (as before) and writes the result to
-        the shared cache so other instances hit the cache instead of also
-        calling the provider's /v1/models endpoint redundantly.
-
-        Not lock-guarded (see module-level note in the audit-completion
-        summary): this codebase's real services/distributed_lock.py was
-        never supplied to verify its exact call shape, so rather than
-        guess at an unproven interface, this uses the same get/set
-        primitives as everything else here. Worst case on a cache miss
-        that many instances hit near-simultaneously is a handful of
-        redundant /v1/models calls in the same few-hundred-millisecond
-        window — a minor efficiency gap, not a correctness one (unlike
-        the never-shared-at-all behavior this replaces).
-        """
-        # Group provider slots by provider_id to avoid redundant API calls
-        seen: dict = {}
-        for p in self.providers:
-            pid = p.get("_provider_id")
-            if pid and pid not in seen:
-                seen[pid] = p
-
-        def _discover():
-            for pid, provider_slot in seen.items():
-                if pid in ("mistral", "cohere", "cloudflare", "openrouter", "gemini"):
-                    continue  # mistral aliases are self-updating; the rest use static lists
-
-                if self.is_redis_state_enabled():
-                    cached = self._redis_get(f"{self._REDIS_MODELS_PREFIX}{pid}")
-                    if cached:
-                        self._apply_ranked_models(pid, cached)
-                        logger.info(f"✅ {pid}: applied {len(cached)} model(s) from shared Redis cache — no HTTP call")
-                        continue
-
-                self._fetch_and_apply_models(pid, provider_slot)
-
-        t = threading.Thread(target=_discover, daemon=True)
-        t.start()
-
-    def _apply_ranked_models(self, provider_id: str, ranked: list):
-        """Apply an already-ranked model list to every slot belonging to
-        provider_id — shared by both the Redis-cache-hit path above and
-        _fetch_and_apply_models' own fresh-fetch path below, so there's
-        one implementation of "what applying a ranked list means," not two
-        copies that could drift."""
-        representative = next((p for p in self.providers if p.get("_provider_id") == provider_id), None)
-        vision_models = representative.get("_vision_models", set()) if representative else set()
-        primary_model  = ranked[0]
-        primary_vision = next((m for m in ranked if m in vision_models), None)
-
-        for p in self.providers:
-            if p.get("_provider_id") == provider_id:
-                p["text_model"]             = primary_model
-                p["text_model_fallbacks"]   = ranked
-                p["vision_model"]           = primary_vision
-                p["supports_vision"]        = primary_vision is not None
-                p["vision_model_fallbacks"] = [m for m in ranked if m in vision_models]
-
-    def _fetch_and_apply_models(self, provider_id: str, representative_slot: dict):
-        """
-        Fetch /v1/models for a provider and update all matching provider slots
-        with the ranked model list. Also writes the ranked list to the
-        shared Redis cache (kill-switch permitting) so other instances can
-        apply it without their own HTTP call — see _warm_model_discovery's
-        docstring above.
-        """
-        base_url   = representative_slot["base_url"]
-        api_key    = representative_slot["api_key"]
-        priority   = GROQ_MODELS
-
-        try:
-            resp = requests.get(
-                f"{base_url}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            data   = resp.json()
-            all_ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
-
-            # Rank: known-priority models first (in order), then unknown chat models.
-            known   = [m for m in priority if m in all_ids]
-            unknown = [m for m in all_ids if m not in priority and not NON_CHAT_PATTERN.search(m)]
-            ranked  = known + sorted(unknown)
-
-            if not ranked:
-                logger.warning(f"⚠️  {provider_id}: discovery returned 0 usable models — keeping static list")
-                return
-
-            logger.info(f"✅ {provider_id}: discovered {len(ranked)} chat model(s) — updating provider slots")
-
-        except Exception as e:
-            logger.warning(f"⚠️  {provider_id}: model discovery failed ({e}) — keeping static list")
+        if not self.providers:
+            logger.warning("⚠️ warm_model_discovery(): no gateway configured — set LLM_GATEWAY_BASE_URL / LLM_GATEWAY_API_KEY")
             return
-
-        self._apply_ranked_models(provider_id, ranked)
-
-        if self.is_redis_state_enabled():
-            self._redis_set(f"{self._REDIS_MODELS_PREFIX}{provider_id}", ranked, self.MODEL_CACHE_TTL_SECONDS)
-
-    def evict_model(self, provider_id: str, model_id: str):
-        """
-        Direct port of evictModelFromRedisCache. Called when
-        classify_provider_error returns BAD_MODEL — removes the one dead/
-        renamed/decommissioned model from BOTH the shared Redis-cached
-        list and every in-process provider slot for that provider, so
-        this instance AND every other instance stop offering that model
-        until the next natural MODEL_CACHE_TTL_SECONDS refresh, without
-        cooling the key that happened to be used when the bad model was
-        discovered (the key itself did nothing wrong).
-
-        DEVIATION FROM THE REFERENCE, flagged explicitly rather than
-        silently approximated: the JS original preserves the cache
-        entry's REMAINING TTL when rewriting it (via getRawClient().ttl(),
-        so eviction doesn't reset the natural refresh clock). StudyHub's
-        real cache_service.py (confirmed via direct read) exposes no TTL-
-        introspection or raw-client escape hatch — every other caller in
-        this codebase goes through get/set/delete only, and reaching past
-        that into extensions.redis_client directly would be inventing
-        capability no other file in this codebase uses. This re-sets with
-        a full MODEL_CACHE_TTL_SECONDS instead, which means an eviction
-        modestly extends how long the corrected list stays cached — a
-        minor, honestly-labeled simplification, not a silent behavior
-        difference.
-        """
-        if not self.is_redis_state_enabled():
-            # In-memory-only fallback: just filter the current in-process
-            # list — no cross-instance cache to update.
-            for p in self.providers:
-                if p.get("_provider_id") == provider_id:
-                    p["text_model_fallbacks"] = [m for m in p.get("text_model_fallbacks", []) if m != model_id]
-                    p["vision_model_fallbacks"] = [m for m in p.get("vision_model_fallbacks", []) if m != model_id]
-            return
-
-        cache_key = f"{self._REDIS_MODELS_PREFIX}{provider_id}"
-        current = self._redis_get(cache_key)
-        if not current:
-            return  # nothing cached to evict from
-        updated = [m for m in current if m != model_id]
-        if len(updated) == len(current):
-            return  # model wasn't in the cached list — nothing to evict
-        self._redis_set(cache_key, updated, self.MODEL_CACHE_TTL_SECONDS)
-        if updated:
-            self._apply_ranked_models(provider_id, updated)
-        logger.warning(f"🚫 Evicted bad model '{model_id}' from {provider_id}'s cached model list")
-
-    # ----------------------------------------------------------
-    # Provider-type blacklist helpers
-    # ----------------------------------------------------------
-
-    def _record_provider_type_failure(self, provider_type: str):
-        """
-        Record a failure for the given provider type and blacklist the entire
-        type if it has exceeded PROVIDER_FAILURE_THRESHOLD failures within
-        PROVIDER_FAILURE_WINDOW seconds.
-
-        HORIZONTAL SCALING: when Redis state is enabled, the sliding-window
-        timestamp list is read/pruned/written through the shared cache
-        instead of the process-local self._provider_type_failures dict, so
-        a failure recorded by one instance is visible to every other
-        instance's very next get_working_provider() call — closing the
-        exact gap the audit names: "an instance that saw a key fail had no
-        way to tell any other instance."
-        """
-        now = datetime.datetime.utcnow()
-        window_start = now - datetime.timedelta(seconds=self.PROVIDER_FAILURE_WINDOW)
-
-        if self.is_redis_state_enabled():
-            redis_key = f"{self._REDIS_TYPE_FAILS_PREFIX}{provider_type}"
-            raw = self._redis_get(redis_key)
-            timestamps = []
-            if raw:
-                for ts_str in raw:
-                    try:
-                        t = datetime.datetime.fromisoformat(ts_str)
-                        if t >= window_start:
-                            timestamps.append(t)
-                    except (ValueError, TypeError):
-                        continue
-            timestamps.append(now)
-            self._redis_set(
-                redis_key,
-                [t.isoformat() for t in timestamps],
-                self.PROVIDER_FAILURE_WINDOW,
-            )
-        else:
-            # In-memory fallback (kill switch off)
-            timestamps = self._provider_type_failures.get(provider_type, [])
-            timestamps = [t for t in timestamps if t >= window_start]
-            timestamps.append(now)
-            self._provider_type_failures[provider_type] = timestamps
-
-        failure_count = len(timestamps)
+        provider = self.providers[0]
         logger.info(
-            f"📊 Provider type '{provider_type}' failure count in last "
-            f"{self.PROVIDER_FAILURE_WINDOW}s: {failure_count}/{self.PROVIDER_FAILURE_THRESHOLD}"
+            f"✅ llm-gateway ready at {provider['base_url']} — "
+            f"primary text model {provider['text_model']!r} "
+            f"({len(provider['text_model_fallbacks'])} in fallback chain), "
+            f"vision {'enabled' if provider['supports_vision'] else 'disabled'}"
         )
 
-        if failure_count >= self.PROVIDER_FAILURE_THRESHOLD:
-            already_blacklisted = (
-                self._redis_get(f"{self._REDIS_BLACKLIST_PREFIX}{provider_type}") is not None
-                if self.is_redis_state_enabled()
-                else provider_type in self._blacklisted_types
-            )
-            if not already_blacklisted:
-                logger.error(
-                    f"🚫 Provider type '{provider_type}' has failed {failure_count} times "
-                    f"— blacklisting ALL {provider_type} keys for "
-                    f"{self.PROVIDER_BLACKLIST_DURATION // 60} min"
-                )
-            if self.is_redis_state_enabled():
-                self._redis_set(
-                    f"{self._REDIS_BLACKLIST_PREFIX}{provider_type}",
-                    now.isoformat(),
-                    self.PROVIDER_BLACKLIST_DURATION,
-                )
-            else:
-                self._blacklisted_types[provider_type] = now
-
-    def _is_provider_type_blacklisted(self, provider_type: str) -> bool:
-        """
-        Return True if the provider type is currently blacklisted.
-
-        HORIZONTAL SCALING: reads the shared Redis flag when enabled. The
-        Redis key carries its own TTL (PROVIDER_BLACKLIST_DURATION), so
-        expiry is handled by Redis itself rather than the manual elapsed-
-        time check the in-memory fallback still does below — a stale key
-        simply stops existing once its TTL lapses, and cache_service.get
-        returning None is indistinguishable from "never blacklisted,"
-        which is exactly the semantics this method needs.
-        """
-        if self.is_redis_state_enabled():
-            blacklisted_at = self._redis_get(f"{self._REDIS_BLACKLIST_PREFIX}{provider_type}")
-            return blacklisted_at is not None
-
-        blacklisted_at = self._blacklisted_types.get(provider_type)
-        if not blacklisted_at:
-            return False
-        elapsed = (datetime.datetime.utcnow() - blacklisted_at).total_seconds()
-        if elapsed >= self.PROVIDER_BLACKLIST_DURATION:
-            # Blacklist expired — clear it and reset failure counters
-            del self._blacklisted_types[provider_type]
-            self._provider_type_failures.pop(provider_type, None)
-            logger.info(f"✅ Provider type '{provider_type}' blacklist expired — re-enabling")
-            return False
-        return True
-
     # ----------------------------------------------------------
-    # Runtime helpers
+    # Cooldown — short client-side circuit breaker (see class docstring)
     # ----------------------------------------------------------
 
     def _is_key_cooling(self, provider_name: str) -> bool:
         """
-        HORIZONTAL SCALING: per-key cooldown check. When Redis state is
-        enabled, this is the single source of truth (a key marked failed
-        by ANY instance is visible to every instance's next
-        get_working_provider() call) — replaces the old
-        "self.failed_providers, filtered by elapsed time on every call"
-        approach with a Redis key whose own TTL (cooldown_period) is the
-        expiry mechanism, mirroring _is_provider_type_blacklisted's
-        identical reasoning above.
+        HORIZONTAL SCALING: when Redis state is enabled, a cooldown set by
+        ANY instance (after a failed gateway call) is visible to every
+        instance's next get_working_provider() call, same cross-instance
+        guarantee as before the gateway migration — just over a single
+        shared key instead of one key per vendor credential.
         """
         if self.is_redis_state_enabled():
-            return self._redis_get(f"{self._REDIS_COOLDOWN_PREFIX}{provider_name}") is not None
-
-        now = datetime.datetime.utcnow()
-        self.failed_providers = {
-            name: fail_time for name, fail_time in self.failed_providers.items()
-            if (now - fail_time).total_seconds() < self.cooldown_period
-        }
-        return provider_name in self.failed_providers
-
-    def get_working_provider(self, needs_vision=False):
-        """Get next working provider, skipping blacklisted provider types and failed keys."""
-        if not self.providers:
-            logger.error("❌ No API providers configured!")
-            return None
-
-        attempts = 0
-        while attempts < len(self.providers):
-            provider = self.providers[self._get_rotation_index()]
-            provider_type = provider.get("_provider_id", provider["name"])
-
-            # Skip entire provider type if blacklisted
-            if self._is_provider_type_blacklisted(provider_type):
-                logger.info(f"⏭️ Skipping {provider['name']} — provider type '{provider_type}' is blacklisted")
-                self.rotate()
-                attempts += 1
-                continue
-
-            # Skip individual failed key
-            if self._is_key_cooling(provider["name"]):
-                self.rotate()
-                attempts += 1
-                continue
-
-            if needs_vision and not provider["supports_vision"]:
-                logger.info(f"⏭️ Skipping {provider['name']} (no vision support)")
-                self.rotate()
-                attempts += 1
-                continue
-
-            logger.info(f"✅ Using provider: {provider['name']}")
-            return provider
-
-        logger.error("❌ All providers are in cooldown or blacklisted!")
-        return None
+            return self._redis_get(self._REDIS_COOLDOWN_KEY) is not None
+        if not self._cooled_at:
+            return False
+        return (datetime.datetime.utcnow() - self._cooled_at).total_seconds() < self.cooldown_period
 
     def mark_provider_failed(self, provider_name: str, error_message: str = ""):
         """
-        Mark a specific provider key as failed (per-key cooldown) AND record
-        a failure against its provider type so repeated failures trigger a
-        full type-level blacklist.
-
-        HORIZONTAL SCALING: the cooldown write goes to the shared Redis key
-        (kill-switch permitting) instead of only this process's local dict,
-        so every other instance's next _is_key_cooling() check for this
-        exact key sees the failure immediately — this is the specific gap
-        the audit names: "other instances kept sending traffic to a
-        known-bad key."
+        Record that the single gateway call just failed, and start a short
+        cooldown (LLM_GATEWAY_COOLDOWN_SECONDS, default 20s) during which
+        get_working_provider() returns None instead of immediately
+        re-sending the identical request to a gateway that's currently
+        struggling. There is no second key/provider to rotate to at this
+        layer anymore — the gateway already tried its own full
+        fallback_models chain, across every provider/credential it has,
+        before this failure was ever raised back to StudyHub.
         """
         now = datetime.datetime.utcnow()
         if self.is_redis_state_enabled():
-            self._redis_set(f"{self._REDIS_COOLDOWN_PREFIX}{provider_name}", now.isoformat(), self.cooldown_period)
+            self._redis_set(self._REDIS_COOLDOWN_KEY, now.isoformat(), self.cooldown_period)
         else:
-            self.failed_providers[provider_name] = now
-        logger.warning(f"⚠️ Provider key '{provider_name}' failed: {error_message}")
-
-        # Find the provider type for this key and record the type-level failure
-        for p in self.providers:
-            if p["name"] == provider_name:
-                provider_type = p.get("_provider_id", provider_name)
-                self._record_provider_type_failure(provider_type)
-                break
-
-    def _get_rotation_index(self) -> int:
-        """
-        HORIZONTAL SCALING: shared round-robin index. When Redis state is
-        enabled, reads the shared counter instead of this instance's own
-        current_provider_index, so every instance round-robins against the
-        same shared position rather than each independently starting from
-        0 — mirrors multiProvider.js's own reasoning that per-instance
-        rotation state is a real (if lower-severity) correctness gap, not
-        just the blacklist/cooldown state.
-
-        Modulo is applied here (not stored) so a since-changed provider
-        count (a redeploy that adds/removes a key) can never produce an
-        out-of-range index — same defensive shape rotate() already used
-        before this change.
-        """
-        if self.is_redis_state_enabled():
-            raw = self._redis_get(self._REDIS_ROTATION_KEY)
-            idx = int(raw) if raw is not None else 0
-        else:
-            idx = self.current_provider_index
-        return idx % len(self.providers) if self.providers else 0
+            self._cooled_at = now
+        logger.warning(f"⚠️ llm-gateway call failed, cooling down for {self.cooldown_period}s: {error_message}")
 
     def rotate(self):
-        """Move to next provider."""
-        if self.is_redis_state_enabled():
-            current = self._get_rotation_index()
-            next_idx = (current + 1) % len(self.providers) if self.providers else 0
-            self._redis_set(self._REDIS_ROTATION_KEY, next_idx, self._ROTATION_TTL_SECONDS)
-        else:
-            self.current_provider_index = (self.current_provider_index + 1) % len(self.providers)
+        """
+        No-op: there is exactly one provider slot (the gateway) now.
+        Kept so every existing caller that does
+        `mark_provider_failed(...); rotate(); get_working_provider(...)`
+        between a failed attempt and its next one keeps working with no
+        changes to those call sites.
+        """
+        return
+
+    def get_working_provider(self, needs_vision: bool = False):
+        """
+        Return the gateway provider slot, or None when:
+          - no gateway is configured (LLM_GATEWAY_BASE_URL/API_KEY unset);
+          - the gateway is in its short post-failure cooldown; or
+          - needs_vision=True and no vision model is configured for it.
+
+        Every existing "get provider → try → on failure: mark_provider_failed()
+        + rotate() + get_working_provider() again" loop in the route layer
+        now naturally terminates after one real attempt: the gateway
+        already walked its own fallback_models chain server-side before
+        replying, so an immediate second call within the cooldown window
+        wouldn't find anything the first call didn't already try.
+        """
+        if not self.providers:
+            logger.error("❌ No AI provider configured — set LLM_GATEWAY_BASE_URL and LLM_GATEWAY_API_KEY")
+            return None
+
+        provider = self.providers[0]
+
+        if self._is_key_cooling(provider["name"]):
+            logger.info("⏭️ llm-gateway is cooling down after a recent failure")
+            return None
+
+        if needs_vision and not provider["supports_vision"]:
+            logger.warning("⏭️ Vision requested but no vision model is configured in the gateway fallback chain")
+            return None
+
+        logger.info(f"✅ Using provider: {provider['name']}")
+        return provider
+
+    def evict_model(self, provider_id: str, model_id: str):
+        """
+        Remove a dead/renamed/decommissioned model from this process's
+        in-memory fallback chain(s) for the remainder of its lifetime.
+
+        Process-local only — unlike the pre-gateway version there's no
+        shared Redis-backed discovery cache to evict from anymore, because
+        there's no live per-vendor /v1/models crawl feeding one: the
+        catalog is the small, hand-maintained GATEWAY_TEXT_MODELS /
+        GATEWAY_VISION_MODELS list (or its LLM_GATEWAY_*_MODELS env
+        override) defined near the top of this file. A model evicted here
+        reappears on the next deploy/restart unless also removed from that
+        catalog or override — if a model is dead for good, fix it there.
+        """
+        evicted = False
+        for p in self.providers:
+            before = len(p.get("text_model_fallbacks", [])) + len(p.get("vision_model_fallbacks", []))
+            p["text_model_fallbacks"] = [m for m in p.get("text_model_fallbacks", []) if m != model_id]
+            p["vision_model_fallbacks"] = [m for m in p.get("vision_model_fallbacks", []) if m != model_id]
+            after = len(p["text_model_fallbacks"]) + len(p["vision_model_fallbacks"])
+            evicted = evicted or (after != before)
+
+            if p.get("text_model") == model_id:
+                p["text_model"] = p["text_model_fallbacks"][0] if p["text_model_fallbacks"] else None
+            if p.get("vision_model") == model_id:
+                p["vision_model"] = p["vision_model_fallbacks"][0] if p["vision_model_fallbacks"] else None
+                p["supports_vision"] = bool(p["vision_model"])
+
+        if evicted:
+            logger.warning(f"🚫 Evicted bad model '{model_id}' from the gateway fallback chain for this process")
 
     def get_stats(self):
-        """Get provider statistics."""
-        provider_details = []
-        for p in self.providers:
-            provider_type = p.get("_provider_id", p["name"])
-            provider_details.append({
-                "name": p["name"],
-                "provider_type": provider_type,
-                "text_model": p.get("text_model"),
-                "supports_vision": p.get("supports_vision", False),
-                "vision_model": p.get("vision_model"),
-                "available_models": len(p.get("text_model_fallbacks", [])),
-                "key_failed": self._is_key_cooling(p["name"]),
-                "type_blacklisted": self._is_provider_type_blacklisted(provider_type),
-                "type_failure_count": self._get_type_failure_count(provider_type),
-            })
-
-        blacklisted_info = {}
-        seen_types = {p.get("_provider_id", p["name"]) for p in self.providers}
-        for pt in seen_types:
-            if not self._is_provider_type_blacklisted(pt):
-                continue
-            if self.is_redis_state_enabled():
-                ts_raw = self._redis_get(f"{self._REDIS_BLACKLIST_PREFIX}{pt}")
-                ts = datetime.datetime.fromisoformat(ts_raw) if ts_raw else datetime.datetime.utcnow()
-            else:
-                ts = self._blacklisted_types.get(pt, datetime.datetime.utcnow())
-            elapsed = (datetime.datetime.utcnow() - ts).total_seconds()
-            remaining = max(0, self.PROVIDER_BLACKLIST_DURATION - elapsed)
-            blacklisted_info[pt] = {
-                "blacklisted_at": ts.isoformat(),
-                "remaining_seconds": int(remaining),
+        """Stats surface for routes/admin.py — same method name as before,
+        reshaped for the single-gateway model (no per-key/blacklist detail
+        left to report; that bookkeeping now lives in the gateway's own
+        /admin/metrics and Gateway Console)."""
+        if not self.providers:
+            return {
+                "configured": False,
+                "state_source": "redis" if self.is_redis_state_enabled() else "in-memory",
             }
-
+        provider = self.providers[0]
         return {
-            "total_providers": len(self.providers),
-            "active_providers": sum(
-                1 for p in self.providers
-                if not self._is_key_cooling(p["name"])
-                and not self._is_provider_type_blacklisted(p.get("_provider_id", p["name"]))
-            ),
-            "failed_keys": [p["name"] for p in self.providers if self._is_key_cooling(p["name"])],
-            "blacklisted_provider_types": blacklisted_info,
-            "current_provider": self.providers[self._get_rotation_index()]["name"] if self.providers else None,
-            "providers": provider_details,
+            "configured": True,
+            "base_url": provider["base_url"],
+            "project_id": provider.get("project_id") or "unknown — derived server-side from the gateway key",
+            "text_model": provider["text_model"],
+            "vision_model": provider["vision_model"],
+            "supports_vision": provider["supports_vision"],
+            "text_model_fallback_count": len(provider["text_model_fallbacks"]),
+            "vision_model_fallback_count": len(provider["vision_model_fallbacks"]),
+            "cooling_down": self._is_key_cooling(provider["name"]),
+            "cooldown_period_seconds": self.cooldown_period,
             "state_source": "redis" if self.is_redis_state_enabled() else "in-memory",
         }
 
-    def _get_type_failure_count(self, provider_type: str) -> int:
-        """Shared by get_stats — reads whichever backing store is active,
-        same split as every other accessor above."""
-        if self.is_redis_state_enabled():
-            raw = self._redis_get(f"{self._REDIS_TYPE_FAILS_PREFIX}{provider_type}")
-            return len(raw) if raw else 0
-        return len(self._provider_type_failures.get(provider_type, []))
-
-
-
 
 # Initialize provider manager (module-level singleton — every caller across
-# the app shares this one instance, which is what makes provider
-# failure/blacklist state consistent within a single process).
+# the app shares this one instance, which is what makes the gateway
+# cooldown state consistent within a single process).
 #
-# NOTE: this line runs at IMPORT time (as it did before), but it no longer
-# triggers a network call — MultiProviderManager.__init__ only loads env
-# vars and sets up in-memory dicts. warm_model_discovery() must be called
-# separately and explicitly (see app.py).
+# NOTE: this line runs at IMPORT time, but it performs no network I/O —
+# MultiProviderManager.__init__ only reads env vars and sets up in-memory
+# state. warm_model_discovery() must still be called separately and
+# explicitly (see app.py).
 provider_manager = MultiProviderManager()
 
 
@@ -1215,8 +751,10 @@ def generate_conversation_title(first_message, provider=None):
                 headers["Authorization"] = f"Bearer {provider['api_key']}"
 
             endpoint = f"{provider['base_url']}/chat/completions"
+            fallback_models = _fallback_models_for(provider, provider["text_model"])
             payload = {
                 "model": provider["text_model"],
+                **({"fallback_models": fallback_models} if fallback_models else {}),
                 "messages": [
                     {
                         "role": "system",
@@ -1574,10 +1112,13 @@ class StudyAssistant:
         for an error embedded in a chunk of an already-200 stream. That
         branch keeps its existing rate-limit/generic split unchanged.
         """
-        MAX_MODEL_RETRIES = max(
-            len(GEMINI_MODELS), len(GROQ_MODELS), len(COHERE_MODELS),
-            len(CLOUDFLARE_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS),
-        )
+        # Client-side safety net only now — the gateway already walks the
+        # `fallback_models` chain attached to every stream request (see
+        # _do_stream) before a failure is ever reported back here, so this
+        # loop should rarely do more than one pass. Bounded by the longest
+        # single-provider catalog so a pathological repeated BAD_MODEL
+        # signal still can't loop forever.
+        MAX_MODEL_RETRIES = max(len(GEMINI_MODELS), len(GROQ_MODELS), len(MISTRAL_MODELS), len(OPENROUTER_MODELS))
         self._provider_exhausted = False
 
         for model_attempt in range(MAX_MODEL_RETRIES):
@@ -1612,15 +1153,17 @@ class StudyAssistant:
                 return
 
             if category == "PROVIDER_TRANSIENT":
-                # Provider-wide/network issue — don't cool the key, but
-                # also don't keep hammering the SAME provider with a
-                # different model; a 503 is not model-specific, so
-                # advance_to_fallback_model would just repeat the same
-                # failure under a different model name. Let the caller
-                # rotate to a different provider instead.
+                # Single-gateway design: a 429/502/503/504 here means the
+                # gateway's own admission control or its upstream failover
+                # was exhausted — there's no different provider at THIS
+                # layer to switch to, so (unlike the pre-gateway version)
+                # this now ALSO starts the short cooldown, same reasoning
+                # as the KEY_FAULT branch above: don't keep hammering a
+                # gateway that just told us it's struggling.
+                provider_manager.mark_provider_failed(self.provider["name"], "streaming PROVIDER_TRANSIENT")
                 logger.warning(
                     f"⚠️ {self.provider['name']} hit a PROVIDER_TRANSIENT error mid-stream — "
-                    "switching providers rather than retrying it"
+                    "cooling down rather than retrying it immediately"
                 )
                 self._provider_exhausted = True
                 return
@@ -1684,10 +1227,17 @@ class StudyAssistant:
             "model": self.model,
             "messages": messages,
             "stream": True,
+            # Server-side failover — see _fallback_models_for's docstring.
+            # The gateway tries each of these in order before this stream
+            # is ever reported as failed.
+            **({"fallback_models": fb} if (fb := _fallback_models_for(
+                self.provider, self.model, getattr(self, "vision_active", False)
+            )) else {}),
         }
 
         logger.info(f"🚀 Streaming — provider: {self.provider['name']}, model: {self.model}")
         endpoint_url = f"{self.provider['base_url']}/chat/completions"
+        stream_timeout_seconds = int(os.environ.get("LLM_GATEWAY_STREAM_TIMEOUT_SECONDS", "60"))
 
         try:
             response = requests.post(
@@ -1695,7 +1245,7 @@ class StudyAssistant:
                 headers=headers,
                 json=data,
                 stream=True,
-                timeout=60
+                timeout=stream_timeout_seconds
             )
 
             # Catch model-not-found at the HTTP level (some providers return 404)
@@ -1804,46 +1354,53 @@ class StudyAssistant:
 
 def _build_call_queue(needs_vision: bool = False) -> list[dict]:
     """
-    Direct structural port of multiProvider.js's buildProviderQueue.
+    GATEWAY MIGRATION: this used to flatten every healthy provider slot's
+    full model list into a long queue of {provider, model} attempts that
+    call_ai_response walked one HTTP call at a time, because this process
+    was the thing doing provider/model fallback.
 
-    Flattens every healthy provider slot's full model fallback list into
-    one ordered queue of {provider, model} attempts, instead of the old
-    nested "pick one provider, retry its whole model list internally, on
-    exhaustion rotate to the next provider" two-level loop. This is the
-    architectural shift the reference file's own queue-then-walk design
-    represents — building the whole fallback plan up front means the
-    classified-error handling below (mirroring callWithFallback's four-
-    branch catch) can cleanly fall through to the next queue entry
-    regardless of whether that entry is a different model on the SAME
-    provider or the next provider entirely, matching the reference file's
-    exact walk order (provider order, then model order within a provider,
-    per multiProvider.js's own queue construction).
+    That fallback now happens server-side, inside ONE gateway call: the
+    queue entry's "model" is the primary model, and
+    _call_provider_sync_raising/StudyAssistant attach the REST of the
+    chain as that request's `fallback_models` (see GATEWAY_TEXT_MODELS /
+    GATEWAY_VISION_MODELS and the payload-building code below), so the
+    gateway walks every model/provider/credential it has before ever
+    reporting a failure back here. The queue therefore has at most one
+    entry — a second local attempt after that one fails would just be
+    re-asking the same gateway to retry a chain it already exhausted.
 
-    Reuses provider_manager's already-Redis-backed health checks
-    (_is_key_cooling / _is_provider_type_blacklisted) rather than
-    duplicating that logic — a provider/key that's cooling or blacklisted
-    on ANY instance is correctly excluded here too, same cross-instance
-    guarantee as get_working_provider already has.
+    External shape unchanged: still a list of {"provider", "model",
+    "provider_id"} dicts, so call_ai_response's loop (and its diagnostics
+    dict) needs no changes.
     """
     queue = []
     for provider in provider_manager.providers:
         provider_type = provider.get("_provider_id", provider["name"])
-        if provider_manager._is_provider_type_blacklisted(provider_type):
-            continue
         if provider_manager._is_key_cooling(provider["name"]):
             continue
         if needs_vision and not provider.get("supports_vision"):
             continue
 
-        models = provider.get("vision_model_fallbacks") if (needs_vision and provider.get("supports_vision")) \
-            else provider.get("text_model_fallbacks", [])
-        if not models:
+        model = provider.get("vision_model") if needs_vision else provider.get("text_model")
+        if not model:
             continue
 
-        for model in models:
-            queue.append({"provider": provider, "model": model, "provider_id": provider_type})
+        queue.append({"provider": provider, "model": model, "provider_id": provider_type})
 
     return queue
+
+
+def _fallback_models_for(provider: dict, model: str, needs_vision: bool = False) -> list:
+    """
+    The `fallback_models` chain to send alongside `model` on a gateway
+    request — every OTHER model in the relevant catalog (vision or text),
+    in order, so the gateway tries them in sequence server-side if `model`
+    fails (see llm-gateway's README "Automatic failover" and
+    chatCompletionRequest.FallbackModels in internal/httpserver/chat.go).
+    `model` itself is excluded so it isn't sent twice.
+    """
+    chain = provider.get("vision_model_fallbacks") if needs_vision else provider.get("text_model_fallbacks")
+    return [m for m in (chain or []) if m != model]
 
 
 def _call_provider_sync_raising(
@@ -1852,6 +1409,7 @@ def _call_provider_sync_raising(
     type: str = "",
     max_tokens: int | None = None,
     model: str | None = None,
+    needs_vision: bool = False,
 ) -> str | None:
     """
     Non-streaming provider call for use in background threads.
@@ -1893,21 +1451,31 @@ def _call_provider_sync_raising(
     if provider["api_key"]:
         headers["Authorization"] = f"Bearer {provider['api_key']}"
 
+    chosen_model = model or provider["text_model"]
     payload = {
-        "model":      model or provider["text_model"],
-        "messages":   messages,
-        "stream":     False,
-        "max_tokens": max_tokens
+        "model":           chosen_model,
+        "messages":        messages,
+        "stream":          False,
+        "max_tokens":      max_tokens,
+        # Server-side failover: the gateway walks this chain itself before
+        # reporting a failure back to us — see _fallback_models_for's
+        # docstring. Only populated when there's something left to fall
+        # back to (an explicit single `model` from call_ai_response's
+        # one-entry queue already covers the common case; direct callers
+        # that pass no `model` get the full chain behind their primary).
+        **({"fallback_models": fb} if (fb := _fallback_models_for(provider, chosen_model, needs_vision)) else {}),
     }
 
     provider_id = provider.get("_provider_id", provider["name"])
+
+    timeout_seconds = int(os.environ.get("LLM_GATEWAY_TIMEOUT_SECONDS", "30"))
 
     try:
         response = requests.post(
             f"{provider['base_url']}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=timeout_seconds
         )
         response.raise_for_status()
         data = response.json()
@@ -1991,43 +1559,49 @@ def _call_provider_sync(
 
 # ===========================================================
 # call_ai_response — Document 1 §2.4 consolidation, now rebuilt around a
-# classified fallback queue (AUDIT horizontal-scaling completion pass —
-# ported from multiProvider.js's callWithFallback, using the real
-# classify_provider_error taxonomy from providerErrors.js, both supplied
-# and read in full rather than approximated).
+# classified single gateway call.
 #
-# Before this migration, at least four call sites (posts.py::
-# ask_learnora_about_post, connections.py::get_connection_overview's
-# non-streaming fallback, study_sessions.py::ai_ask_in_session, and
-# threads.py's meeting-notes/action AI calls) each hand-rolled their own
-# "call provider, on failure rotate, retry N times" loop — with subtly
-# different retry counts/timeouts per call site. This function is the
-# single implementation all of them should call instead.
+# At least four call sites (posts.py::ask_learnora_about_post,
+# connections.py::get_connection_overview's non-streaming fallback,
+# study_sessions.py::ai_ask_in_session, and threads.py's meeting-notes/
+# action AI calls) each hand-rolled their own "call provider, on failure
+# rotate, retry N times" loop — with subtly different retry counts/
+# timeouts per call site. This function is the single implementation all
+# of them should call instead.
 #
-# What changed in THIS pass: the internal retry mechanism. Previously,
-# every failure was treated identically (rotate, retry, up to
-# max_retries+1 total attempts across DIFFERENT PROVIDERS only — never
-# tried a second model on the same provider). Now walks a flattened
-# provider×model queue (_build_call_queue) and reacts differently per
-# classify_provider_error's four categories:
-#   KEY_FAULT          -> cool the key, advance to next queue entry
-#   PROVIDER_TRANSIENT -> do NOT cool the key, advance to next queue entry
-#   BAD_MODEL          -> do NOT cool the key, evict just this model,
-#                         advance to next queue entry
-#   NON_RETRYABLE       -> stop immediately, don't burn through the rest
-#                         of the queue on a request that will never
-#                         succeed anywhere
+# GATEWAY MIGRATION: _build_call_queue now returns at most ONE entry (the
+# single gateway provider), because the gateway itself already walks the
+# model's `fallback_models` chain — across every model, provider, and
+# credential the gateway project owns — inside that one HTTP call before
+# ever reporting a failure back here (see llm-gateway's "Automatic
+# failover"). There is no second queue entry left to "advance to" the way
+# the old per-provider×model queue had. classify_provider_error's four
+# categories now only decide how this ONE attempt's failure affects the
+# NEXT call_ai_response invocation, via provider_manager's cooldown:
+#   KEY_FAULT          -> cool down (dead in practice — no gateway status
+#                         maps to KEY_FAULT anymore; kept for defensive
+#                         completeness, see classify_provider_error)
+#   PROVIDER_TRANSIENT -> cool down. Unlike the pre-gateway version, this
+#                         DOES start the short client-side cooldown now —
+#                         there's no other key to rotate to, so protecting
+#                         a struggling/exhausted gateway from being
+#                         hammered on every subsequent request is the
+#                         right reaction here, not "don't cool."
+#   BAD_MODEL          -> evict just this model from the local fallback
+#                         catalog; do NOT cool the gateway itself (the
+#                         gateway is healthy — this one model name isn't).
+#   NON_RETRYABLE      -> stop immediately, no cooldown (it's a request/
+#                         config problem, not a gateway health problem).
 #
 # EXTERNAL CONTRACT UNCHANGED: still returns (text, diagnostics) with
 # diagnostics = {"attempts", "provider", "errors"} — every one of the
 # six existing callers (Connections_discovery.py, Threads_discovery.py,
 # connections_crud.py, membership.py, messaging.py, threads_crud.py, plus
 # study_sessions.py's own StudyAssistant-based streaming path) keeps
-# working unchanged. max_retries is now interpreted as "maximum queue
-# entries to attempt" rather than "maximum provider rotations" — for a
-# request that fails identically everywhere, this means MORE distinct
-# attempts than before (every model on every provider, not just one
-# model per provider), which is strictly more resilient, not less.
+# working unchanged. max_retries is now effectively capped at 1 real
+# attempt (there's only one queue entry), but the parameter and its
+# plumbing are left in place rather than ripped out, in case a future
+# gateway project is added as a genuinely separate second entry.
 # ===========================================================
 
 def call_ai_response(
@@ -2072,7 +1646,9 @@ def call_ai_response(
         diagnostics["provider"] = provider["name"]
 
         try:
-            result = _call_provider_sync_raising(messages, provider, type=call_type, max_tokens=max_tokens, model=model)
+            result = _call_provider_sync_raising(
+                messages, provider, type=call_type, max_tokens=max_tokens, model=model, needs_vision=needs_vision
+            )
             return result, diagnostics
 
         except ProviderCallError as e:
@@ -2080,19 +1656,22 @@ def call_ai_response(
             diagnostics["errors"].append(f"provider {provider['name']} model {model} failed ({category}): {e}")
             logger.warning(f"[call_ai_response] {provider['name']}/{model} failed, category={category}: {e}")
 
-            if category == "KEY_FAULT":
+            if category in ("KEY_FAULT", "PROVIDER_TRANSIENT"):
+                # Single-gateway design: there's no other key/provider to
+                # rotate to, so the reaction to a gateway-health failure is
+                # a short cooldown, not a rotation — see the docstring
+                # above for why this differs from the pre-gateway version.
                 provider_manager.mark_provider_failed(provider["name"], str(e))
             elif category == "BAD_MODEL":
                 provider_manager.evict_model(entry["provider_id"], model)
-            elif category == "PROVIDER_TRANSIENT":
-                pass  # deliberately do NOT cool the key — see classify_provider_error's docstring
             else:  # NON_RETRYABLE
                 logger.error(f"[call_ai_response] NON_RETRYABLE error, aborting fallback chain: {e}")
                 break
 
-            # Attempts remaining were already capped by max_attempts above;
-            # simply continue to the next queue entry for KEY_FAULT/
-            # BAD_MODEL/PROVIDER_TRANSIENT.
+            # Queue has at most one entry now (see _build_call_queue), so
+            # this loop will not find another entry to try — it exists so
+            # BAD_MODEL/cooldown bookkeeping above still runs before the
+            # function returns its final (None, diagnostics).
             continue
 
     return None, diagnostics

@@ -3,9 +3,16 @@ Tests for the error-classification portion of services/ai_provider_service.py.
 
 Per UNIT_TEST_IMPLEMENTATION_PLAN.md §7.6. Every branch of
 classify_provider_error's lookup table is tested independently -- a
-swapped status set (e.g. 402 landing in PROVIDER_TRANSIENT instead of
-KEY_FAULT) would silently change which failures cool a key vs. don't,
-with real cost/security implications.
+swapped status set would silently change which failures start a cooldown
+vs. don't, with real cost/availability implications.
+
+GATEWAY MIGRATION: KEY_FAULT no longer has any real status mapped to it --
+see the "GATEWAY ERROR CLASSIFICATION" comment in ai_provider_service.py.
+401/403 (invalid/revoked gateway key) are hard misconfigurations now
+classified NON_RETRYABLE, and 429 (the gateway's own admission control) is
+PROVIDER_TRANSIENT, not KEY_FAULT -- there's only one gateway key, so
+"cool this key, try another" no longer applies to it the way it did when
+each vendor had its own key.
 """
 
 import pytest
@@ -23,14 +30,29 @@ from services.ai_provider_service import (
 # classify_provider_error
 # ============================================================================
 
-@pytest.mark.parametrize("status", [401, 402, 403, 429], ids=lambda s: f"status-{s}")
-def test_classify_key_fault_statuses(status):
+def test_classify_key_fault_statuses_now_empty():
+    """No gateway status classifies as KEY_FAULT anymore -- there's only
+    one gateway key, so there's no "rotate to a different key" reaction
+    left to trigger. Kept as an explicit test (rather than deleted) so a
+    future status-set change is a deliberate decision, not a silent one."""
+    from services.ai_provider_service import _KEY_FAULT_STATUSES
+    assert _KEY_FAULT_STATUSES == set()
+
+
+@pytest.mark.parametrize("status", [401, 403], ids=lambda s: f"status-{s}")
+def test_classify_invalid_gateway_key_statuses_are_non_retryable(status):
+    """401/403 mean the gateway key itself is missing/invalid/revoked --
+    a hard misconfiguration, not a per-key fault to rotate away from."""
     err = ProviderCallError("x", status=status, provider_id="p")
-    assert classify_provider_error(err) == "KEY_FAULT"
+    assert classify_provider_error(err) == "NON_RETRYABLE"
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 504], ids=lambda s: f"status-{s}")
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504], ids=lambda s: f"status-{s}")
 def test_classify_provider_transient_statuses(status):
+    """429 (gateway admission control) and 5xx (gateway's own upstream
+    failover exhausted) are worth a short retry later -- see
+    MultiProviderManager's cooldown -- but don't rotate to a different
+    key (there is only one)."""
     err = ProviderCallError("x", status=status, provider_id="p")
     assert classify_provider_error(err) == "PROVIDER_TRANSIENT"
 
