@@ -259,6 +259,13 @@ async function populatePrivacyModal() {
   setChecked('p-privacy-profile-private',     data.set_profile_private);
   setChecked('p-privacy-show-active',         data.show_active_status);
   setChecked('p-privacy-weekly-notification', data.send_weekly_notification);
+  setChecked('p-privacy-activity-feed',       data.show_in_activity_feed);
+  // NOTE: set_dark_mode is a field the backend's visibility-settings
+  // GET/POST already supports but this modal has never had a checkbox
+  // for (no #p-privacy-dark-mode element exists anywhere in
+  // feed2.html) — a pre-existing gap, not introduced here, left alone
+  // since it's a separate concern from wiring up the new
+  // show_in_activity_feed field this change is actually about.
 }
 
 // Batch 3: Study schedule modal — same "always re-fetch on open" approach
@@ -567,6 +574,7 @@ export const ProfileHandlers = {
       set_profile_private:      !!$id('p-privacy-profile-private')?.checked,
       show_active_status:       !!$id('p-privacy-show-active')?.checked,
       send_weekly_notification: !!$id('p-privacy-weekly-notification')?.checked,
+      show_in_activity_feed:    !!$id('p-privacy-activity-feed')?.checked,
     };
     const res = await profileApi.saveVisibilitySettings(settings);
     if (res?.status === 'success') {
