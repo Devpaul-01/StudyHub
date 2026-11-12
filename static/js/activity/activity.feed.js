@@ -206,29 +206,53 @@ function renderActivityItem(activity) {
 /**
  * Get display info for activity type
  */
+/**
+ * Minimal HTML escaper for untrusted user-submitted text embedded into
+ * activity messages (e.g. message_pinned's data.message_preview, which
+ * carries actual pinned message text, not a server-controlled
+ * title/name). Re-implemented locally rather than imported, matching
+ * how this codebase already handles it elsewhere — every module that
+ * needs this (search.templates.js, admin.init.js, thread-view.js,
+ * profile-view.templates.js) defines its own copy rather than sharing
+ * one from a common utility module.
+ */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function getActivityDisplay(type, user, data) {
   let icon, message, badge = '', actionButton = '';
   
   switch (type) {
     case 'started_homework':
-      icon = data.difficulty === 'hard' ? '🔥' : '🚀';
-      message = `<strong>${user.name}</strong> started <strong>${data.title}</strong>`;
-      
-      if (data.difficulty) {
-        badge = `<span class="activity-badge badge-${data.difficulty}">${data.difficulty}</span>`;
+      // FIX: the old case read data.title, data.difficulty, and
+      // data.needs_help — none of those keys exist in the real backend
+      // payload (routes/student/homework_system.py::create_assignment
+      // sends assignment_id, assignment_title, subject). This rendered
+      // "started undefined" with no badge, and the Offer Help button
+      // (gated on the always-undefined data.needs_help) never appeared
+      // at all. record_live_activity for this type only ever fires when
+      // the assignment is_shared_for_help (confirmed at the call site),
+      // so every started_homework activity is implicitly asking for
+      // help — the button is unconditional here, not gated on a field
+      // that was never actually sent.
+      icon = '🚀';
+      message = `<strong>${user.name}</strong> started <strong>${data.assignment_title}</strong>`;
+
+      if (data.subject) {
+        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
       }
-      
-      if (data.needs_help) {
-        badge += '<span class="activity-badge badge-help">Needs Help</span>';
-        actionButton = `
-          <button class="activity-btn" 
-                  data-action="offer-help-from-activity" 
-                  data-user-id="${user.id}"
-                  data-assignment-title="${data.title}">
-            🤝 Offer Help
-          </button>
-        `;
-      }
+
+      actionButton = `
+        <button class="activity-btn"
+                data-action="offer-help-from-activity"
+                data-assignment-id="${data.assignment_id}">
+          🤝 Offer Help
+        </button>
+      `;
       break;
       
     case 'offered_help':
@@ -276,7 +300,155 @@ function getActivityDisplay(type, user, data) {
         badge = '<span class="activity-badge badge-achievement">Personal Best!</span>';
       }
       break;
-      
+
+    // ------------------------------------------------------------------
+    // Cases below are new — this activity type was never rendered at
+    // all before (fell through to the generic "did something" default).
+    // Several of these fire with scope="global" and therefore arrive
+    // anonymized (see services/activity_service.py::anonymize_for_global):
+    // user.name will be "Someone" or a department string, not a real
+    // name, for every type except user_signed_up — the payload's own
+    // data fields (badge_name, new_level_name, thread_title, etc.) carry
+    // the actual content, user.name is woven in only where it still
+    // reads sensibly as a placeholder.
+    // ------------------------------------------------------------------
+
+    case 'help_request_broadcast':
+      icon = '🆘';
+      message = `<strong>${escapeHtml(user.name)}</strong> needs help with <strong>${escapeHtml(data.subject) || 'something'}</strong>`;
+      actionButton = `
+        <button class="activity-btn"
+                data-action="volunteer-from-activity"
+                data-help-request-id="${data.help_request_id}">
+          🙋 Volunteer
+        </button>
+      `;
+      break;
+
+    case 'connection_accepted':
+      icon = '🤝';
+      message = `<strong>${escapeHtml(user.name)}</strong> connected with <strong>${escapeHtml(data.other_user_name) || 'someone'}</strong>`;
+      break;
+
+    case 'user_signed_up':
+      icon = '👋';
+      message = `<strong>${escapeHtml(user.name)}</strong> just joined StudyHub`;
+      if (data.department) {
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.department)}</span>`;
+      }
+      if (user.id) {
+        actionButton = `
+          <button class="activity-btn"
+                  data-action="connect-from-activity"
+                  data-user-id="${user.id}">
+            ➕ Connect
+          </button>
+        `;
+      }
+      break;
+
+    case 'answer_marked_solution':
+      icon = '✔️';
+      message = `<strong>${escapeHtml(user.name)}</strong>'s answer was marked as the solution to <strong>${escapeHtml(data.post_title)}</strong>`;
+      actionButton = `
+        <button class="activity-btn"
+                data-action="view-post-from-activity"
+                data-post-id="${data.post_id}">
+          View Post
+        </button>
+      `;
+      break;
+
+    case 'badge_earned':
+      icon = '🏅';
+      message = `<strong>${escapeHtml(user.name)}</strong> earned the <strong>${escapeHtml(data.badge_name)}</strong> badge`;
+      badge = '<span class="activity-badge badge-achievement">New Badge</span>';
+      break;
+
+    case 'reputation_level_up':
+      icon = '⭐';
+      message = `<strong>${escapeHtml(user.name)}</strong> leveled up to <strong>${escapeHtml(data.new_level_name)}</strong>`;
+      badge = '<span class="activity-badge badge-achievement">Level Up</span>';
+      break;
+
+    case 'thread_joined':
+      icon = '👥';
+      message = `<strong>${escapeHtml(user.name)}</strong> joined <strong>${escapeHtml(data.thread_title)}</strong>`;
+      if (data.department) {
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.department)}</span>`;
+      }
+      actionButton = `
+        <button class="activity-btn"
+                data-action="view-thread-from-activity"
+                data-thread-id="${data.thread_id}">
+          View Thread
+        </button>
+      `;
+      break;
+
+    case 'thread_left':
+      icon = '👋';
+      message = `<strong>${escapeHtml(user.name)}</strong> left <strong>${escapeHtml(data.thread_title)}</strong>`;
+      break;
+
+    case 'thread_created':
+      icon = '✨';
+      message = `<strong>${escapeHtml(user.name)}</strong> started a new thread: <strong>${escapeHtml(data.thread_title)}</strong>`;
+      if (data.department) {
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.department)}</span>`;
+      }
+      if (data.is_open) {
+        badge += '<span class="activity-badge badge-help">Open to Join</span>';
+      }
+      actionButton = `
+        <button class="activity-btn"
+                data-action="view-thread-from-activity"
+                data-thread-id="${data.thread_id}">
+          View Thread
+        </button>
+      `;
+      break;
+
+    case 'message_pinned':
+      icon = '📌';
+      message = `A message was pinned in <strong>${escapeHtml(data.thread_title)}</strong>`;
+      if (data.message_preview) {
+        message += `: "${escapeHtml(data.message_preview)}"`;
+      }
+      if (data.department) {
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.department)}</span>`;
+      }
+      actionButton = `
+        <button class="activity-btn"
+                data-action="view-thread-from-activity"
+                data-thread-id="${data.thread_id}">
+          View Thread
+        </button>
+      `;
+      break;
+
+    // post_created is NOT currently wired up anywhere in the backend —
+    // confirmed by grepping every record_live_activity(...) call site in
+    // routes/student/ and services/, this type is never actually sent.
+    // It was listed as "optional" in the design doc's activity-type
+    // catalog, meaning a candidate for future wiring, not something
+    // already implemented. The case below is a no-op today (nothing
+    // will ever reach it) but matches the naming/shape the design doc
+    // describes, so it's correct and ready if that backend wiring is
+    // added later — same reasoning the backend's own commits used for
+    // study_buddy_session_logged before that whole feature was removed.
+    case 'post_created':
+      icon = '📄';
+      message = `<strong>${escapeHtml(user.name)}</strong> created a new post`;
+      actionButton = `
+        <button class="activity-btn"
+                data-action="view-post-from-activity"
+                data-post-id="${data.post_id}">
+          View Post
+        </button>
+      `;
+      break;
+
     default:
       icon = '📚';
       message = `<strong>${user.name}</strong> did something`;

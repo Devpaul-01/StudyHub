@@ -22,6 +22,7 @@
  */
 
 import { ConnectionAPI } from '../connection/connection.api.js';
+import { homeworkAPI } from '../homework/homework.api.js';
 import { showHomeworkToast } from '../homework/homework.utils.js';
 import {
   activeScope,
@@ -94,6 +95,38 @@ export const ActivityHandlers = {
       target.disabled = false;
       target.textContent = originalText;
       showHomeworkToast('Could not send connection request', 'error');
+    }
+  },
+
+  /**
+   * Offer Help button — shown on started_homework cards. Every
+   * started_homework activity only ever fires when the assignment is
+   * shared for help (confirmed at its record_live_activity call site in
+   * create_assignment), so this button has no extra eligibility check
+   * to make before calling the existing offer-help endpoint.
+   */
+  'offer-help-from-activity': async (target, event) => {
+    const assignmentId = target.dataset.assignmentId;
+    if (!assignmentId) return;
+
+    target.disabled = true;
+    const originalText = target.textContent;
+    target.textContent = 'Offering...';
+
+    try {
+      const response = await homeworkAPI.offerHelp(parseInt(assignmentId, 10));
+      if (response.status === 'success') {
+        target.textContent = "✓ You're helping!";
+      } else {
+        target.disabled = false;
+        target.textContent = originalText;
+        showHomeworkToast(response.message || 'Could not offer help right now', 'error');
+      }
+    } catch (error) {
+      console.error('offer-help-from-activity error:', error);
+      target.disabled = false;
+      target.textContent = originalText;
+      showHomeworkToast('Could not offer help right now', 'error');
     }
   },
 
