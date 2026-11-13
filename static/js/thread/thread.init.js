@@ -20,11 +20,15 @@ import { fetchCurrentUser }                               from './thread.api.js'
 import { renderThreadList }                               from './thread.render.js';
 import { attachThreadLongPress }                          from './thread.longpress.js';
 import { attachThreadSwipe, detachThreadSwipe }           from './thread.swipe.js';
-import { io }                                             from 'https://cdn.socket.io/4.7.5/socket.io.esm.min.js';
+import { disconnectThreadWebSocket }                      from './thread.websocket.js';
+import { socket as sharedSocket }                         from '../core/socket.js';
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-/** Shared socket.io instance — imported by thread.events.js and thread.websocket.js */
+/**
+ * The app-wide socket.io instance from core/socket.js — the SAME connection
+ * Messages uses. Imported by thread.events.js and thread.delegation.js.
+ */
 export let socket = null;
 
 
@@ -54,19 +58,13 @@ export async function threadInit() {
 
     threadState.currentUser = currentUser;
 
-    // 2. Connect socket.io
-    if (typeof io !== 'undefined') {
-      socket = io({
-        transports:           ['polling', 'websocket'],
-        auth:                 { token: api.getToken() },
-        reconnection:         true,
-        reconnectionAttempts: 5,
-        reconnectionDelay:    1000,
-      });
-      _bindSocketLifecycle(socket);
-    } else {
-      showToast('Real-time disabled — socket.io not loaded.', 'error');
-    }
+    // 2. Use the shared socket. Opening our own io() here would be a second
+    //    connection for the same user: the server registers presence per
+    //    socket and clears the user's active thread whenever ANY of their
+    //    sockets disconnects, so two sockets step on each other (and on
+    //    Messages).
+    socket = sharedSocket;
+    _bindSocketLifecycle(socket);
 
     // 3. Event delegation
     initThreadDelegation();
@@ -126,8 +124,12 @@ export async function threadInit() {
 }
 
 export function threadDestroy() {
+  // The socket is shared with Messages: detach our listeners and leave our
+  // room, but never disconnect it.
+  const activeId = threadState.activeThreadId;
+  if (activeId) disconnectThreadWebSocket(activeId);
+  _unbindSocketLifecycle(socket);
   resetThreadSession();
-  socket?.disconnect();
   socket       = null;
   _initialised = false;
   destroyThreadDelegation?.();
@@ -185,10 +187,26 @@ async function _loadPendingInvites() {
 // ─── Socket lifecycle ─────────────────────────────────────────────────────────
 
 let _hasConnectedOnce = false;
+const _lifecycle = {};
+
+function _listen(sock, event, handler) {
+  _lifecycle[event] = handler;
+  sock.on(event, handler);
+}
+
+function _unbindSocketLifecycle(sock) {
+  for (const [event, handler] of Object.entries(_lifecycle)) {
+    sock?.off(event, handler);
+    delete _lifecycle[event];
+  }
+}
 
 function _bindSocketLifecycle(sock) {
+  // The shared socket is usually already connected by the time we bind, so
+  // its first 'connect' has fired and will not fire again.
+  _hasConnectedOnce = sock.connected;
 
-  sock.on('connect', () => {
+  _listen(sock, 'connect', () => {
     // HIDDEN-05: only show toast on reconnect, not initial connection
     if (_hasConnectedOnce) {
       showToast('Reconnected', 'success');
@@ -196,7 +214,7 @@ function _bindSocketLifecycle(sock) {
     _hasConnectedOnce = true;
   });
 
-  sock.on('disconnect', (reason) => {
+  _listen(sock, 'disconnect', (reason) => {
     if (reason !== 'io client disconnect') {
       showToast('Connection lost — reconnecting…', 'error');
     }
@@ -205,7 +223,7 @@ function _bindSocketLifecycle(sock) {
     }
   });
 
-  sock.on('connect_error', (err) => {
+  _listen(sock, 'connect_error', (err) => {
     if (_hasConnectedOnce) return;
     console.warn('[thread_init] Socket connection error:', err.message);
   });
@@ -214,7 +232,7 @@ function _bindSocketLifecycle(sock) {
    * Issue 2: On reconnect, reload thread list to recover missed updates,
    * then rejoin the active thread room.
    */
-  sock.on('reconnect', () => {
+  _listen(sock, 'reconnect', () => {
     handleLoadThreadList().catch(() => {});
 
     const threadId = threadState.activeThreadId;
