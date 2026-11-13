@@ -539,6 +539,14 @@ body {
   animation: fadeIn var(--transition-base);
 }
 
+/* Threads keeps its own flex column layout (list panel + chat panel)
+   instead of the default block display other .section elements use. */
+#threads.section.active {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
