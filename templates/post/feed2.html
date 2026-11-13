@@ -5112,6 +5112,8 @@ function _closeMessagesOverlay() {
 }
 
 // ── Threads overlay ───────────────────────────────────────────────────────
+let _threadsInitialized = false;
+
 // Same full-screen overlay behaviour as Messages above: hides the header,
 // bottom nav and help button while open, and puts them back on close.
 function _openThreadsOverlay() {
@@ -5138,6 +5140,12 @@ function _openThreadsOverlay() {
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
 
     closeMobileSidebar();
+
+    // Initialise threads once, on first open (prevents stacked listeners).
+    if (!_threadsInitialized && typeof window.initThreads === 'function') {
+        _threadsInitialized = true;
+        window.initThreads();
+    }
 }
 
 function _closeThreadsOverlay() {
@@ -5264,6 +5272,12 @@ window.logout = logout;
 window._openMessagesOverlay = _openMessagesOverlay;
 window._openThreadsOverlay = _openThreadsOverlay;
 window._closeThreadsOverlay = _closeThreadsOverlay;
+
+// Deep link (#thread-<id>): thread.init.js opens that thread, but only once
+// initialised, so open the overlay up front.
+if (location.hash.startsWith('#thread-')) {
+    document.addEventListener('DOMContentLoaded', _openThreadsOverlay);
+}
 
 </script>
 

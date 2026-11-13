@@ -275,10 +275,9 @@ function _renderInitError(err) {
 }
 
 
-// ─── Auto-init ────────────────────────────────────────────────────────────────
+// ─── Lazy init ────────────────────────────────────────────────────────────────
+// Threads is a full-screen overlay opened on demand (same as Messages), so it
+// is initialised by _openThreadsOverlay() the first time it is shown rather
+// than on every feed page load.
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', threadInit);
-} else {
-  threadInit();
-}
+window.initThreads = threadInit;
