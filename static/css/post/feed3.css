@@ -539,6 +539,22 @@ body {
   animation: fadeIn var(--transition-base);
 }
 
+/* Threads overlay — same full-screen fixed pattern as #messages
+   (see message.css). Opened/closed by _openThreadsOverlay() /
+   _closeThreadsOverlay(); it is NOT a .section. */
+#threads {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  overflow: hidden;
+}
+
+#threads.hidden {
+  display: none !important;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
