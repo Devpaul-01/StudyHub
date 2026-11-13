@@ -555,6 +555,17 @@ body {
   display: none !important;
 }
 
+/* Thread dialogs, pickers and the in-thread search panel are mounted on
+   <body> with Tailwind z-40..z-[60], which would open BEHIND the z-200
+   overlay above. Lift them, the same way message.css lifts the msg-*
+   modals to 9000. The `body` prefix beats Tailwind's single-class
+   selectors regardless of stylesheet order. */
+body [id^="thread-"][role="dialog"],
+body #thread-reaction-picker,
+body #thread-search-panel {
+  z-index: 9000;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
