@@ -20,7 +20,11 @@ import { fetchCurrentUser }                               from './thread.api.js'
 import { renderThreadList }                               from './thread.render.js';
 import { attachThreadLongPress }                          from './thread.longpress.js';
 import { attachThreadSwipe, detachThreadSwipe }           from './thread.swipe.js';
-import { disconnectThreadWebSocket }                      from './thread.websocket.js';
+import {
+  disconnectThreadWebSocket,
+  registerThreadPersonalHandlers,
+  unregisterThreadPersonalHandlers,
+}                                                         from './thread.websocket.js';
 import { socket as sharedSocket }                         from '../core/socket.js';
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -65,6 +69,7 @@ export async function threadInit() {
     //    Messages).
     socket = sharedSocket;
     _bindSocketLifecycle(socket);
+    registerThreadPersonalHandlers(socket);
 
     // 3. Event delegation
     initThreadDelegation();
@@ -129,6 +134,7 @@ export function threadDestroy() {
   const activeId = threadState.activeThreadId;
   if (activeId) disconnectThreadWebSocket(activeId);
   _unbindSocketLifecycle(socket);
+  unregisterThreadPersonalHandlers();
   resetThreadSession();
   socket       = null;
   _initialised = false;

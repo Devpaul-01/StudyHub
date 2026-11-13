@@ -41,16 +41,34 @@ let _personalHandlersSocket = null;
 
 // ─── Public: lifecycle ────────────────────────────────────────────────────────
 
+/**
+ * Register the personal-room handlers (thread_list_update, thread_updated,
+ * thread_joined, message_status_updated). They do not depend on an open
+ * thread, so threadInit calls this up front; otherwise the list would get no
+ * live updates until the first thread was opened. Idempotent per socket.
+ */
+export function registerThreadPersonalHandlers(socket) {
+  if (_personalHandlersSocket === socket) return;
+  _registerPersonalHandlers(socket);
+  _personalHandlersSocket = socket;
+}
+
+export function unregisterThreadPersonalHandlers() {
+  if (!_personalHandlersSocket) return;
+  for (const [event, handler] of Object.entries(_personalHandlers)) {
+    _personalHandlersSocket.off(event, handler);
+    delete _personalHandlers[event];
+  }
+  _personalHandlersSocket = null;
+}
+
 export function initThreadWebSocket(socket, threadId) {
   _socket   = socket;
   _threadId = threadId;
 
   const token = api.getToken();
 
-  if (_personalHandlersSocket !== socket) {
-    _registerPersonalHandlers(socket);
-    _personalHandlersSocket = socket;
-  }
+  registerThreadPersonalHandlers(socket);
 
   _registerThreadHandlers(socket, threadId, token);
 
