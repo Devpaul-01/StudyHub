@@ -5110,6 +5110,57 @@ function _closeMessagesOverlay() {
     closeMobileSidebar();
 }
 
+// ── Threads overlay ───────────────────────────────────────────────────────
+// Same full-screen overlay behaviour as Messages above: hides the header,
+// bottom nav and help button while open, and puts them back on close.
+function _openThreadsOverlay() {
+    const overlay = document.getElementById('threads');
+    if (!overlay) return;
+
+    // Only one full-screen overlay at a time.
+    document.getElementById('messages')?.classList.add('hidden');
+
+    _bottomNav?.classList.add('hidden');
+    _helpBtn?.classList.add('hidden');
+    const headerBar = document.getElementById('header-bar');
+    if (headerBar) headerBar.classList.add('hidden');
+
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+
+    document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(item => {
+        item.classList.remove('active');
+        if (item.dataset.target === 'threads') item.classList.add('active');
+    });
+
+    currentSection = 'threads';
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+
+    closeMobileSidebar();
+}
+
+function _closeThreadsOverlay() {
+    const overlay = document.getElementById('threads');
+    // No-op when already closed: navigateTo() calls this on every navigation.
+    if (!overlay || overlay.classList.contains('hidden')) return;
+
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    document.getElementById('feed')?.classList.add('active');
+
+    const headerBar = document.getElementById('header-bar');
+    if (headerBar) headerBar.classList.remove('hidden');
+    _bottomNav?.classList.remove('hidden');
+    _helpBtn?.classList.remove('hidden');
+
+    document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.target === 'feed');
+    });
+    currentSection = 'feed';
+
+    closeMobileSidebar();
+}
+
 
 
 
@@ -5210,6 +5261,8 @@ window.closeMobileSidebar = closeMobileSidebar;
 window.toggleMobileSidebar = toggleMobileSidebar;
 window.logout = logout;
 window._openMessagesOverlay = _openMessagesOverlay;
+window._openThreadsOverlay = _openThreadsOverlay;
+window._closeThreadsOverlay = _closeThreadsOverlay;
 
 </script>
 
