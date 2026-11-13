@@ -316,8 +316,14 @@ export function navigateTo(sectionId, event) {
         return;
     }
 
+    // ── Threads: full-screen fixed overlay, same as Messages ───────────────
+    if (sectionId === 'threads') {
+        _openThreadsOverlay();
+        return;
+    }
+
     const implementedSections = [
-        'feed', 'profile','threads', 'learnora', 'leaderboard', 'analytics', 'advanced-search', 'homework',
+        'feed', 'profile', 'learnora', 'leaderboard', 'analytics', 'advanced-search', 'homework',
         'notifications', 'activity-feed', 'connections'
     ];
 
@@ -330,6 +336,7 @@ export function navigateTo(sectionId, event) {
 
     // Close messages overlay if it was open
     _closeMessagesOverlay();
+    _closeThreadsOverlay();
 
     // Deactivate all sections then activate the target
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
