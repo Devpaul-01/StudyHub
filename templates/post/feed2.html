@@ -922,14 +922,27 @@ html { scroll-behavior: smooth; }
     <!-- Header -->
     <div class="flex items-center justify-between px-4 pt-5 pb-3 bg-white border-b border-gray-100">
       <h1 class="text-xl font-bold text-gray-900">Threads</h1>
-      <button data-action="open-create-thread-modal"
-              aria-label="Create thread"
-              class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 active:scale-95
-                     flex items-center justify-center text-white transition-all duration-150 shadow-sm">
-        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-      </button>
+      <div class="flex items-center gap-2">
+        <button data-action="open-create-thread-modal"
+                aria-label="Create thread"
+                class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 active:scale-95
+                       flex items-center justify-center text-white transition-all duration-150 shadow-sm">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+
+        <!-- Close overlay — lets user return to the app without opening a thread -->
+        <button onclick="_closeThreadsOverlay()"
+                aria-label="Close threads"
+                class="p-2 rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100
+                       active:bg-gray-200 transition-colors">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.5">
+            <path d="M18 6L6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Pending invites section (hidden when empty) -->
