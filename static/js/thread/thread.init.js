@@ -21,6 +21,7 @@ import { renderThreadList }                               from './thread.render.
 import { attachThreadLongPress }                          from './thread.longpress.js';
 import { attachThreadSwipe, detachThreadSwipe }           from './thread.swipe.js';
 import {
+  initThreadWebSocket,
   disconnectThreadWebSocket,
   registerThreadPersonalHandlers,
   unregisterThreadPersonalHandlers,
@@ -213,11 +214,25 @@ function _bindSocketLifecycle(sock) {
   _hasConnectedOnce = sock.connected;
 
   _listen(sock, 'connect', () => {
-    // HIDDEN-05: only show toast on reconnect, not initial connection
-    if (_hasConnectedOnce) {
-      showToast('Reconnected', 'success');
-    }
+    const isReconnect = _hasConnectedOnce;
     _hasConnectedOnce = true;
+
+    // HIDDEN-05: only act on reconnect, not the initial connection
+    if (!isReconnect) return;
+
+    showToast('Reconnected', 'success');
+
+    // A reconnect is a new server-side socket id, so it is no longer in any
+    // thread room. Recover missed list updates and rejoin the open thread.
+    // (This used to be sock.on('reconnect'), which Socket.IO v4 only emits
+    // on the Manager, so it never ran.)
+    handleLoadThreadList().catch(() => {});
+
+    const threadId = threadState.activeThreadId;
+    if (threadId) {
+      disconnectThreadWebSocket(threadId);
+      initThreadWebSocket(sock, threadId);
+    }
   });
 
   _listen(sock, 'disconnect', (reason) => {
@@ -232,22 +247,6 @@ function _bindSocketLifecycle(sock) {
   _listen(sock, 'connect_error', (err) => {
     if (_hasConnectedOnce) return;
     console.warn('[thread_init] Socket connection error:', err.message);
-  });
-
-  /**
-   * Issue 2: On reconnect, reload thread list to recover missed updates,
-   * then rejoin the active thread room.
-   */
-  _listen(sock, 'reconnect', () => {
-    handleLoadThreadList().catch(() => {});
-
-    const threadId = threadState.activeThreadId;
-    if (threadId) {
-      import('./thread.websocket.js').then(({ disconnectThreadWebSocket, initThreadWebSocket }) => {
-        disconnectThreadWebSocket(threadId);
-        initThreadWebSocket(sock, threadId);
-      });
-    }
   });
 }
 
