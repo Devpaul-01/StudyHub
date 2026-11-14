@@ -1040,8 +1040,12 @@ async function handleBookmark() {
   if (!postId || !btn) return;
   btn.disabled = true;
   try {
-    const res = await api.post(`/posts/${postId}/bookmark`, {});
-    const bookmarked = res?.data?.bookmarked ?? !state.userInteraction.bookmarked;
+    // Idempotent set/unset: a retry can never flip the state the wrong way.
+    const wasBookmarked = !!state.userInteraction.bookmarked;
+    const res = wasBookmarked
+      ? await api.delete(`/posts/${postId}/bookmark`)
+      : await api.put(`/posts/${postId}/bookmark`, {});
+    const bookmarked = res?.data?.bookmarked ?? !wasBookmarked;
     state.userInteraction.bookmarked = bookmarked;
     btn.classList.toggle('is-active', bookmarked);
     btn.innerHTML = bookmarked ? '🔖 Saved' : '🔖 Save';
