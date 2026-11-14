@@ -513,6 +513,14 @@ html { scroll-behavior: smooth; }
                     Activity Feed
                 </div>
 
+                <!-- Bookmarks -->
+                <div class="nav-item" data-action="navigate-to" data-target="bookmarks">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    Bookmarks
+                </div>
+
                 <!-- Profile -->
                 <div class="nav-item" data-action="navigate-to" data-target="profile">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2048,6 +2056,63 @@ html { scroll-behavior: smooth; }
   </div>
 
 </section>
+
+<!-- ═══════════════ BOOKMARKS SECTION ═══════════════
+     Lazily initialised by static/js/bookmark/bookmark.init.js when this
+     section first gets the "active" class. Clicks go through app.unified.js
+     (BookmarkHandlers). Styles: static/css/bookmark/bookmark.css          -->
+<section id="bookmarks" class="section" aria-labelledby="bm-title">
+
+  <header class="bm-header">
+    <div>
+      <h2 id="bm-title" class="bm-title">Bookmarks</h2>
+      <p id="bm-summary" class="bm-summary" aria-live="polite"></p>
+    </div>
+    <div class="bm-header-actions">
+      <button type="button" class="bm-btn" data-action="bm-toggle-select" id="bm-select-btn">Select</button>
+      <button type="button" class="bm-btn bm-btn-primary" data-action="bm-new-folder">+ New folder</button>
+    </div>
+  </header>
+
+  <div class="bm-toolbar">
+    <div class="bm-search-wrap">
+      <input id="bm-search" class="bm-search" type="search" maxlength="100"
+             placeholder="Search saved posts and your notes…" autocomplete="off"
+             aria-label="Search bookmarks">
+      <button type="button" class="bm-search-clear" data-action="bm-clear-search"
+              id="bm-search-clear" aria-label="Clear search" hidden>×</button>
+    </div>
+    <select id="bm-sort" class="bm-select" aria-label="Sort bookmarks">
+      <option value="recent">Recently saved</option>
+      <option value="oldest">Oldest saved</option>
+    </select>
+  </div>
+
+  <div class="bm-layout">
+    <!-- Folder rail (a horizontal chip strip on phones) -->
+    <nav id="bm-folders" class="bm-folders" aria-label="Bookmark folders"></nav>
+
+    <div class="bm-main">
+      <div id="bm-type-pills" class="p-filter-bar bm-type-pills"></div>
+
+      <!-- Appears while ≥1 post is selected -->
+      <div id="bm-bulkbar" class="bm-bulkbar" hidden>
+        <span id="bm-bulk-count"></span>
+        <button type="button" class="bm-btn" data-action="bm-select-all">Select all loaded</button>
+        <button type="button" class="bm-btn" data-action="bm-bulk-move">Move…</button>
+        <button type="button" class="bm-btn bm-btn-danger" data-action="bm-bulk-remove">Remove</button>
+        <button type="button" class="bm-btn" data-action="bm-bulk-cancel">Cancel</button>
+      </div>
+
+      <div id="bm-list" class="bm-list"></div>
+      <div id="bm-sentinel" class="bm-sentinel" aria-hidden="true"></div>
+      <div id="bm-more" class="bm-more" hidden>Loading more…</div>
+    </div>
+  </div>
+
+  <div id="bm-snackbar" class="bm-snackbar" role="status" aria-live="polite" hidden></div>
+</section>
+
 
 
 
