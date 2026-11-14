@@ -411,6 +411,8 @@ The screenshot below shows the ledger in the actual profile UI — the +189 / -0
 
 Posts, comments, reactions, bookmarks, and mentions follow a conventional shape, with two things worth calling out: **denormalized counters with a reconciliation safety net**, and **priority scoring computed on read, never persisted as a read side effect**.
 
+Bookmarks have their own service (`services/bookmark_service.py`): every write path goes through it, counters (`Post.bookmark_count`, `BookmarkFolder.bookmark_count`) change via atomic clamped `UPDATE`s, and the paginated list reuses `services/post_hydration_service.py`, the same batched loading the feed uses, so query count doesn't grow with page size or bookmark count.
+
 Post-level counters (`comments_count`, `bookmark_count`, `views_count`, `positive_reactions_count`) are maintained incrementally at write time rather than computed with a `COUNT(*)` on every read. A weekly scheduled job (§12, `reconcile_denormalized_counts()`) recomputes the true count from the underlying rows and compares it against the stored value. What happens on a mismatch depends on what the counter is used for, not just where it lives:
 
 - **Display-only counters** (post comment/bookmark/view/reaction counts, `Thread.message_count`) are auto-corrected — a wrong number here is purely cosmetic.
