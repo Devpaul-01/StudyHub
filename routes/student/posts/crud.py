@@ -563,6 +563,7 @@ def get_posts_by_type(current_user):
                 "comments_count": post.comments_count,
                 "views_count": post.views_count,
                 "bookmarks_count": post.bookmark_count,
+                "bookmark_count": post.bookmark_count or 0,
                 "posted_at": post.posted_at.isoformat(),
                 "is_author": post.student_id == current_user.id,
                 "connection_status": connection_status,
@@ -677,7 +678,10 @@ def get_post_options_menu(current_user, post_id):
                 "is_solved": post.is_solved,
                 "is_locked": post.is_locked,
                 "interactions": {
-                    "followed": user_followed
+                    "followed": user_followed,
+                    "bookmarked": Bookmark.query.filter_by(
+                        post_id=post_id, student_id=current_user.id
+                    ).first() is not None
                 },
                 "author": {
                     "id": author.id,
@@ -856,6 +860,7 @@ def get_posts_by_status(current_user):
                 "reactions_count": post.positive_reactions_count or 0,
                 "comments_count": post.comments_count,
                 "views_count": post.views_count,
+                "bookmark_count": post.bookmark_count or 0,
                 "posted_at": post.posted_at.isoformat(),
                 "is_author": post.student_id == current_user.id,
                 "author": {
@@ -1334,6 +1339,7 @@ def get_post(current_user, post_id):
                     "reactions_count": post.positive_reactions_count,
                     "comments_count": post.comments_count,
                     "views": post.views_count,
+                    "bookmark_count": post.bookmark_count or 0,
                     "reactions": reaction_counts
                 },
                 "author": {

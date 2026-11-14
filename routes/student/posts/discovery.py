@@ -308,6 +308,7 @@ def get_posts_by_tag(current_user, tag):
                 "resources": post.resources,
                 "thread_enabled": post.thread_enabled,
                 "bookmarks_count": post.bookmark_count,
+                "bookmark_count": post.bookmark_count or 0,
                 "is_solved": is_solved,
                 "is_pinned": is_pinned,
                 "reactions_count": post.positive_reactions_count or 0,
