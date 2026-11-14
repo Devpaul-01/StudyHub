@@ -4,8 +4,7 @@ StudyHub - Posts blueprint aggregation
 Document 1 §2.3: posts.py (~3,300 lines) split into 5 files:
     crud.py       - post CRUD, feed, reactions, single-post detail endpoints
     comments.py   - comments and replies
-    bookmarks.py  - bookmarks (verbatim move only — excluded from this
-                    refactor phase's logic changes per project instructions)
+    bookmarks.py  - bookmarks (thin routes over services/bookmark_service.py)
     discovery.py  - tags, resources
     ai.py         - ask Learnora about a post, apply refinement
 

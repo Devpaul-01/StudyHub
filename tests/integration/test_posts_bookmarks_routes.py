@@ -1,8 +1,8 @@
 """
 tests/integration/test_posts_bookmarks_routes.py
 
-routes/student/posts/bookmarks.py has 4 endpoints and previously had
-zero tests at any level. This batch covers all of them: the two
+routes/student/posts/bookmarks.py originally had 4 endpoints and zero tests.
+This file covers the legacy endpoints (kept as compat wrappers): the two
 different toggle implementations (toggle_bookmarks, which organizes
 via BookmarkFolder, and bulk_bookmark/bookmark_post, which use the
 plain Bookmark.folder string column), and the listing endpoint.
@@ -226,7 +226,8 @@ class TestGetBookmarkedPosts:
         data = resp.get_json()["data"]
         assert data["total"] == 1
         assert data["bookmarks"][0]["post"]["title"] == "Save me"
-        assert data["folders"] == [{"name": "Saved", "count": 1}]
+        assert [(f["name"], f["count"]) for f in data["folders"]] == [("Saved", 1)]
+        assert data["bookmarks"][0]["post"]["user_interactions"]["bookmarked"] is True
 
     def test_bookmarks_are_scoped_per_user(
         self, client, make_user, make_post, auth_headers, csrf_headers

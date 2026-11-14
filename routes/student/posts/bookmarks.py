@@ -1,385 +1,280 @@
 """
-StudyHub - Posts: Bookmarks
+StudyHub - Posts: Bookmarks (routes only)
 
-Split from posts.py per Document 1 (Architecture Refactor) §2.3 as part of
-Phase 2 (God-file splitting). This is a pure move — function bodies,
-decorators, routes, and logic are unchanged from the original posts.py.
-See routes/student/posts/__init__.py for the sub-blueprint aggregation
-that re-exposes all routes under the same paths as before.
-
-Per Document 1 §2.3: this file is a VERBATIM copy-paste move only —
-no logic changes, no error-handling changes, no folder/tag audit
-fixes bundled in. Bookmark functionality is explicitly excluded from
-this refactor phase per the project instructions.
+Thin HTTP layer. All logic lives in services/bookmark_service.py.
+Routes -> services -> models (see ARCHITECTURE.md).
 """
-
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
-import json
-from werkzeug.utils import secure_filename
-from sqlalchemy import or_, and_, func, desc
-from sqlalchemy.orm import aliased
-import datetime
-import re
-import os
-import time
-import traceback
-from routes.student.reputation import check_and_award_milestone
-
-import mimetypes
-from datetime import date, timedelta
-from collections import defaultdict
 import logging
+from functools import wraps
 
-import random
-logger = logging.getLogger(__name__)
+from flask import Blueprint, request
 
-from models import (
-    User, StudentProfile, Post, Comment, Connection, PostReaction, PostReport,
-    Bookmark, PostFollow, Mention, Notification, ReputationHistory, BookmarkFolder,
-    ThreadMember, UserActivity, PostView, CommentHelpfulMark, CommentLike,
-    ThreadJoinRequest, Thread
-)
+from errors import AppError, ValidationError
+from routes.student.helpers import token_required, success_response, error_response
+from services import bookmark_service as bm
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 from extensions import db
-from routes.student.helpers import (
-    token_required, success_response, error_response,
-    save_file, ALLOWED_IMAGE_EXT, ALLOWED_DOCUMENT_EXT
-)
 
-from services.post_service import (
-    extract_public_id,
-    
-    detect_and_create_mentions,
-    check_spam,
-    update_user_activity,
-)
-# Phase 5b (Document 4 §1): rate limiting is infrastructure, not bookmark
-# business logic, so it's applied here despite this file's own "verbatim
-# move only, no logic changes" scope note (Document 1 §2.3) — that note
-# covers bookmark behavior/error-handling, not cross-cutting HTTP-layer
-# concerns like rate limits. Toggle/bulk/single-bookmark -> BURST_OK
-# (low-risk, frequent); bookmarked-list GET -> PUBLIC_READ.
-from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
-
-import cloudinary
-
-try:
-    from services.storage import cloudinary_storage, filename_service
-    STORAGE_AVAILABLE = True
-    logger.info("Storage module available")
-except ImportError as e:
-    STORAGE_AVAILABLE = False
-    logger.warning(f"Storage module not available: {str(e)}")
-except Exception as e:
-    STORAGE_AVAILABLE = False
-    logger.warning(f"Storage initialization failed: {str(e)}")
-
-import base64
-
+logger = logging.getLogger(__name__)
 posts_bookmarks_bp = Blueprint("posts_bookmarks", __name__)
+
+_UNSET = bm._UNSET
+
+
+def _guard(failure_message):
+    """Typed AppErrors propagate to the central handler; anything else -> logged 500."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except AppError:
+                raise
+            except Exception:
+                db.session.rollback()
+                logger.exception("bookmarks: %s", failure_message)
+                return error_response(failure_message, 500)
+        return wrapper
+    return deco
+
+
+def _body():
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValidationError("Request body must be a JSON object")
+    return data
+
+
+def _opt_int(raw, name):
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{name} must be an integer")
+
+
+# ───────────────────────── reads ─────────────────────────
+
+@posts_bookmarks_bp.route("/posts/bookmarked", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to load bookmarks")
+def get_bookmarked_posts(current_user):
+    """
+    Feed-grade, cursor-paginated list of the viewer's bookmarks.
+
+    Query params: cursor, limit (<=20, default 12), folder_id | folder (name, legacy),
+                  type (post_type), tag, q (search), sort=recent|oldest.
+    Response data: {bookmarks:[{bookmark_id, folder_id, folder, notes, tags,
+                    bookmarked_at, post:{...same card payload as /posts/feed...}}],
+                    next_cursor, has_more, total (first page only), folders (first page only)}
+    """
+    a = request.args
+    folder_id = _opt_int(a.get("folder_id"), "folder_id")
+    if folder_id is None and a.get("folder"):
+        # legacy: filter by folder NAME
+        f = next((x for x in bm.list_folders(current_user.id, ensure_default=False)
+                  if x["name"] == a.get("folder")), None)
+        if f is None:
+            return success_response("Bookmarks retrieved", {
+                "bookmarks": [], "next_cursor": None, "has_more": False,
+                "total": 0, "folders": bm.list_folders(current_user.id, ensure_default=False)})
+        folder_id = f["id"]
+
+    page = bm.list_bookmarks_page(
+        current_user.id,
+        folder_id=folder_id,
+        post_type=(a.get("type") or "").strip() or None,
+        tag=a.get("tag"), q=a.get("q"),
+        sort=a.get("sort", "recent"),
+        cursor=a.get("cursor") or None,
+        limit=a.get("limit", bm.PAGE_DEFAULT, type=int),
+    )
+    if not a.get("cursor"):                      # first page also carries the folder rail
+        page["folders"] = bm.list_folders(current_user.id, ensure_default=False)
+    return success_response("Bookmarks retrieved", page)
+
+
+@posts_bookmarks_bp.route("/posts/bookmarks/status", methods=["POST"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to check bookmark status")
+def bookmark_status(current_user):
+    """POST {post_ids:[..<=100]} -> {statuses:{"12":{bookmarked,folder_id}, ...}}"""
+    return success_response("Status retrieved", {
+        "statuses": bm.bookmark_status(current_user.id, _body().get("post_ids"))})
+
+
+@posts_bookmarks_bp.route("/posts/bookmarks/stats", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to load bookmark stats")
+def bookmark_stats(current_user):
+    return success_response("Stats retrieved", bm.get_stats(current_user.id))
+
+
+# ───────────────────────── idempotent single-post API (new) ─────────────────────────
+
+@posts_bookmarks_bp.route("/posts/<int:post_id>/bookmark", methods=["PUT"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to bookmark post")
+def put_bookmark(current_user, post_id):
+    """Idempotent 'bookmark this'. Body (all optional): folder_id | folder_name, notes, tags."""
+    d = _body()
+    results, folder = bm.add_bookmarks(
+        current_user.id, [post_id],
+        folder_id=_opt_int(d.get("folder_id"), "folder_id"),
+        folder_name=d.get("folder_name"), notes=d.get("notes"), tags=d.get("tags"))
+    r = results[0]
+    if not r["success"]:
+        return error_response(r.get("error", "Post not found"), 404)
+    return success_response("Bookmarked", {
+        "post_id": post_id, "bookmarked": True, "already": r["already"],
+        "bookmark_count": r["bookmark_count"], "folder": bm.serialize_folder(folder)})
+
+
+@posts_bookmarks_bp.route("/posts/<int:post_id>/bookmark", methods=["DELETE"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to remove bookmark")
+def delete_bookmark(current_user, post_id):
+    r = bm.remove_bookmarks(current_user.id, [post_id])[0]
+    return success_response("Bookmark removed", {
+        "post_id": post_id, "bookmarked": False, "bookmark_count": r["bookmark_count"]})
+
+
+# ───────────────────────── legacy toggle endpoints (compat wrappers) ─────────────────────────
+
 @posts_bookmarks_bp.route("/posts/bookmark/toggle", methods=["POST"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
+@_guard("Failed to update bookmarks")
 def toggle_bookmarks(current_user):
-    """
-    Toggle bookmark status for multiple posts.
+    d = _body()
+    results, folder = bm.toggle_bookmarks(
+        current_user.id, d.get("post_ids"),
+        folder_id=_opt_int(d.get("folder_id"), "folder_id"),
+        folder_name=d.get("folder_name"), notes=d.get("notes"), tags=d.get("tags"))
+    return success_response("Bookmarks updated", {
+        "results": results, "folder": bm.serialize_folder(folder)})
 
-    Body (JSON):
-    - post_ids: list[int] (required)
-    - folder_name: optional (default "Saved")
-    - notes: optional
-    - tags: optional list
-    """
-    try:
-        data = request.get_json() or {}
-        post_ids = data.get("post_ids", [])
-
-        if not isinstance(post_ids, list) or not post_ids:
-            return error_response("post_ids must be a non-empty list", 400)
-
-        folder_name = data.get("folder_name", "Saved").strip()
-        notes = (data.get("notes") or "").strip() or None
-        tags = data.get("tags", [])
-        tags = tags[:10] if isinstance(tags, list) else []
-
-        results = []
-
-        # 🔹 Find or create folder once
-        folder = BookmarkFolder.query.filter_by(
-            user_id=current_user.id,
-            name=folder_name
-        ).first()
-
-        if not folder:
-            max_position = db.session.query(
-                func.max(BookmarkFolder.position)
-            ).filter_by(user_id=current_user.id).scalar() or 0
-
-            folder = BookmarkFolder(
-                user_id=current_user.id,
-                name=folder_name,
-                icon="📁",
-                color="#6B7280",
-                position=max_position + 1,
-                is_default=(folder_name == "Saved")
-            )
-            db.session.add(folder)
-            db.session.flush()
-
-        for post_id in post_ids:
-            post = Post.query.get(post_id)
-
-            if not post:
-                results.append({
-                    "post_id": post_id,
-                    "success": False,
-                    "error": "Post not found"
-                })
-                continue
-
-            existing = Bookmark.query.filter_by(
-                post_id=post_id,
-                student_id=current_user.id
-            ).first()
-
-            # 🔻 UNBOOKMARK
-            if existing:
-                db.session.delete(existing)
-                post.bookmark_count = max(0, post.bookmark_count - 1)
-                folder.bookmark_count = max(0, folder.bookmark_count - 1)
-
-                results.append({
-                    "post_id": post_id,
-                    "bookmarked": False
-                })
-
-            # 🔺 BOOKMARK
-            else:
-                bookmark = Bookmark(
-                    post_id=post_id,
-                    student_id=current_user.id,
-                    folder_id=folder.id,
-                    folder=folder_name,
-                    notes=notes,
-                    tags=tags
-                )
-
-                db.session.add(bookmark)
-                post.bookmark_count += 1
-                folder.bookmark_count += 1
-
-                results.append({
-                    "post_id": post_id,
-                    'bookmark_count': post.bookmark_count,
-                    "bookmarked": True,
-                    "bookmark_id": bookmark.id
-                })
-
-        db.session.commit()
-
-        return success_response(
-            "Bookmark toggle completed",
-            data={
-                "results": results,
-                "folder": {
-                    "id": folder.id,
-                    "name": folder.name,
-                    "icon": folder.icon,
-                    "color": folder.color
-                }
-            }
-        )
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Toggle bookmarks error: ", exc_info=True)
-        return error_response("Failed to toggle bookmarks", 500)
-        
-        
-
-        
-
-        
-        
 
 @posts_bookmarks_bp.route("/posts/bulk/bookmark", methods=["POST"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
+@_guard("Failed to bookmark posts")
 def bulk_bookmark(current_user):
-    """
-    Bookmark/unbookmark multiple posts at once (toggle).
-    Body: {"post_ids": [1, 2, 3], "folder": "Exam Prep"}
-    """
-    bookmark_info = []
-    try:
-        data = request.get_json()
-        post_ids = data.get("post_ids")
-        folder = data.get("folder", "Saved")
+    """DEPRECATED: use PUT /posts/<id>/bookmark or POST /posts/bookmark/toggle."""
+    d = _body()
+    results, folder = bm.add_bookmarks(
+        current_user.id, d.get("post_ids"),
+        folder_name=d.get("folder"), notes=d.get("notes"), tags=d.get("tags"))
+    return success_response("Posts bookmarked", {
+        "bookmark_details": [{"post_id": r["post_id"], "bookmarked": r["success"]} for r in results],
+        "folder": bm.serialize_folder(folder)})
 
-        if not post_ids or len(post_ids) > 50:
-            return error_response("Please provide between 1 and 50 post ids")
-
-        for post_id in post_ids:
-            post = Post.query.get(post_id)
-            if not post:
-                bookmark_info.append({"post_id": post_id, "success": False, "error": "Post not found"})
-                continue
-
-            existing = Bookmark.query.filter_by(
-                post_id=post_id,
-                student_id=current_user.id
-            ).first()
-
-            if existing:
-                # Unbookmark
-                db.session.delete(existing)
-                post.bookmark_count = max(0, post.bookmark_count - 1)
-                bookmark_info.append({
-                    "post_id": post_id,
-                    "bookmarked": False,
-                    "bookmark_count": post.bookmark_count
-                })
-            else:
-                # Bookmark
-                bookmark = Bookmark(
-                    post_id=post_id,
-                    student_id=current_user.id,
-                    folder=folder
-                )
-                db.session.add(bookmark)
-                post.bookmark_count += 1
-                bookmark_info.append({
-                    "post_id": post_id,
-                    "bookmarked": True,
-                    "bookmark_count": post.bookmark_count
-                })
-
-        db.session.commit()
-
-        return success_response(
-            f"Processed {len(bookmark_info)} posts",
-            data={"bookmark_details": bookmark_info}
-        )
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error("Bulk bookmark error", exc_info=True)
-        return error_response("Failed to bookmark posts")
 
 @posts_bookmarks_bp.route("/posts/<int:post_id>/bookmark", methods=["POST"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
+@_guard("Failed to toggle bookmark")
 def bookmark_post(current_user, post_id):
-    try:
-        post = Post.query.get(post_id)
-        if not post:
-            return error_response("Post not found", 404)
-        
-        existing = Bookmark.query.filter_by(
-            post_id=post_id,
-            student_id=current_user.id
-        ).first()
-        
-        if existing:
-            db.session.delete(existing)
-            post.bookmark_count = max(0, post.bookmark_count - 1)  # ✅ FIX: Decrement
-            db.session.commit()
-            return success_response("Post unbookmarked", data={
-                "bookmarked": False, 
-                "bookmark_count": post.bookmark_count
-            })
-        
-        data = request.get_json(silent=True) or {}
-        folder = data.get("folder", "Saved").strip()
-        notes = data.get("notes", "").strip()
-        
-        bookmark = Bookmark(
-            post_id=post_id,
-            student_id=current_user.id,
-            folder=folder,
-            notes=notes if notes else None
-        )
-        db.session.add(bookmark)
-        post.bookmark_count += 1
-        
-        db.session.commit()
-        
-        return success_response(
-            "Post bookmarked",
-            data={"bookmarked": True, "bookmark_count": post.bookmark_count}  # ✅ FIX: Return count
-        ), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Bookmark post error: ", exc_info=True)
-        return error_response("Failed to bookmark post")
+    """Legacy single toggle (post-view.js). 201 when created, 200 when removed."""
+    d = _body()
+    results, _folder = bm.toggle_bookmarks(
+        current_user.id, [post_id], folder_name=d.get("folder"),
+        notes=d.get("notes"), tags=d.get("tags"))
+    r = results[0]
+    if not r["success"]:
+        return error_response("Post not found", 404)
+    msg = "Post bookmarked" if r["bookmarked"] else "Bookmark removed"
+    resp = success_response(msg, {"post_id": post_id, "bookmarked": r["bookmarked"],
+                                  "bookmark_count": r["bookmark_count"]})
+    return (resp, 201) if r["bookmarked"] and not r.get("already") else resp
 
-@posts_bookmarks_bp.route("/posts/bookmarked", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+
+# ───────────────────────── edit / move / bulk (new) ─────────────────────────
+
+@posts_bookmarks_bp.route("/posts/bookmarks/<int:bookmark_id>", methods=["PATCH"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
-def get_bookmarked_posts(current_user):
-    """
-    Get all bookmarked posts organized by folder
-    
-    Query params:
-    - folder: Filter by folder name
-    """
-    try:
-        folder_filter = request.args.get("folder")
-        
-        query = Bookmark.query.filter_by(student_id=current_user.id)
-        
-        if folder_filter:
-            query = query.filter_by(folder=folder_filter)
-        
-        bookmarks = query.order_by(Bookmark.bookmarked_at.desc()).all()
-        
-        bookmarks_data = []
-        for bookmark in bookmarks:
-            post = Post.query.get(bookmark.post_id)
-            if post:
-                author = User.query.get(post.student_id)
-                bookmarks_data.append({
-                    "bookmark_id": bookmark.id,
-                    "folder": bookmark.folder,
-                    "notes": bookmark.notes,
-                    "bookmarked_at": bookmark.bookmarked_at.isoformat(),
-                    "post": {
-                        "id": post.id,
-                        "title": post.title,
-                        'content': post.text_content,
-                        "post_type": post.post_type,
-                        "posted_at": post.posted_at.isoformat(),
-                        "author": {
-                            "username": author.username,
-                            "name": author.name,
-                            "avatar": author.avatar,
-                        } if author else None
-                    }
-                })
-        
-        # Get all unique folders
-        folders = db.session.query(Bookmark.folder, func.count(Bookmark.id)).filter_by(
-            student_id=current_user.id
-        ).group_by(Bookmark.folder).all()
-        
-        folders_data = [{"name": f[0], "count": f[1]} for f in folders]
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "bookmarks": bookmarks_data,
-                "folders": folders_data,
-                "total": len(bookmarks_data)
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Get bookmarked posts error: ", exc_info=True)
-        return error_response("Failed to load bookmark")
+@_guard("Failed to update bookmark")
+def patch_bookmark(current_user, bookmark_id):
+    """Body: any of {notes, tags, folder_id}. Missing keys are left unchanged."""
+    d = _body()
+    b = bm.update_bookmark(
+        current_user.id, bookmark_id,
+        notes=d["notes"] if "notes" in d else _UNSET,
+        tags=d["tags"] if "tags" in d else _UNSET,
+        folder_id=_opt_int(d["folder_id"], "folder_id") if "folder_id" in d else _UNSET)
+    return success_response("Bookmark updated", {
+        "bookmark_id": b.id, "post_id": b.post_id, "folder_id": b.folder_id,
+        "folder": b.folder, "notes": b.notes, "tags": b.tags or []})
 
 
+@posts_bookmarks_bp.route("/posts/bookmarks/move", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to move bookmarks")
+def move_bookmarks(current_user):
+    d = _body()
+    return success_response("Bookmarks moved", bm.move_bookmarks(
+        current_user.id, d.get("post_ids"), _opt_int(d.get("folder_id"), "folder_id")))
 
-# ============================================================================
-# COMMENTS & REPLIES - FIXED TO SUPPORT ONLY 2 LEVELS
-# ============================================================================
 
+@posts_bookmarks_bp.route("/posts/bookmarks/bulk-remove", methods=["POST"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to remove bookmarks")
+def bulk_remove_bookmarks(current_user):
+    results = bm.remove_bookmarks(current_user.id, _body().get("post_ids"))
+    return success_response("Bookmarks removed", {
+        "removed": sum(1 for r in results if r["removed"]), "results": results})
+
+
+# ───────────────────────── folders (new) ─────────────────────────
+
+@posts_bookmarks_bp.route("/posts/bookmarks/folders", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to load folders")
+def get_folders(current_user):
+    return success_response("Folders retrieved", {"folders": bm.list_folders(current_user.id)})
+
+
+@posts_bookmarks_bp.route("/posts/bookmarks/folders", methods=["POST"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to create folder")
+def create_folder(current_user):
+    d = _body()
+    folder = bm.create_folder(current_user.id, name=d.get("name"),
+                              description=d.get("description"),
+                              icon=d.get("icon"), color=d.get("color"))
+    return success_response("Folder created", {"folder": folder}), 201
+
+
+@posts_bookmarks_bp.route("/posts/bookmarks/folders/<int:folder_id>", methods=["PATCH"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to update folder")
+def patch_folder(current_user, folder_id):
+    d = _body()
+    folder = bm.update_folder(
+        current_user.id, folder_id,
+        **{k: d[k] for k in ("name", "description", "icon", "color") if k in d})
+    return success_response("Folder updated", {"folder": folder})
+
+
+@posts_bookmarks_bp.route("/posts/bookmarks/folders/<int:folder_id>", methods=["DELETE"])
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+@token_required
+@_guard("Failed to delete folder")
+def remove_folder(current_user, folder_id):
+    """?mode=move (default; contents go to 'Saved') | ?mode=delete (contents deleted)."""
+    return success_response("Folder deleted", bm.delete_folder(
+        current_user.id, folder_id, mode=request.args.get("mode", "move")))
