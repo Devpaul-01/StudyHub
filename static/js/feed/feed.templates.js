@@ -873,6 +873,23 @@ export function buildDynamicOptionsMenu(data) {
   `;
 }
 
+export function buildBookmarkButton(post) {
+  const on = !!(post.user_interactions?.bookmarked ?? post.bookmarked);
+  return `
+    <button class="stat-btn bookmark-btn ${on ? 'bookmarked' : ''}"
+            data-action="toggle-bookmark"
+            aria-pressed="${on}"
+            aria-label="${on ? 'Remove bookmark' : 'Bookmark post'}">
+      <span class="bookmark-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+        </svg>
+      </span>
+      <span class="bookmark-label">${on ? 'Saved' : 'Save'}</span>
+    </button>`;
+}
+
 export function createPostCard(post) {
   const tags = post.tags?.map(tag => `
     <span class="tag" data-action="view-tag-posts" data-tag="${tag}" style="display: inline-block; padding: 0.25rem 0.75rem; background: var(--bg-tertiary); border-radius: 9999px; font-size: 0.875rem; margin-right: 0.5rem; cursor: pointer;">#${tag}</span>
@@ -987,6 +1004,8 @@ export function createPostCard(post) {
     </svg>
     <span>${post.comments_count || 0}</span>
   </button>
+
+  ${buildBookmarkButton(post)}
   
   <!-- Share Button (NEW) -->
   <button class="share-btn" data-action="share-post">
