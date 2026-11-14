@@ -7,7 +7,7 @@
  */
 
 import { formatTime } from '../feed/feed.utils.js';
-import { buildPostResourcesContainer, buildResourceLinks } from '../feed/feed.templates.js';
+import { buildPostResourcesContainer, buildResourceLinks, buildBookmarkButton } from '../feed/feed.templates.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
@@ -282,6 +282,8 @@ export function buildProfilePostCard(post) {
           </svg>
           <span>${post.comments_count || 0}</span>
         </button>
+
+        ${buildBookmarkButton(post)}
 
         <!-- Share button -->
         <button class="share-btn" data-action="share-post" data-post-id="${post.id}">
