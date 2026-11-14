@@ -748,6 +748,10 @@ class Bookmark(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('post_id', 'student_id', name='unique_bookmark'),
+        # List query: WHERE student_id=? ORDER BY bookmarked_at DESC, id DESC
+        db.Index('idx_bookmarks_student_time', 'student_id', 'bookmarked_at', 'id'),
+        # Per-folder list: WHERE student_id=? AND folder_id=? ORDER BY bookmarked_at DESC
+        db.Index('idx_bookmarks_student_folder_time', 'student_id', 'folder_id', 'bookmarked_at', 'id'),
     )
 
     def __repr__(self):
@@ -774,7 +778,9 @@ class BookmarkFolder(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, onupdate=datetime.datetime.utcnow)
 
-    bookmarks = db.relationship("Bookmark", backref="folder_obj", lazy="dynamic", cascade="all, delete-orphan")
+    # No ORM cascade: bookmark_service.delete_folder() moves or deletes a folder's
+    # bookmarks explicitly so Post.bookmark_count stays correct.
+    bookmarks = db.relationship("Bookmark", backref="folder_obj", lazy="dynamic")
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'name', name='unique_folder_per_user'),
