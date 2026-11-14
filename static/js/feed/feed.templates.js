@@ -904,7 +904,7 @@ export function createPostCard(post) {
     ? buildPostResourcesContainer(post.resources, post.id)
     : '';
   
-  const commentsPreviewHTML = buildCommentsPreviewHTML(post.comments, post.id);
+  const commentsPreviewHTML = buildCommentsPreviewHTML(post.comments ?? post.comments_preview, post.id);
   
   return `
     <div data-resource-length="${length}" 
