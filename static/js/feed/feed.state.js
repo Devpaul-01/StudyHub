@@ -181,6 +181,20 @@ class FeedState {
   }
 
   getPosts(filter)   { return this.posts[filter] || []; }
+
+  /** Merge a patch into every cached copy of a post, across all filters. */
+  patchPostEverywhere(postId, patch) {
+    const id = Number(postId);
+    for (const list of Object.values(this.posts)) {
+      for (const p of list) {
+        if (Number(p.id) !== id) continue;
+        if (patch.user_interactions) {
+          p.user_interactions = { ...(p.user_interactions || {}), ...patch.user_interactions };
+        }
+        if (patch.bookmark_count !== undefined) p.bookmark_count = patch.bookmark_count;
+      }
+    }
+  }
   getCurrentPosts()  { return this.posts; }
 
   isFilterLoaded(filter) { return this.loadedFilters[filter]; }
