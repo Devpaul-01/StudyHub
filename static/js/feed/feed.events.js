@@ -992,6 +992,8 @@ export function syncPostUI(type, data, containerType = 'smart-feed') {
     container = document.getElementById('tag-posts-container');
   } else if (containerType === 'comments-modal') {
     container = document.getElementById('comments-container');
+  } else if (containerType === 'bookmarks') {
+    container = document.getElementById('bookmarks');
   } else {
     // For smart-feed, ONLY get the ACTIVE feed (visible filter)
     container = document.querySelector('.posts-feed.active');
@@ -1030,6 +1032,9 @@ export function syncPostUI(type, data, containerType = 'smart-feed') {
         break;
       case 'comment_count':
         syncCommentCount(post, data);
+        break;
+      case 'bookmark':
+        applyBookmarkUI(data.post_id, !!data.bookmarked);
         break;
       case 'delete-post':
         post.remove();
@@ -2152,6 +2157,8 @@ export async function toggleReactions(postId, newType = 'like', event, container
   else if(containerType === "profile"){
     container = document.getElementById("profile");
   
+  } else if (containerType === 'bookmarks') {
+    container = document.getElementById('bookmarks');
   } else {
     container = document.getElementById('posts-container') || document.body;
   }
@@ -2221,6 +2228,53 @@ export async function toggleReactions(postId, newType = 'like', event, container
   } finally {
     reactionBtn.dataset.inflight = 'false';
   }
+}
+
+/**
+ * Toggle bookmark on a post card. Works in every container (feed, tag modal,
+ * profile, bookmarks section) because it locates the button from the click
+ * target, not from a container id.
+ */
+export async function toggleBookmark(postId, btn, containerType = 'smart-feed') {
+  if (!btn || btn.dataset.inflight === 'true') return;
+  btn.dataset.inflight = 'true';
+
+  const was = btn.classList.contains('bookmarked');
+  applyBookmarkUI(postId, !was);                       // optimistic, all copies
+
+  try {
+    const res = await feedApi.setBookmark(postId, !was);
+    if (!res || res.status !== 'success') throw new Error(res?.message || 'Request failed');
+
+    const now = !!res.data?.bookmarked;                // settle to server truth
+    applyBookmarkUI(postId, now);
+    feedState.patchPostEverywhere(postId, {
+      user_interactions: { bookmarked: now },
+      bookmark_count: res.data?.bookmark_count,
+    });
+    // Let the Bookmarks section add/remove the row (decoupled via an event).
+    document.dispatchEvent(new CustomEvent('bookmark:changed', {
+      detail: { postId: Number(postId), bookmarked: now, count: res.data?.bookmark_count },
+    }));
+    showToast(now ? 'Saved to bookmarks' : 'Removed from bookmarks', 'success', 1800);
+  } catch (error) {
+    applyBookmarkUI(postId, was);                      // rollback
+    console.error('Bookmark error:', error);
+    showToast('Could not update bookmark', 'error');
+  } finally {
+    btn.dataset.inflight = 'false';
+  }
+}
+
+/** Update EVERY rendered copy of this post (feed, tag modal, profile, bookmarks). */
+export function applyBookmarkUI(postId, bookmarked) {
+  document.querySelectorAll(`.post-card[data-post-id="${postId}"] .bookmark-btn`).forEach((b) => {
+    b.classList.toggle('bookmarked', bookmarked);
+    b.setAttribute('aria-pressed', String(bookmarked));
+    b.setAttribute('aria-label', bookmarked ? 'Remove bookmark' : 'Bookmark post');
+    const label = b.querySelector('.bookmark-label');
+    if (label) label.textContent = bookmarked ? 'Saved' : 'Save';
+  });
 }
 
 /**

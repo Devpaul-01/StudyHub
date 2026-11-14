@@ -161,6 +161,14 @@ export const FeedHandlers = {
     events.toggleReactions(postId, reactionType, event, containerType);
   },
   
+  'toggle-bookmark': async (target, event, containerType) => {
+    event.stopPropagation();
+    const postId = target.closest('[data-post-id]')?.dataset.postId;
+    if (!postId) return;
+    const events = await getEvents();
+    events.toggleBookmark(postId, target, containerType);
+  },
+
   'select-reaction': async (target, event, containerType) => {
     const reactionType = target.dataset.reaction;
     if (!reactionType) return;
