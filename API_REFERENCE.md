@@ -977,22 +977,60 @@ have replies by design). **Auth:** required. **400** if called on an already-max
 
 ## Bookmarks
 
+All routes require auth. Writes are CSRF-protected like every other non-GET route. Every bookmark
+belongs to a folder (`Saved` by default); folders and bookmarks are always scoped to the caller, so
+another user's folder or bookmark id returns **404**. Limits: 50 post ids per write, 100 per status
+lookup, 50 folders per user, notes ≤ 1000 chars, ≤ 10 tags of ≤ 30 chars.
+
+### `GET /student/posts/bookmarked`
+Cursor-paginated, feed-grade list of your bookmarks. Each item carries the same post card payload as
+`GET /posts/feed` (author, counts, comments preview, `user_interactions`).
+
+**Query:** `cursor`, `limit` (default 12, max 20), `folder_id` (or legacy `folder` = name), `type`
+(`question|discussion|announcement|resource|problem`), `tag`, `q` (searches post text and your notes),
+`sort` (`recent` | `oldest`).
+
+**Response `data`:** `{ bookmarks: [{ bookmark_id, folder_id, folder, notes, tags, bookmarked_at, post }],
+next_cursor, has_more, total, folders }` — `total` and `folders` are returned on the first page only.
+**400** on an invalid `cursor` or `type`.
+
+### `PUT /student/posts/{post_id}/bookmark`
+Idempotent "bookmark this post". **Body (optional):** `{ folder_id | folder_name, notes, tags }`.
+Returns `{ post_id, bookmarked: true, already, bookmark_count, folder }`. **404** if the post does not exist.
+
+### `DELETE /student/posts/{post_id}/bookmark`
+Idempotent "remove bookmark". Returns `{ post_id, bookmarked: false, bookmark_count }`.
+
+### `POST /student/posts/bookmarks/status`
+**Body:** `{ "post_ids": [..] }` → `{ statuses: { "<id>": { bookmarked, folder_id } } }`.
+
+### `GET /student/posts/bookmarks/stats`
+`{ total, folders, by_type }`.
+
+### `PATCH /student/posts/bookmarks/{bookmark_id}`
+Edit any of `notes`, `tags`, `folder_id`; omitted keys are unchanged.
+
+### `POST /student/posts/bookmarks/move`
+**Body:** `{ "post_ids": [..], "folder_id": 7 }` → `{ moved, folder }`.
+
+### `POST /student/posts/bookmarks/bulk-remove`
+**Body:** `{ "post_ids": [..] }` → `{ removed, results }`.
+
+### Folders
+- `GET /student/posts/bookmarks/folders` — list (creates `Saved` if missing).
+- `POST /student/posts/bookmarks/folders` — `{ name, description?, icon?, color? }` → **201**; **409** on a duplicate name.
+- `PATCH /student/posts/bookmarks/folders/{id}` — rename/recolor; the default folder can't be renamed (**400**).
+- `DELETE /student/posts/bookmarks/folders/{id}?mode=move|delete` — `move` (default) keeps the bookmarks and moves them to `Saved`; `delete` removes them too. The default folder can't be deleted (**400**).
+
 ### `POST /student/posts/bookmark/toggle`
-Bulk toggle, with folder/notes/tags support — the more full-featured bookmark endpoint.
-
-**Request:** `{ "post_ids": [501, 502], "folder_name": "Midterm prep", "notes": "review before Friday" }`
-
-**Auth:** required.
-
-### `POST /student/posts/bulk/bookmark`
-Legacy bulk toggle, folder support only, max 50 IDs at once. **Auth:** required.
+Multi-post toggle (kept for compatibility). **Request:** `{ "post_ids": [501, 502], "folder_id" | "folder_name", "notes", "tags" }`.
+Max 50 ids. Prefer `PUT`/`DELETE` for new code.
 
 ### `POST /student/posts/{post_id}/bookmark`
-Single-post toggle. Returns `201` when newly bookmarked, `200` when removed. **Auth:** required.
+**Deprecated** single-post toggle. `201` when newly bookmarked, `200` when removed.
 
-### `GET /student/posts/bookmarked?folder=...`
-List your bookmarks, optionally scoped to one folder; response includes a `folders` summary with
-per-folder counts. No pagination. **Auth:** required.
+### `POST /student/posts/bulk/bookmark`
+**Deprecated** bulk add, max 50 ids.
 
 ---
 
