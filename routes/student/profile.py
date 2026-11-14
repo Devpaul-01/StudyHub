@@ -145,6 +145,15 @@ def get_my_posts(current_user):
             ).all()
         }
 
+        # ── 1b. Viewer's bookmarks (one batched query) ───────────────────────
+        bookmarks_map = {
+            b.post_id: b
+            for b in Bookmark.query.filter(
+                Bookmark.student_id == current_user.id,
+                Bookmark.post_id.in_(post_ids),
+            ).all()
+        }
+
         # ── 2. Thread info ───────────────────────────────────────────────────
         thread_enabled_ids = [p.id for p in posts if p.thread_enabled]
         threads_map      = {}   # post_id  -> Thread
@@ -200,6 +209,7 @@ def get_my_posts(current_user):
                 "likes_count":     p.positive_reactions_count or 0,
                 "comments_count":  p.comments_count or 0,
                 "views_count":     p.views_count or 0,         # renamed from "views"
+                "bookmark_count":  p.bookmark_count or 0,
                 "posted_at":       p.posted_at.isoformat(),
                 "is_author":       True,                       # always true on this endpoint
                 "user_interactions": {
@@ -208,6 +218,10 @@ def get_my_posts(current_user):
                     "user_followed":      False,               # own posts — not applicable
                     "requested_thread":   requested_thread,
                     "is_thread_member":   is_member,
+                    "bookmarked":         p.id in bookmarks_map,
+                    "bookmark_folder_id": (
+                        bookmarks_map[p.id].folder_id if p.id in bookmarks_map else None
+                    ),
                 },
             })
 
