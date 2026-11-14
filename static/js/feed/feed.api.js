@@ -146,31 +146,14 @@ export async function loadWidgetData() {
 }
 
 // ---------------------------------------------------------------------------
-// Bookmarks
+// Bookmarks (idempotent set/unset: safe to retry, can't invert state)
 // ---------------------------------------------------------------------------
 
-export async function bookmarkPost(postId, folder, notes, tags) {
-  return await api.post('/posts/bookmark/toggle', {
-    post_ids:    [postId],
-    folder_name: folder,
-    notes,
-    tags,
-  });
-}
-
-export async function bulkBookmarkPosts(postIds, folder = 'Saved', notes = '', tags = []) {
-  return await api.post('/posts/bookmark/toggle', { post_ids: postIds, folder_name: folder, notes, tags });
-}
-
-/** @deprecated Use bookmarkPost() */
-export async function toggleBookmark(postId) {
-  return await api.post('/posts/bookmark/toggle', { post_ids: [postId] });
-}
-
-export async function getBookmarkFolders() {
-  const response = await api.get('/bookmarks/folders');
-  if (response.status === 'success') return response.data;
-  throw new Error(response.message || 'Failed to load folders');
+/** @param {boolean} on  desired state. opts: { folder_id, notes, tags } (only used when on=true) */
+export async function setBookmark(postId, on, opts = {}) {
+  return on
+    ? await api.put(`/posts/${postId}/bookmark`, opts)
+    : await api.delete(`/posts/${postId}/bookmark`);
 }
 
 // ---------------------------------------------------------------------------
