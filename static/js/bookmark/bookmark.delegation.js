@@ -4,7 +4,7 @@ import {
   buildTypePills, buildFolderRail, buildBookmarkItem, buildBookmarkMeta, buildSkeleton, buildEmpty,
   buildError, buildEditModal, buildFolderModal, buildDeleteFolderModal, buildMoveModal, buildConfirmModal,
 } from './bookmark.templates.js';
-import { applyBookmarkUI } from '../feed/feed.events.js';
+import { applyBookmarkUI } from '../feed/feed.bookmark-ui.js';
 import * as feedApi from '../feed/feed.api.js';
 
 const $ = (id) => document.getElementById(id);

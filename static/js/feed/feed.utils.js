@@ -324,7 +324,7 @@ export function navigateTo(sectionId, event) {
 
     const implementedSections = [
         'feed', 'profile', 'learnora', 'leaderboard', 'analytics', 'advanced-search', 'homework',
-        'notifications', 'activity-feed', 'connections'
+        'notifications', 'activity-feed', 'connections', 'bookmarks'
     ];
 
     if (!implementedSections.includes(sectionId)) {

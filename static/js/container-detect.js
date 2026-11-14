@@ -22,7 +22,7 @@
 
 /**
  * Smart container detection.
- * Returns: 'tag-modal' | 'comments-modal' | 'smart-feed' | 'profile' | 'leaderboard' | 'global'
+ * Returns: 'tag-modal' | 'comments-modal' | 'smart-feed' | 'profile' | 'bookmarks' | 'leaderboard' | 'global'
  */
 export function detectContainer(element) {
   const tagModal = document.getElementById('tag-posts-container');
@@ -34,6 +34,11 @@ export function detectContainer(element) {
   const profileSection = document.getElementById('profile');
   if (profileSection && profileSection.classList.contains('active') && profileSection.contains(element)) {
     return 'profile';
+  }
+
+  const bmSection = document.getElementById('bookmarks');
+  if (bmSection && bmSection.classList.contains('active') && bmSection.contains(element)) {
+    return 'bookmarks';
   }
 
   const lbSection = document.getElementById('leaderboard');
@@ -53,6 +58,7 @@ export function getActiveContainer(containerType) {
   if (containerType === 'comments-modal') return document.getElementById('comments-container');
   if (containerType === 'smart-feed')     return document.querySelector('.posts-feed.active');
   if (containerType === 'profile')        return document.getElementById('profile');
+  if (containerType === 'bookmarks')      return document.getElementById('bookmarks');
   if (containerType === 'leaderboard')    return document.getElementById('leaderboard');
   return null;
 }

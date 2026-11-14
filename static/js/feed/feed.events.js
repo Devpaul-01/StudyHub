@@ -9,6 +9,7 @@
 import { feedState } from './feed.state.js';
 import { LONG_PRESS_TIME, AVAILABLE_TAGS, MAX_TAGS } from './feed.constants.js';
 import * as feedApi from './feed.api.js';
+import { applyBookmarkUI } from './feed.bookmark-ui.js';
 import { closeModal, createEmptyState, getLoadingSkeleton } from './feed.utils.js';
 import { initVideoAutoplay, notifySlideChange } from './feed.video_autoplay.js';
 
@@ -2264,17 +2265,6 @@ export async function toggleBookmark(postId, btn, containerType = 'smart-feed') 
   } finally {
     btn.dataset.inflight = 'false';
   }
-}
-
-/** Update EVERY rendered copy of this post (feed, tag modal, profile, bookmarks). */
-export function applyBookmarkUI(postId, bookmarked) {
-  document.querySelectorAll(`.post-card[data-post-id="${postId}"] .bookmark-btn`).forEach((b) => {
-    b.classList.toggle('bookmarked', bookmarked);
-    b.setAttribute('aria-pressed', String(bookmarked));
-    b.setAttribute('aria-label', bookmarked ? 'Remove bookmark' : 'Bookmark post');
-    const label = b.querySelector('.bookmark-label');
-    if (label) label.textContent = bookmarked ? 'Saved' : 'Save';
-  });
 }
 
 /**

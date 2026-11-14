@@ -17,6 +17,7 @@ import { ActivityHandlers }     from '../js/activity/activity.delegation.js';
 import { NotificationHandlers } from '../js/notification/notification.delegation.js';
 import { ProfileHandlers }      from '../js/profile/profile.delegation.js';
 import { FeedHandlers }         from '../js/feed/feed.delegation.js';
+import { BookmarkHandlers }     from '../js/bookmark/bookmark.delegation.js';
 
 // ── NEW ─────────────────────────────────────────────────────────────────────
 import { LeaderboardHandlers }  from '../js/leaderboard/leaderboard.delegation.js';
@@ -48,6 +49,7 @@ const UNIFIED_ACTIONS = {
   ...NotificationHandlers,
   ...MessageHandlers,
   ...ProfileHandlers,
+  ...BookmarkHandlers,
 
   // ── NEW ──────────────────────────────────────────────────────────────────
   ...LeaderboardHandlers,
