@@ -264,38 +264,6 @@ export function updateFeedContainerVisibility(filterType) {
 }
 
 // ---------------------------------------------------------------------------
-// Post selection (bulk bookmark)
-// ---------------------------------------------------------------------------
-
-export function highlightPost(post) {
-  const postId = post.dataset.postId;
-  post.classList.toggle('choosed');
-  feedState.togglePostSelection(postId);
-  updateBulkBookmarkButton();
-}
-
-export function clearAllHighlights() {
-  document.querySelectorAll('.post-card.choosed').forEach(p => p.classList.remove('choosed'));
-  feedState.clearSelectedPosts();
-  feedState.setHighlightMode(false);
-  updateBulkBookmarkButton();
-}
-
-function updateBulkBookmarkButton() {
-  const selectedPosts = feedState.getSelectedPosts?.() || [];
-  const bulkBtn       = document.getElementById('bulk-bookmark-btn');
-  if (!bulkBtn) return;
-
-  if (selectedPosts.length > 0) {
-    bulkBtn.classList.remove('hidden');
-    const countSpan = bulkBtn.querySelector('.btn-count');
-    if (countSpan) countSpan.textContent = selectedPosts.length;
-  } else {
-    bulkBtn.classList.add('hidden');
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Reaction / comment button helpers
 // ---------------------------------------------------------------------------
 

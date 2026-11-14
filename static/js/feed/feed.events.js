@@ -17,8 +17,6 @@ import {
   renderFeed, 
   updateFilterButtons, 
   updateFeedContainerVisibility,
-  highlightPost,
-  clearAllHighlights,
   updateReactionDisplay,
   showReactionMenu,
   hideReactionMenu,
