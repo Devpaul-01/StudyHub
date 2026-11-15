@@ -38,6 +38,36 @@
   <!-- ③ Scripts -->
   <script src="https://cdn.socket.io/4.10.0/socket.io.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    /* Colour tokens used by the Threads JS templates (thread.templates.js,
+       thread.render.js, thread.modals.js): bg-surface-*, text-ink-*,
+       border-line*, accent, graphite. Same palette as templates/threads/threads.html;
+       without these the classes do not exist and thread rows render with no
+       background and no usable text colour. */
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            graphite: {
+              DEFAULT: '#20243A', dark: '#14172A', hover: '#2A2F4A',
+              active: '#363C5C', subtle: '#F4F4F5', border: '#3A3F5C',
+            },
+            accent: {
+              DEFAULT: '#818CF8', hover: '#6366F1', active: '#4F46E5',
+              subtle: 'rgba(129,140,248,0.16)', border: 'rgba(129,140,248,0.38)',
+            },
+            surface: {
+              page: '#07090F', card: '#13151F', raised: '#1A1D2B', hover: '#21253A',
+            },
+            ink: {
+              primary: '#F5F5F7', secondary: '#A8AEC4', meta: '#7C82A0', tertiary: '#5E6480',
+            },
+            line: { DEFAULT: '#262B40', light: '#1D2032' },
+          },
+        },
+      },
+    };
+  </script>
 </head>
 
 <body>
