@@ -4631,361 +4631,265 @@ html { scroll-behavior: smooth; }
 
 </button>
 
-  <div id="thread-message-options-sheet"
+  <!-- ════════════════════════════════════════════════════════
+     MESSAGE OPTIONS BOTTOM SHEET
+════════════════════════════════════════════════════════════ -->
+<div id="thread-message-options-sheet"
      class="hidden fixed inset-0 z-50"
-     role="dialog"
-     aria-modal="true"
-     aria-label="Message options">
-  <!-- Backdrop -->
-  <div id="thread-options-backdrop"
-       class="absolute inset-0 bg-black/30 backdrop-blur-sm"></div>
-  <!-- Sheet -->
-  <div id="thread-options-panel"
-       class="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl
-              shadow-2xl translate-y-full transition-transform duration-250 ease-out
-              max-h-[80vh] overflow-y-auto">
-    <!-- Drag handle -->
-    <div class="flex justify-center pt-3 pb-1">
-      <div class="w-10 h-1 bg-gray-200 rounded-full"></div>
+     role="dialog" aria-modal="true" aria-label="Message options">
+    <div id="thread-options-backdrop"
+         class="absolute inset-0 bg-black/30 backdrop-blur-sm"></div>
+    <div id="thread-options-panel"
+         class="absolute bottom-0 left-0 right-0 bg-surface-card rounded-t-2xl
+                shadow-2xl translate-y-full max-h-[80vh] overflow-y-auto">
+        <div class="flex justify-center pt-3 pb-1">
+            <div class="w-10 h-1 bg-surface-hover rounded-full"></div>
+        </div>
+        <div id="thread-msg-options-body"></div>
+        <div class="h-safe-area-inset-bottom pb-2"></div>
     </div>
-    <!-- Options body populated by modals.openThreadMessageOptions() -->
-    <div id="thread-msg-options-body"></div>
-    <div class="h-safe-area-inset-bottom pb-2"></div>
-  </div>
 </div>
 
-<!-- ── Reaction Picker Popup ─────────────────────────────────────── -->
-<div id="thread-reaction-picker"
-     class="hidden fixed z-50 bg-white rounded-2xl shadow-xl border border-gray-100"
-     style="min-width:280px">
-  <!-- Populated by modals.openThreadReactionPicker() -->
-</div>
+<!-- ════════════════════════════════════════════════════════
+     EMOJI REACTION PICKER
+════════════════════════════════════════════════════════════ -->
+<div id="thread-reaction-picker" class="hidden"></div>
 
-<!-- ── Image Viewer Modal ─────────────────────────────────────────── -->
+<!-- ════════════════════════════════════════════════════════
+     IMAGE VIEWER MODAL
+════════════════════════════════════════════════════════════ -->
 <div id="thread-image-viewer-modal"
-     class="hidden fixed inset-0 z-50 items-center justify-center bg-black/90"
-     role="dialog"
-     aria-modal="true"
-     aria-label="Image viewer">
-  <!-- Close button -->
-  <button data-action="thread-close-image-viewer"
-          aria-label="Close image viewer"
-          class="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-black/50
-                 text-white flex items-center justify-center hover:bg-black/70 transition-colors">
-    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-    </svg>
-  </button>
-  <div class="flex flex-col items-center gap-3 px-4 max-w-full">
-    <img id="thread-viewer-img"
-         src=""
-         alt="Attachment"
-         class="max-w-full max-h-[80vh] rounded-xl object-contain">
-    <span id="thread-viewer-filename"
-          class="text-white/70 text-sm truncate max-w-xs"></span>
-  </div>
-</div>
-
-<!-- ── Search Panel ───────────────────────────────────────────────── -->
-<div id="thread-search-panel"
-     class="hidden fixed inset-0 z-40 flex-col bg-white"
-     role="search"
-     aria-label="Search thread messages">
-  <div class="flex items-center gap-2 px-4 py-3 border-b border-gray-100">
-    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
-         class="text-gray-400 flex-shrink-0" viewBox="0 0 24 24">
-      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-    </svg>
-    <input id="thread-search-input"
-           type="search"
-           placeholder="Search messages…"
-           autocomplete="off"
-           class="flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder-gray-400">
-    <button data-action="thread-close-search"
-            class="text-sm text-indigo-600 font-semibold px-1 py-0.5">
-      Cancel
+     class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/90"
+     role="dialog" aria-modal="true" aria-label="Image viewer">
+    <button data-action="thread-close-image-viewer"
+            aria-label="Close"
+            class="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-black/50
+                   text-white flex items-center justify-center hover:bg-black/70 transition-colors">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
     </button>
-  </div>
-  <div id="thread-search-results"
-       class="flex-1 overflow-y-auto divide-y divide-gray-50">
-    <!-- Populated by events.handleSearchInput() -->
-    <div class="py-12 text-center text-sm text-gray-400">
-      Start typing to search messages…
+    <div class="flex flex-col items-center gap-3 px-4 max-w-full">
+        <img id="thread-viewer-img" src="" alt="Attachment"
+             class="max-w-full max-h-[80vh] rounded-xl object-contain">
+        <span id="thread-viewer-filename" class="text-white/70 text-sm truncate max-w-xs"></span>
     </div>
-  </div>
 </div>
 
-<!-- ── Create Thread Modal ────────────────────────────────────────── -->
+<!-- ════════════════════════════════════════════════════════
+     MESSAGE SEARCH PANEL
+════════════════════════════════════════════════════════════ -->
+<div id="thread-search-panel"
+     class="hidden fixed inset-0 z-40 flex-col bg-surface-card"
+     role="search" aria-label="Search messages">
+    <div class="flex items-center gap-2 px-4 py-3 border-b border-line-light">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+             class="text-ink-tertiary flex-shrink-0" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input id="thread-search-input"
+               data-role="thread-search-input"
+               type="search"
+               placeholder="Search messages…"
+               autocomplete="off"
+               class="flex-1 bg-transparent text-sm text-ink-primary outline-none placeholder-ink-tertiary">
+        <button data-action="thread-close-search"
+                class="text-sm text-accent font-semibold px-1 py-0.5">
+            Cancel
+        </button>
+    </div>
+    <div id="thread-search-results"
+         data-role="thread-search-results"
+         class="flex-1 overflow-y-auto divide-y divide-line-light">
+        <div class="py-12 text-center text-sm text-ink-tertiary">Start typing to search messages…</div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     CREATE THREAD MODAL
+════════════════════════════════════════════════════════════ -->
 <div id="thread-create-modal"
-     class="hidden fixed inset-0 z-50 items-center justify-center bg-black/40 backdrop-blur-sm px-4"
-     role="dialog"
-     aria-modal="true"
-     aria-labelledby="thread-create-title">
-  <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-gray-100">
-      <h2 id="thread-create-title" class="text-lg font-bold text-gray-900">Create Thread</h2>
-      <button data-action="thread-close-create-modal"
-              aria-label="Close"
-              class="w-8 h-8 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100
-                     flex items-center justify-center transition-colors">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
-    <!-- Form body -->
-    <div class="px-5 py-4 space-y-4">
-
-      <!-- Title -->
-      <div>
-        <label for="thread-title" class="block text-xs font-semibold text-gray-600 mb-1.5">
-          Thread name <span class="text-red-500">*</span>
-        </label>
-        <input id="thread-title"
-               type="text"
-               maxlength="100"
-               placeholder="e.g. Math Study Group"
-               class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50
-                      focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100
-                      outline-none text-sm text-gray-900 placeholder-gray-400 transition-all">
-      </div>
-
-      <!-- Description -->
-      <div>
-        <label for="thread-description" class="block text-xs font-semibold text-gray-600 mb-1.5">
-          Description
-        </label>
-        <textarea id="thread-description"
-                  rows="2"
-                  maxlength="500"
-                  placeholder="What is this thread about?"
-                  class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50
-                         focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100
-                         outline-none text-sm text-gray-900 placeholder-gray-400 transition-all
-                         resize-none"></textarea>
-      </div>
-
-      <!-- Max members + Requires approval -->
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label for="thread-max-members" class="block text-xs font-semibold text-gray-600 mb-1.5">
-            Max members
-          </label>
-          <input id="thread-max-members"
-                 type="number"
-                 min="2"
-                 max="100"
-                 value="10"
-                 class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50
-                        focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100
-                        outline-none text-sm text-gray-900 transition-all">
+     class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+     role="dialog" aria-modal="true" aria-labelledby="thread-create-title">
+    <div class="bg-surface-card rounded-2xl w-full max-w-md shadow-2xl">
+        <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-line-light">
+            <h2 id="thread-create-title" class="text-lg font-bold text-ink-primary">Create Thread</h2>
+            <button data-action="thread-close-create-modal" aria-label="Close"
+                    class="w-8 h-8 rounded-full text-ink-tertiary hover:text-ink-secondary hover:bg-surface-raised
+                           flex items-center justify-center transition-colors">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
         </div>
-        <div class="flex flex-col justify-center gap-2 pt-5">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input id="thread-requires-approval"
-                   type="checkbox"
-                   checked
-                   class="w-4 h-4 rounded text-indigo-600 accent-indigo-600 cursor-pointer">
-            <span class="text-xs font-medium text-gray-600">Require approval</span>
-          </label>
+        <div class="px-5 py-4 space-y-4">
+            <div>
+                <label for="thread-title" class="block text-xs font-semibold text-ink-secondary mb-1.5">
+                    Thread name <span class="text-red-400">*</span>
+                </label>
+                <input id="thread-title" type="text" maxlength="100" placeholder="e.g. Math Study Group"
+                       class="w-full px-4 py-2.5 rounded-xl border border-line bg-surface-raised
+                              focus:bg-surface-raised focus:border-accent focus:ring-2 focus:ring-accent-subtle
+                              outline-none text-sm text-ink-primary placeholder-ink-tertiary transition-all">
+            </div>
+            <div>
+                <label for="thread-description" class="block text-xs font-semibold text-ink-secondary mb-1.5">
+                    Description
+                </label>
+                <textarea id="thread-description" rows="2" maxlength="500"
+                          placeholder="What is this thread about?"
+                          class="w-full px-4 py-2.5 rounded-xl border border-line bg-surface-raised
+                                 focus:bg-surface-raised focus:border-accent focus:ring-2 focus:ring-accent-subtle
+                                 outline-none text-sm text-ink-primary placeholder-ink-tertiary transition-all resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label for="thread-max-members" class="block text-xs font-semibold text-ink-secondary mb-1.5">
+                        Max members
+                    </label>
+                    <input id="thread-max-members" type="number" min="2" max="50" value="10"
+                           class="w-full px-4 py-2.5 rounded-xl border border-line bg-surface-raised
+                                  focus:bg-surface-raised focus:border-accent focus:ring-2 focus:ring-accent-subtle
+                                  outline-none text-sm text-ink-primary transition-all">
+                </div>
+                <div class="flex flex-col justify-center pt-4">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input id="thread-requires-approval" type="checkbox" checked
+                               class="w-4 h-4 rounded text-accent accent-[#818CF8] cursor-pointer">
+                        <span class="text-xs font-medium text-ink-secondary">Require approval</span>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <label for="thread-tags" class="block text-xs font-semibold text-ink-secondary mb-1.5">
+                    Tags <span class="text-ink-tertiary font-normal">(comma-separated)</span>
+                </label>
+                <input id="thread-tags" type="text" maxlength="200"
+                       placeholder="e.g. math, calculus, exam-prep"
+                       class="w-full px-4 py-2.5 rounded-xl border border-line bg-surface-raised
+                              focus:bg-surface-raised focus:border-accent focus:ring-2 focus:ring-accent-subtle
+                              outline-none text-sm text-ink-primary placeholder-ink-tertiary transition-all">
+            </div>
         </div>
-      </div>
-
-      <!-- Tags -->
-      <div>
-        <label for="thread-tags" class="block text-xs font-semibold text-gray-600 mb-1.5">
-          Tags <span class="text-gray-400 font-normal">(comma-separated)</span>
-        </label>
-        <input id="thread-tags"
-               type="text"
-               maxlength="200"
-               placeholder="e.g. math, calculus, exam-prep"
-               class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50
-                      focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100
-                      outline-none text-sm text-gray-900 placeholder-gray-400 transition-all">
-      </div>
+        <div class="flex gap-3 px-5 pb-5">
+            <button data-action="thread-close-create-modal"
+                    class="flex-1 py-2.5 rounded-xl border border-line text-sm font-semibold
+                           text-ink-secondary hover:bg-surface-raised active:bg-surface-raised transition-colors">
+                Cancel
+            </button>
+            <button data-action="thread-submit-create"
+                    class="flex-1 py-2.5 rounded-xl bg-accent hover:bg-accent-hover active:scale-95
+                           text-sm font-semibold text-white transition-all duration-150 shadow-sm">
+                Create Thread
+            </button>
+        </div>
     </div>
-    <!-- Footer -->
-    <div class="flex gap-3 px-5 pb-5">
-      <button data-action="thread-close-create-modal"
-              class="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold
-                     text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors">
-        Cancel
-      </button>
-      <button data-action="thread-submit-create"
-              class="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95
-                     text-sm font-semibold text-white transition-all duration-150 shadow-sm">
-        Create Thread
-      </button>
-    </div>
-  </div>
 </div>
 
-<!-- ── Thread Info / Members Modal ───────────────────────────────── -->
+<!-- ════════════════════════════════════════════════════════
+     THREAD INFO MODAL (content populated by openInfoModal)
+════════════════════════════════════════════════════════════ -->
 <div id="thread-info-modal"
-     class="hidden fixed inset-0 z-50 items-center justify-center bg-black/40 backdrop-blur-sm px-4"
-     role="dialog"
-     aria-modal="true"
-     aria-label="Thread information">
-  <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[85vh] flex flex-col">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-gray-100 flex-shrink-0">
-      <h2 class="text-lg font-bold text-gray-900">Thread Info</h2>
-      <button data-action="thread-close-info-modal"
-              aria-label="Close"
-              class="w-8 h-8 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100
-                     flex items-center justify-center transition-colors">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
+     class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+     role="dialog" aria-modal="true" aria-label="Thread information">
+    <div class="bg-surface-card rounded-2xl w-full max-w-md shadow-2xl max-h-[85vh] flex flex-col overflow-hidden">
     </div>
-
-    <!-- Body scrollable -->
-    <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-      <!-- Name & description -->
-      <div>
-        <h3 id="thread-info-name" class="text-base font-bold text-gray-900"></h3>
-        <p id="thread-info-desc" class="text-sm text-gray-500 mt-1"></p>
-      </div>
-      <div class="flex items-center gap-1.5 text-xs text-gray-400">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-          <circle cx="9" cy="7" r="4"/>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
-        </svg>
-        <span id="thread-info-count"></span>
-      </div>
-
-      <!-- Members list -->
-      <div>
-        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Members</h4>
-        <div id="thread-info-members" class="space-y-0 divide-y divide-gray-50"></div>
-      </div>
-    </div>
-
-    <!-- Footer -->
-    <div class="flex-shrink-0 px-5 pb-5 pt-3 border-t border-gray-100 space-y-2">
-      <!-- Creator-only actions -->
-      <div id="thread-info-creator-actions" class="hidden">
-        <!-- Future: edit thread, invite members -->
-      </div>
-      <button data-action="thread-leave"
-              class="w-full py-2.5 rounded-xl border border-red-200 text-sm font-semibold
-                     text-red-600 hover:bg-red-50 active:bg-red-100 transition-colors">
-        Leave Thread
-      </button>
-    </div>
-  </div>
 </div>
 
-<!-- ── Ask Learnora Modal ─────────────────────────────────────────── -->
+<!-- ════════════════════════════════════════════════════════
+     ASK LEARNORA MODAL
+════════════════════════════════════════════════════════════ -->
 <div id="thread-ask-ai-modal"
-     class="hidden fixed inset-0 z-50 items-center justify-center bg-black/40 backdrop-blur-sm px-4"
-     role="dialog"
-     aria-modal="true"
-     aria-labelledby="thread-ai-title">
-  <div class="bg-white rounded-2xl w-full max-w-sm shadow-2xl">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-gray-100">
-      <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600
-                    flex items-center justify-center">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
-            <path d="M12 2L9 9H2l5.5 4-2 7L12 16l6.5 4-2-7L22 9h-7z"/>
-          </svg>
+     class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+     role="dialog" aria-modal="true" aria-labelledby="thread-ai-title">
+    <div class="bg-surface-card rounded-2xl w-full max-w-sm shadow-2xl">
+        <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-line-light">
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600
+                             flex items-center justify-center">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <path d="M12 2L9 9H2l5.5 4-2 7L12 16l6.5 4-2-7L22 9h-7z"/>
+                    </svg>
+                </div>
+                <h2 id="thread-ai-title" class="text-base font-bold text-ink-primary">Ask Learnora</h2>
+            </div>
+            <button data-action="thread-close-ai-modal" aria-label="Close"
+                    class="w-8 h-8 rounded-full text-ink-tertiary hover:text-ink-secondary hover:bg-surface-raised
+                           flex items-center justify-center transition-colors">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
         </div>
-        <h2 id="thread-ai-title" class="text-base font-bold text-gray-900">Ask Learnora</h2>
-      </div>
-      <button data-action="thread-close-ai-modal"
-              aria-label="Close"
-              class="w-8 h-8 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100
-                     flex items-center justify-center transition-colors">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
-    <!-- Body -->
-    <div class="px-5 py-4 space-y-4">
-      <div>
-        <label for="thread-ai-question" class="block text-xs font-semibold text-gray-600 mb-1.5">
-          Your question
-        </label>
-        <textarea id="thread-ai-question"
-                  rows="3"
-                  maxlength="1000"
-                  placeholder="e.g. Explain the chain rule with an example"
-                  class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50
-                         focus:bg-white focus:border-violet-400 focus:ring-2 focus:ring-violet-100
-                         outline-none text-sm text-gray-900 placeholder-gray-400 transition-all
-                         resize-none"></textarea>
-      </div>
-      <!-- Mode selector -->
-      <div>
-        <span class="block text-xs font-semibold text-gray-600 mb-2">Mode</span>
-        <div class="flex gap-2 flex-wrap">
-          <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="radio" name="thread-ai-mode" value="" checked
-                   class="accent-violet-600">
-            <span class="text-sm text-gray-700">Answer</span>
-          </label>
-          <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="radio" name="thread-ai-mode" value="summarize"
-                   class="accent-violet-600">
-            <span class="text-sm text-gray-700">Summarize chat</span>
-          </label>
-          <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="radio" name="thread-ai-mode" value="quiz"
-                   class="accent-violet-600">
-            <span class="text-sm text-gray-700">Quiz me</span>
-          </label>
+        <div class="px-5 py-4 space-y-4">
+            <div>
+                <label for="thread-ai-question" class="block text-xs font-semibold text-ink-secondary mb-1.5">
+                    Your question
+                </label>
+                <textarea id="thread-ai-question" rows="3" maxlength="1000"
+                          placeholder="e.g. Explain the chain rule with an example"
+                          class="w-full px-4 py-2.5 rounded-xl border border-line bg-surface-raised
+                                 focus:bg-surface-raised focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20
+                                 outline-none text-sm text-ink-primary placeholder-ink-tertiary transition-all resize-none"></textarea>
+            </div>
+            <div>
+                <span class="block text-xs font-semibold text-ink-secondary mb-2">Mode</span>
+                <div class="flex gap-3 flex-wrap">
+                    <label class="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="thread-ai-mode" value="" checked class="accent-violet-600">
+                        <span class="text-sm text-ink-secondary">Answer</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="thread-ai-mode" value="summarize" class="accent-violet-600">
+                        <span class="text-sm text-ink-secondary">Summarize chat</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="thread-ai-mode" value="quiz" class="accent-violet-600">
+                        <span class="text-sm text-ink-secondary">Quiz me</span>
+                    </label>
+                </div>
+            </div>
         </div>
-      </div>
+        <div class="flex gap-3 px-5 pb-5">
+            <button data-action="thread-close-ai-modal"
+                    class="flex-1 py-2.5 rounded-xl border border-line text-sm font-semibold
+                           text-ink-secondary hover:bg-surface-raised transition-colors">
+                Cancel
+            </button>
+            <button data-action="thread-submit-ai"
+                    class="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600
+                           hover:from-violet-700 hover:to-indigo-700 active:scale-95
+                           text-sm font-semibold text-white transition-all duration-150 shadow-sm">
+                Ask Learnora
+            </button>
+        </div>
     </div>
-    <!-- Footer -->
-    <div class="flex gap-3 px-5 pb-5">
-      <button data-action="thread-close-ai-modal"
-              class="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold
-                     text-gray-600 hover:bg-gray-50 transition-colors">
-        Cancel
-      </button>
-      <button data-action="thread-submit-ai"
-              class="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600
-                     hover:from-violet-700 hover:to-indigo-700 active:scale-95
-                     text-sm font-semibold text-white transition-all duration-150 shadow-sm">
-        Ask Learnora
-      </button>
-    </div>
-  </div>
 </div>
 
-<!-- ── Confirm Modal (generic) ───────────────────────────────────── -->
+<!-- ════════════════════════════════════════════════════════
+     CONFIRM MODAL
+════════════════════════════════════════════════════════════ -->
 <div id="thread-confirm-modal"
-     class="hidden fixed inset-0 z-[60] items-center justify-center bg-black/40 backdrop-blur-sm px-4"
-     role="alertdialog"
-     aria-modal="true"
-     aria-labelledby="thread-confirm-title">
-  <div class="bg-white rounded-2xl w-full max-w-xs shadow-2xl">
-    <div class="px-5 pt-5 pb-4">
-      <h2 id="thread-confirm-title" class="text-base font-bold text-gray-900 mb-2"></h2>
-      <p id="thread-confirm-message" class="text-sm text-gray-500 leading-relaxed"></p>
+     class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+     role="alertdialog" aria-modal="true" aria-labelledby="thread-confirm-title">
+    <div class="bg-surface-card rounded-2xl w-full max-w-xs shadow-2xl">
+        <div class="px-5 pt-5 pb-4">
+            <h2 id="thread-confirm-title" class="text-base font-bold text-ink-primary mb-2"></h2>
+            <p id="thread-confirm-message" class="text-sm text-ink-meta leading-relaxed"></p>
+        </div>
+        <div class="flex gap-3 px-5 pb-5">
+            <button data-action="thread-confirm-cancel"
+                    class="flex-1 py-2.5 rounded-xl border border-line text-sm font-semibold
+                           text-ink-secondary hover:bg-surface-raised transition-colors">
+                Cancel
+            </button>
+            <button id="thread-confirm-ok"
+                    class="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white
+                           transition-colors bg-accent hover:bg-accent-hover active:scale-95">
+                Confirm
+            </button>
+        </div>
     </div>
-    <div class="flex gap-3 px-5 pb-5">
-      <button data-action="thread-confirm-cancel"
-              class="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold
-                     text-gray-600 hover:bg-gray-50 transition-colors">
-        Cancel
-      </button>
-      <button id="thread-confirm-ok"
-              data-action="thread-confirm-ok"
-              class="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white
-                     transition-colors bg-indigo-600 hover:bg-indigo-700">
-        Confirm
-      </button>
-    </div>
-  </div>
 </div>
 </div>
     <!-- END OF APP CONTAINER -->
