@@ -22,9 +22,14 @@ import { threadState, resetThreadSession } from './thread.state.js';
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 export function initThreadDelegation() {
-  document.addEventListener('click',               _onClick,           { capture: false });
+  // click and submit use the CAPTURE phase. In the feed, app.unified.js
+  // attaches a click/submit listener to document.body that calls
+  // event.stopPropagation() unconditionally, so a bubble-phase listener on
+  // document never receives those events (every data-action button inside
+  // Threads was dead). Capturing on document runs before body.
+  document.addEventListener('click',               _onClick,           { capture: true });
   document.addEventListener('keydown',             _onKeydown,         { capture: false });
-  document.addEventListener('submit',              _onSubmit,          { capture: false });
+  document.addEventListener('submit',              _onSubmit,          { capture: true });
   document.addEventListener('input',               _onInput,           { capture: false });
   document.addEventListener('thread:open-options', _onLongPressOptions);
   document.addEventListener('thread:save-edit',    _onSaveEditThread);
