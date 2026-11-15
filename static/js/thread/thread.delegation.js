@@ -665,6 +665,15 @@ function _onClick(e) {
     return;
   }
 
+  // ── Retry loading the thread list (error state in thread.render.js) ───────
+  if (_closest(t, "[data-action='reload-threads']")) {
+    e.preventDefault();
+    import('./thread.events.js').then(({ handleLoadThreadList }) =>
+      handleLoadThreadList().catch(() => showToast('Failed to load thread list. Please refresh.', 'error'))
+    );
+    return;
+  }
+
   // ── Retry failed message ──────────────────────────────────────────────────
   const retryBtn = _closest(t, "[data-action='thread-retry']");
   if (retryBtn) {
