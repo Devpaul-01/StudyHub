@@ -343,7 +343,11 @@ class MessageWebSocketManager:
     
     def auth_required(self, f):
         """Decorator to require authentication for WebSocket events"""
-        def decorated_function(data):
+        # data defaults to None: Flask-SocketIO calls the handler with NO
+        # arguments when the client emits an event without a payload (e.g.
+        # socket.emit('activity_feed:subscribe')), which used to raise
+        # "missing 1 required positional argument: 'data'".
+        def decorated_function(data=None):
             current_user_id = self.get_current_user()
             if not current_user_id:
                 self.emit_error('Authenitication required')

@@ -223,6 +223,21 @@ def test_auth_required_calls_wrapped_handler_with_user_id_when_authenticated(man
     assert result == "handler-result"
 
 
+def test_auth_required_accepts_events_emitted_without_a_payload(manager):
+    """socket.emit('some_event') with no data calls the handler with no args."""
+    calls = []
+
+    def inner(current_user_id, data):
+        calls.append((current_user_id, data))
+
+    decorated = manager.auth_required(inner)
+
+    with patch.object(manager, "get_current_user", return_value=42):
+        decorated()
+
+    assert calls == [(42, None)]
+
+
 def test_auth_required_preserves_wrapped_function_name(manager):
     def handle_send_message(current_user_id, data):
         pass
