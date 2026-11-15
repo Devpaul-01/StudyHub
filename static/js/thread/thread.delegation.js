@@ -469,8 +469,14 @@ function _onClick(e) {
     return;
   }
   if (_closest(t, "[data-action='close-modal']")) {
-    e.preventDefault();
-    t.closest("[role='dialog'], .fixed.inset-0")?.classList.add('hidden');
+    // 'close-modal' is also a feed action. Now that this listener sees every
+    // click on the page, only touch dialogs that belong to Threads and leave
+    // the rest to the feed's own handler.
+    const dialog = t.closest("[role='dialog'], .fixed.inset-0");
+    if (dialog?.id?.startsWith('thread-')) {
+      e.preventDefault();
+      dialog.classList.add('hidden');
+    }
     return;
   }
 
