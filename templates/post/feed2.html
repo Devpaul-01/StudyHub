@@ -5065,6 +5065,7 @@ function _openMessagesOverlay() {
 
     // Only one full-screen overlay at a time.
     document.getElementById('threads')?.classList.add('hidden');
+    document.body.classList.remove('threads-open');
 
     // ── Show overlay & lock scroll ───────────────────────────────────
     overlay.classList.remove('hidden');
@@ -5130,6 +5131,7 @@ function _openThreadsOverlay() {
 
     overlay.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+    document.body.classList.add('threads-open');
 
     document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(item => {
         item.classList.remove('active');
@@ -5155,6 +5157,7 @@ function _closeThreadsOverlay() {
 
     overlay.classList.add('hidden');
     document.body.style.overflow = '';
+    document.body.classList.remove('threads-open');
     document.getElementById('feed')?.classList.add('active');
 
     const headerBar = document.getElementById('header-bar');

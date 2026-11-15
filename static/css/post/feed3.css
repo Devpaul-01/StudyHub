@@ -555,6 +555,11 @@ body {
   display: none !important;
 }
 
+/* The global create-post FAB is inline-styled z-index:999, above this overlay. */
+body.threads-open #mobile-create-fab {
+  display: none !important;
+}
+
 /* Thread dialogs, pickers and the in-thread search panel are mounted on
    <body> with Tailwind z-40..z-[60], which would open BEHIND the z-200
    overlay above. Lift them, the same way message.css lifts the msg-*
