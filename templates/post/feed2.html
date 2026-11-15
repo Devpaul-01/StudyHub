@@ -938,154 +938,188 @@ html { scroll-behavior: smooth; }
     </div>
 </section>
 
-<div id="threads" class="hidden bg-gray-50">
+<div id="threads" class="hidden bg-surface-page">
 
-  <!-- ══════════════════════════════════════════════════════
-    THREAD LIST PANEL
-    Shown:  when no thread is active
-    Hidden: when a thread chat is open (thread-chat-panel)
-  ══════════════════════════════════════════════════════════ -->
-  <div id="thread-list-panel" class="flex flex-col h-full">
+    <!-- ════════════════════════════════════════════════════════
+         THREAD LIST PANEL
+    ════════════════════════════════════════════════════════════ -->
+    <div id="thread-list-panel" class="flex flex-col h-full">
 
-    <!-- Header -->
-    <div class="flex items-center justify-between px-4 pt-5 pb-3 bg-white border-b border-gray-100">
-      <h1 class="text-xl font-bold text-gray-900">Threads</h1>
-      <div class="flex items-center gap-2">
-        <button data-action="open-create-thread-modal"
-                aria-label="Create thread"
-                class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 active:scale-95
-                       flex items-center justify-center text-white transition-all duration-150 shadow-sm">
-          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </button>
-
-        <!-- Close overlay — lets user return to the app without opening a thread -->
-        <button onclick="_closeThreadsOverlay()"
-                aria-label="Close threads"
-                class="p-2 rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100
-                       active:bg-gray-200 transition-colors">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2.5">
-            <path d="M18 6L6 18M6 6l12 12"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    <!-- Pending invites section (hidden when empty) -->
-    <div id="thread-invites-container" class="hidden bg-white border-b border-gray-100">
-      <div class="px-4 pt-3 pb-1">
-        <h2 class="text-xs font-bold text-gray-500 uppercase tracking-widest">Pending Invites</h2>
-      </div>
-      <div id="thread-invites-list" class="flex flex-col gap-3 px-4 pb-4"></div>
-    </div>
-
-    <!-- Thread list scrollable area -->
-    <div class="flex-1 overflow-y-auto">
-      <!-- Populated by render.renderThreadList() -->
-      <div id="thread-list-container" class="divide-y divide-gray-50"></div>
-    </div>
-
-  </div><!-- /thread-list-panel -->
-
-
-  <!-- ══════════════════════════════════════════════════════
-    THREAD CHAT PANEL
-    Shown:  when a thread is active
-    Hidden: when viewing the thread list
-  ══════════════════════════════════════════════════════════ -->
-  <div id="thread-chat-panel" class="hidden flex flex-col h-full bg-white">
-
-    <!-- Chat header -->
-    <div class="flex-shrink-0 bg-white border-b border-gray-100 shadow-sm">
-      <!-- Back + thread info + actions -->
-      <div class="flex items-center gap-2 px-3 py-3">
-        <!-- Back button -->
-        <button data-action="thread-back"
-                aria-label="Back to threads"
-                class="p-2 rounded-full text-gray-500 hover:bg-gray-100 active:bg-gray-200 transition-colors flex-shrink-0">
-          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <polyline points="15 18 9 12 15 6"/>
-          </svg>
-        </button>
-        <!-- Dynamic header content (name, actions) -->
-        <div id="thread-chat-header" class="flex items-center justify-between flex-1 min-w-0"></div>
-      </div>
-
-      <!-- Pinned message banner (hidden when no pinned messages) -->
-      <div id="thread-pinned-banner"></div>
-    </div>
-
-    <!-- Messages scrollable area -->
-    <div id="thread-messages-list"
-         class="flex-1 overflow-y-auto overscroll-contain
-                scroll-smooth space-y-0.5 pb-2"
-         role="log"
-         aria-live="polite"
-         aria-label="Thread messages">
-      <!-- Populated by render.renderMessageList() -->
-    </div>
-
-    <!-- Compose area -->
-    <div class="flex-shrink-0 bg-white border-t border-gray-100">
-
-      <!-- Reply preview strip (hidden when no reply-to) -->
-      <div id="thread-reply-preview" class="hidden"></div>
-
-      <!-- Attachment preview strip (hidden when no pending attachment) -->
-      <div id="thread-attachment-strip"
-           class="hidden flex items-center gap-2 px-3 pt-2.5"></div>
-
-      <!-- Input row -->
-      <div class="flex items-end gap-2 px-3 py-3">
-
-        <!-- Attach file -->
-        <button data-action="thread-attach-file"
-                aria-label="Attach file"
-                class="flex-shrink-0 self-end mb-0.5 w-9 h-9 rounded-full
-                       text-gray-400 hover:text-indigo-600 hover:bg-indigo-50
-                       active:bg-indigo-100 transition-colors flex items-center justify-center">
-          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-          </svg>
-        </button>
-
-        <!-- Text input -->
-        <div class="flex-1 relative">
-          <textarea id="thread-message-input"
-                    rows="1"
-                    maxlength="5000"
-                    placeholder="Message… (try @learnora for AI help)"
-                    aria-label="Thread message input"
-                    class="w-full resize-none rounded-2xl border border-gray-200
-                           bg-gray-50 focus:bg-white focus:border-indigo-400 focus:ring-2
-                           focus:ring-indigo-100 outline-none transition-all
-                           px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400
-                           leading-relaxed max-h-32 overflow-y-auto
-                           scrollbar-thin scrollbar-thumb-gray-300"></textarea>
+        <!-- Header -->
+        <div class="flex items-center justify-between px-4 pt-5 pb-3 bg-surface-card border-b border-line-light sticky top-0 z-10">
+            <h1 class="text-xl font-bold text-ink-primary">Threads</h1>
+            <div class="flex items-center gap-2">
+            <button data-action="open-create-thread-modal"
+                    aria-label="Create thread"
+                    class="w-9 h-9 rounded-full bg-accent hover:bg-accent-hover active:scale-95
+                           flex items-center justify-center text-white transition-all shadow-sm">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+            </button>
+            <!-- Close overlay: lets the user return to the app without opening a thread -->
+            <button onclick="_closeThreadsOverlay()"
+                    aria-label="Close threads"
+                    class="p-2 rounded-full text-ink-secondary hover:text-ink-primary
+                           hover:bg-surface-hover active:bg-surface-raised transition-colors">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.5">
+                    <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
         </div>
 
-        <!-- Send button -->
-        <button id="thread-send-btn"
-                data-action="thread-send-message"
-                aria-label="Send message"
-                disabled
-                class="flex-shrink-0 self-end mb-0.5 w-9 h-9 rounded-full bg-indigo-600
-                       hover:bg-indigo-700 active:scale-95 disabled:opacity-40
-                       disabled:cursor-not-allowed flex items-center justify-center
-                       text-white transition-all duration-150 shadow-sm">
-          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"
-               viewBox="0 0 24 24">
-            <line x1="22" y1="2" x2="11" y2="13"/>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-          </svg>
-        </button>
+        <!-- Tab bar: Messages / Invites -->
+        <div class="flex border-b border-line bg-surface-card flex-shrink-0">
+            <button id="tab-messages"
+                    data-action="thread-tab"
+                    data-tab="messages"
+                    class="flex-1 text-sm font-semibold py-2.5 border-b-2 border-accent
+                           text-accent transition-colors">
+                Messages
+            </button>
+            <button id="tab-invites"
+                    data-action="thread-tab"
+                    data-tab="invites"
+                    class="flex-1 relative text-sm font-semibold py-2.5 border-b-2
+                           border-transparent text-ink-meta hover:text-ink-secondary transition-colors">
+                Invites
+                <span id="thread-invites-badge"
+                      class="absolute top-1.5 right-4 min-w-[18px] h-[18px] rounded-full
+                             bg-red-500 text-white text-[10px] font-bold hidden
+                             items-center justify-center px-1 leading-none">
+                </span>
+            </button>
+        </div>
 
-      </div><!-- /input row -->
-    </div><!-- /compose area -->
+        <!-- Thread list search (Messages tab only) -->
+        <div id="thread-search-bar" class="px-3 py-2 bg-surface-card border-b border-line-light">
+            <div class="relative">
+                <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-ink-tertiary pointer-events-none"
+                     width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input id="thread-list-search"
+                       data-role="thread-list-search"
+                       type="search"
+                       placeholder="Filter threads…"
+                       autocomplete="off"
+                       class="w-full pl-8 pr-8 py-2 text-sm rounded-xl border border-line
+                              bg-surface-raised focus:bg-surface-raised focus:border-accent
+                              focus:ring-2 focus:ring-accent-subtle outline-none transition-all
+                              placeholder-ink-tertiary text-ink-primary">
+                <button data-action="clear-thread-list-search"
+                        class="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary
+                               hover:text-ink-secondary transition-colors text-sm leading-none hidden"
+                        aria-label="Clear search">✕</button>
+            </div>
+        </div>
 
-  </div><!-- /thread-chat-panel -->
+        <!-- Messages tab content -->
+        <div id="thread-tab-messages" class="flex-1 overflow-y-auto">
+            <div id="thread-list-container" class="divide-y divide-line-light"></div>
+        </div>
+
+        <!-- Invites tab content (hidden by default) -->
+        <div id="thread-tab-invites" class="hidden flex-1 overflow-y-auto">
+            <div id="thread-invites-list" class="divide-y divide-line-light"></div>
+            <div id="thread-invites-empty"
+                 class="hidden flex flex-col items-center gap-3 py-16 px-4 text-center">
+                <span class="text-4xl">📬</span>
+                <p class="text-sm text-ink-meta">No pending invitations or requests.</p>
+            </div>
+        </div>
+
+    </div><!-- /thread-list-panel -->
+
+
+    <!-- ════════════════════════════════════════════════════════
+         THREAD CHAT PANEL
+    ════════════════════════════════════════════════════════════ -->
+    <div id="thread-chat-panel" class="hidden flex flex-col h-full bg-surface-card">
+
+        <!-- Chat header -->
+        <div class="flex-shrink-0 bg-surface-card border-b border-line-light shadow-sm">
+            <div class="flex items-center gap-2 px-3 py-3">
+                <button data-action="thread-back" aria-label="Back"
+                        class="p-2 rounded-full text-ink-meta hover:bg-surface-raised active:bg-surface-hover
+                               transition-colors flex-shrink-0">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                </button>
+                <div id="thread-chat-header" class="flex items-center justify-between flex-1 min-w-0"></div>
+            </div>
+            <!-- Pinned message banner -->
+            <div id="thread-pinned-banner"></div>
+        </div>
+
+        <!-- Messages -->
+        <div id="thread-messages-list"
+             class="flex-1 overflow-y-auto overscroll-contain space-y-0 pb-2"
+             role="log"
+             aria-live="polite"
+             aria-label="Thread messages">
+            <div id="thread-top-sentinel" class="h-1"></div>
+        </div>
+
+        <!-- Compose area -->
+        <div class="flex-shrink-0 bg-surface-card border-t border-line-light">
+
+            <!-- Reply preview strip -->
+            <div id="thread-reply-preview" class="hidden"></div>
+
+            <!-- Attachment preview strip (multiple files, thumbnail cards) -->
+            <div id="thread-attachment-strip" class="hidden"></div>
+
+            <!-- Input row -->
+            <div class="flex items-end gap-2 px-3 py-3">
+
+                <!-- Attach file -->
+                <button data-action="thread-attach-file"
+                        aria-label="Attach file"
+                        class="flex-shrink-0 self-end mb-0.5 w-9 h-9 rounded-full
+                               text-ink-tertiary hover:text-accent hover:bg-accent-subtle
+                               active:bg-accent-subtle transition-colors flex items-center justify-center">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                    </svg>
+                </button>
+
+                <!-- Text input -->
+                <div class="flex-1 relative">
+                    <textarea id="thread-message-input"
+                              rows="1"
+                              maxlength="5000"
+                              placeholder="Message… (try @learnora for AI help)"
+                              aria-label="Thread message input"
+                              class="w-full resize-none rounded-2xl border border-line
+                                     bg-surface-raised focus:bg-surface-raised focus:border-accent focus:ring-2
+                                     focus:ring-accent-subtle outline-none transition-all
+                                     px-4 py-2.5 text-sm text-ink-primary placeholder-ink-tertiary
+                                     leading-relaxed max-h-32 overflow-y-auto scrollbar-thin"></textarea>
+                </div>
+
+                <button id="thread-send-btn"
+                        data-action="thread-send-message"
+                        aria-label="Send message"
+                        disabled
+                        class="flex-shrink-0 self-end mb-0.5 w-9 h-9 rounded-full bg-accent
+                               hover:bg-accent-hover active:scale-95 disabled:opacity-40
+                               disabled:cursor-not-allowed flex items-center justify-center
+                               text-white transition-all duration-150 shadow-sm">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <line x1="22" y1="2" x2="11" y2="13"/>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                </button>
+
+            </div>
+        </div><!-- /compose area -->
+
+    </div><!-- /thread-chat-panel -->
 
 </div><!-- /threads -->
 
