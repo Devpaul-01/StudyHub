@@ -65,7 +65,7 @@ function _closeBtn(modalId) {
   return `
     <button class="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center
                    text-ink-tertiary hover:text-ink-secondary hover:bg-surface-raised transition-colors"
-            onclick="document.getElementById('${escAttr(modalId)}')?.classList.add('hidden')"
+            data-action="close-modal"
             aria-label="Close">
       <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
         <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -402,7 +402,7 @@ export function openEditThreadModal(thread) {
       </div>
       <div class="flex gap-3 px-5 pb-5">
         ${_btnSecondary('Cancel',
-          `onclick="document.getElementById('thread-edit-modal')?.classList.add('hidden')"`)}
+          `data-action="close-modal"`)}
         ${_btnPrimary('Save Changes', `id="edit-thread-save-btn"`)}
       </div>
     </div>`;
@@ -465,7 +465,7 @@ export function openMeetingNotesRangeModal(onGenerate) {
       </div>
       <div class="flex gap-3 px-5 pb-5">
         ${_btnSecondary('Cancel',
-          `onclick="document.getElementById('thread-notes-range-modal')?.classList.add('hidden')"`)}
+          `data-action="close-modal"`)}
         ${_btnPrimary('Generate', `id="notes-range-confirm-btn"`)}
       </div>
     </div>`;
@@ -544,7 +544,7 @@ export function openMeetingNotesModal(notes, messageCount) {
       </div>
       <div class="flex-shrink-0 px-5 pb-5 pt-3">
         ${_btnSecondary('Close',
-          `onclick="document.getElementById('thread-meeting-notes-modal')?.classList.add('hidden')"`)}
+          `data-action="close-modal"`)}
       </div>
     </div>`;
 
@@ -634,7 +634,7 @@ export function openJoinRequestModal(thread, onConfirm) {
           </div>` : ''}
         <div class="flex gap-3 pt-1">
           ${_btnSecondary('Cancel',
-            `onclick="document.getElementById('thread-join-modal')?.classList.add('hidden')"`)}
+            `data-action="close-modal"`)}
           ${_btnPrimary(
             thread.requires_approval ? 'Send Request' : 'Join Now',
             `id="join-modal-confirm-btn"`
@@ -829,7 +829,7 @@ export async function openAddMembersModal(thread, memberIds, onConfirm) {
         <span id="add-member-count"
               class="text-xs text-ink-tertiary flex-1">No one selected</span>
         ${_btnSecondary('Cancel',
-            `onclick="document.getElementById('${MODAL_ID}')?.classList.add('hidden')"`)}
+            `data-action="close-modal"`)}
         <button id="add-member-confirm"
                 disabled
                 class="flex-1 py-2.5 rounded-xl bg-accent hover:bg-accent-hover active:scale-95
