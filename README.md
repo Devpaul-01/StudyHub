@@ -3,7 +3,7 @@
 [![Unit Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/unit-tests.yml)
 [![Integration Tests](https://github.com/Devpaul-01/StudyHub/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/Devpaul-01/StudyHub/actions/workflows/integration-tests.yml)
 
-**Status:** Deployed and running. Core systems — auth, feed, threads, homework, AI assistant, real-time presence — are complete and functional. Known gaps and planned improvements are documented rather than hidden.
+**Status:** Actively in development. Core features — auth, feed, bookmarks, threads, homework, AI assistant, real-time presence — are deployed and working well; I'm still fixing bugs and implementing new features. Known gaps and planned improvements are documented rather than hidden.
 
 **Live:** [https://studyhub-two-psi.vercel.app/](https://studyhub-two-psi.vercel.app/)
 
