@@ -269,6 +269,11 @@
   }
   .hero-cta { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 2.75rem; }
 
+  .hero-status {
+    display: flex; align-items: flex-start; gap: 0.6rem; max-width: 34rem;
+    margin: -1.5rem 0 2.5rem; font-size: 0.82rem; line-height: 1.6; color: var(--text-muted);
+  }
+  .hero-status .live-dot { margin-top: 0.45rem; flex-shrink: 0; }
   .hero-pillars {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;
     border-top: 1px solid var(--border); padding-top: 1.75rem; max-width: 560px;
@@ -377,6 +382,10 @@
             See How It Works
           </a>
         </div>
+        <p class="hero-status">
+          <span class="live-dot"></span>
+          <span>Actively in development. Core features are working well, and I'm still fixing bugs and building new features.</span>
+        </p>
         <div class="hero-pillars">
           <div class="hero-pillar">
             <div class="hp-icon">🧑‍🤝‍🧑</div>
