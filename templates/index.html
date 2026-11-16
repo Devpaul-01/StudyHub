@@ -843,63 +843,6 @@
     border-radius: var(--r-md); padding: 0.8rem; font-size: 0.8rem; color: var(--primary-light); line-height: 1.6;
   }
   .smart-tip strong { color: var(--text); }
-
-  /* ─── LIVE SESSION MOCKUP ─── */
-  .session-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-    padding: 1.5rem;
-  }
-  .session-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
-  .session-title { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 0.98rem; }
-  .session-goal { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.2rem; }
-  .pomodoro-row { display: flex; gap: 2rem; justify-content: center; margin-bottom: 1.25rem; }
-  .pomodoro { text-align: center; }
-  .pomodoro svg { width: 84px; height: 84px; transform: rotate(-90deg); }
-  .pomodoro circle.track { fill: none; stroke: var(--border); stroke-width: 6; }
-  .pomodoro circle.prog {
-    fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round;
-    stroke-dasharray: 251.2; stroke-dashoffset: 0;
-    animation: pomodoro-tick 18s linear infinite;
-  }
-  @keyframes pomodoro-tick { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 251.2; } }
-  .pomodoro .pname { font-size: 0.74rem; font-weight: 700; margin-top: 0.4rem; }
-  .pomodoro .ptime { font-size: 0.7rem; color: var(--text-muted); }
-  .session-notes {
-    background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 0.85rem; font-size: 0.8rem; color: var(--text-soft); line-height: 1.6; margin-bottom: 1rem;
-  }
-  .session-notes .sn-label { font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.4rem; }
-  .session-progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem; color: var(--text-soft); margin-bottom: 1rem; }
-  .session-progress .sp-bar { flex: 1; height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; }
-  .session-progress .sp-fill { height: 100%; width: 60%; background: var(--accent); border-radius: 99px; }
-  .session-ai {
-    display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--violet-light);
-    background: var(--violet-soft); border: 1px solid var(--violet-border); border-radius: var(--r-pill);
-    padding: 0.45rem 0.85rem; width: fit-content;
-  }
-
-  /* ─── TEMPLATE PICKER ─── */
-  .template-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem; }
-  .template-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
-    padding: 1rem 0.85rem; text-align: center; transition: border-color 0.2s, transform 0.2s;
-  }
-  .template-card:hover { border-color: var(--border-strong); transform: translateY(-3px); }
-  .template-card .tc-icon { font-size: 1.4rem; margin-bottom: 0.5rem; }
-  .template-card .tc-name { font-size: 0.82rem; font-weight: 700; }
-  .template-card .tc-time { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; }
-  @media (max-width: 700px) { .template-grid { grid-template-columns: repeat(2, 1fr); } }
-
-  /* ─── HOURS-TOGETHER STAT ─── */
-  .hours-stat {
-    display: flex; align-items: center; gap: 1rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--r-lg); padding: 1.25rem 1.5rem;
-  }
-  .hours-stat .hs-avatars { display: flex; flex-shrink: 0; }
-  .hours-stat .hs-avatars span { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; border: 2px solid var(--bg2); margin-left: -10px; }
-  .hours-stat .hs-avatars span:first-child { margin-left: 0; }
-  .hours-stat .hs-num { font-family: 'Outfit', sans-serif; font-size: 1.9rem; font-weight: 800; color: var(--text); }
-  .hours-stat .hs-text { font-size: 0.85rem; color: var(--text-soft); }
 </style>
 
 <div class="divider"></div>
