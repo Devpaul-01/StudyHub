@@ -80,6 +80,8 @@ Learnora is one AI infrastructure layer surfaced through five product moments (s
 
 **A homework marketplace built on top of the connections graph.** A private `Assignment` becomes visible to a student's accepted connections the moment it's marked shared-for-help. Priority scoring (urgency × difficulty × status) is a pure function computed fresh on every read, never persisted as a side effect of simply viewing the list.
 
+**Bookmarks that behave like a library, not a flat list.** Any post can be saved from the feed, the post page, or the profile's My Posts list into the user's own folders (a default `Saved` folder is created on demand, up to 50 folders per user), with optional notes and tags. Saving and unsaving are idempotent `PUT`/`DELETE` calls, so a retried request can't double-count; `Post.bookmark_count` and per-folder counts are updated atomically in `bookmark_service`. The Bookmarks section pages through results with a cursor and filters by folder, post type, tag, or search text.
+
 **Learnora, embedded rather than standalone.** Reachable from a dedicated chat surface, thread `@mentions` (five distinct personas), per-post Q&A, and on-demand AI meeting notes — all through the same underlying multi-provider layer.
 
 ---
