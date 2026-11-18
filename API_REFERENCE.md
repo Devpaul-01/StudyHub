@@ -1396,8 +1396,12 @@ Background scheduler status and its registered jobs (see `BACKGROUND_JOBS.md` fo
 does).
 
 ### `GET /admin/ai-providers`
-Per-provider health from the multi-provider AI manager — active/failed/blacklisted providers,
-which one's currently selected, and whether that state is backed by Redis or held in-memory only.
+Gateway client health from `MultiProviderManager.get_stats()` — whether `LLM_GATEWAY_BASE_URL` /
+`LLM_GATEWAY_API_KEY` are configured, the resolved primary text/vision models and fallback-chain
+length, whether this process is currently in a cooldown after a failed gateway call, and whether
+that cooldown state is backed by Redis or held in-memory only. Per-provider/per-key detail (which
+of the gateway's registered providers is healthy, blacklisted, etc.) now lives in llm-gateway's own
+admin surface, not here — see [github.com/Devpaul-01/llm-gateway](https://github.com/Devpaul-01/llm-gateway).
 
 ### `POST /admin/reconciliation/run`
 Manually triggers the denormalized-counter reconciliation job on demand — the same logic the
