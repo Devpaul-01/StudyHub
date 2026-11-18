@@ -1,10 +1,16 @@
 """
 Tests for services/ai_provider_service.py::call_ai_response.
 
-Per UNIT_TEST_IMPLEMENTATION_PLAN.md §7.6. Every classification-to-
-reaction mapping is verified independently -- a swapped reaction (e.g.
-cooling a key on PROVIDER_TRANSIENT) would incorrectly penalize healthy
-keys for provider-wide outages.
+GATEWAY MIGRATION: rewritten from the pre-gateway, multi-provider×model
+queue version. There is now exactly one provider slot (the gateway), and
+the gateway itself walks a `fallback_models` chain server-side inside ONE
+HTTP call — so `_build_call_queue` returns at most one entry, and
+call_ai_response's per-category reactions (classify_provider_error's
+KEY_FAULT / PROVIDER_TRANSIENT / BAD_MODEL / NON_RETRYABLE) now only
+affect the cooldown state used by the NEXT call_ai_response invocation,
+not whether THIS call tries something else. See the "GATEWAY ERROR
+CLASSIFICATION" comment and call_ai_response's docstring in
+services/ai_provider_service.py for the full reasoning.
 """
 
 from unittest.mock import Mock, patch
@@ -16,30 +22,27 @@ from services import ai_provider_service
 from services.ai_provider_service import MultiProviderManager
 
 
-def _fake_provider(name, provider_id="groq", models=None):
-    models = models or ["model-a", "model-b"]
+def _fake_gateway_provider(models=None):
+    models = models or ["gemini:gemini-3.7-flash", "groq:llama-3.3-70b-versatile"]
     return {
-        "name": name,
-        "api_key": "fake-key",
-        "base_url": "https://fake.example.com/v1",
+        "name": "llm-gateway",
+        "api_key": "fake-gateway-key",
+        "base_url": "https://fake-gateway.example.com/v1",
         "text_model": models[0],
         "vision_model": None,
         "supports_vision": False,
-        "type": provider_id,
+        "type": "gateway",
         "text_model_fallbacks": list(models),
         "vision_model_fallbacks": [],
-        "_provider_id": provider_id,
-        "_vision_models": set(),
+        "_provider_id": "gateway",
+        "project_id": "proj_test",
     }
 
 
 @pytest.fixture
-def two_provider_manager(monkeypatch):
+def gateway_manager(monkeypatch):
     mgr = MultiProviderManager()
-    mgr.providers = [
-        _fake_provider("groq_0", provider_id="groq"),
-        _fake_provider("gemini_0", provider_id="gemini"),
-    ]
+    mgr.providers = [_fake_gateway_provider()]
     monkeypatch.setattr(ai_provider_service, "provider_manager", mgr)
     return mgr
 
@@ -60,7 +63,7 @@ def _success_body(text="Hello from the model"):
     return {"choices": [{"message": {"content": text}}]}
 
 
-def test_call_ai_response_empty_queue_no_http_call(monkeypatch):
+def test_call_ai_response_no_gateway_configured_no_http_call(monkeypatch):
     mgr = MultiProviderManager()
     mgr.providers = []
     monkeypatch.setattr(ai_provider_service, "provider_manager", mgr)
@@ -73,94 +76,87 @@ def test_call_ai_response_empty_queue_no_http_call(monkeypatch):
     mock_post.assert_not_called()
 
 
-def test_call_ai_response_first_entry_succeeds(two_provider_manager):
+def test_call_ai_response_success_sends_fallback_models(gateway_manager):
     with patch(
         "services.ai_provider_service.requests.post",
-        return_value=_mock_response(200, _success_body("first try works")),
-    ):
+        return_value=_mock_response(200, _success_body("it worked")),
+    ) as mock_post:
         text, diagnostics = ai_provider_service.call_ai_response([{"role": "user", "content": "hi"}])
 
-    assert text == "first try works"
+    assert text == "it worked"
     assert diagnostics["attempts"] == 1
+    assert diagnostics["provider"] == "llm-gateway"
+
+    # The gateway call must carry the rest of the chain as fallback_models
+    # so IT walks the fallback, not this process.
+    sent_payload = mock_post.call_args.kwargs["json"]
+    assert sent_payload["model"] == "gemini:gemini-3.7-flash"
+    assert sent_payload["fallback_models"] == ["groq:llama-3.3-70b-versatile"]
 
 
-def test_call_ai_response_key_fault_marks_provider_failed_and_advances(two_provider_manager):
-    responses = [
-        _mock_response(401, text="unauthorized"),   # groq_0/model-a -> KEY_FAULT
-        _mock_response(200, _success_body("second entry succeeds")),
-    ]
-    with patch("services.ai_provider_service.requests.post", side_effect=responses), \
-         patch.object(two_provider_manager, "mark_provider_failed") as mock_mark_failed:
-        text, diagnostics = ai_provider_service.call_ai_response(
-            [{"role": "user", "content": "hi"}], max_retries=3
-        )
+def test_call_ai_response_provider_transient_cools_the_gateway(gateway_manager):
+    """
+    Single-gateway design: unlike the pre-gateway behavior, a transient
+    gateway-side failure (exhausted upstream failover, admission control)
+    now DOES start a cooldown — there's no other key/provider at this
+    layer to rotate to, so protecting the gateway from being hammered
+    again immediately is the correct reaction.
+    """
+    with patch(
+        "services.ai_provider_service.requests.post",
+        return_value=_mock_response(503, text="service unavailable"),
+    ), patch.object(gateway_manager, "mark_provider_failed") as mock_mark_failed:
+        text, diagnostics = ai_provider_service.call_ai_response([{"role": "user", "content": "hi"}])
 
-    assert text == "second entry succeeds"
-    assert diagnostics["attempts"] == 2
+    assert text is None
+    assert diagnostics["attempts"] == 1
     mock_mark_failed.assert_called_once()
-    assert mock_mark_failed.call_args[0][0] == "groq_0"
+    assert mock_mark_failed.call_args[0][0] == "llm-gateway"
 
 
-def test_call_ai_response_provider_transient_does_not_cool_key(two_provider_manager):
-    responses = [
-        _mock_response(503, text="service unavailable"),  # PROVIDER_TRANSIENT
-        _mock_response(200, _success_body("recovered on next entry")),
-    ]
-    with patch("services.ai_provider_service.requests.post", side_effect=responses), \
-         patch.object(two_provider_manager, "mark_provider_failed") as mock_mark_failed:
-        text, diagnostics = ai_provider_service.call_ai_response(
-            [{"role": "user", "content": "hi"}], max_retries=3
-        )
+def test_call_ai_response_bad_model_evicts_model_not_the_gateway(gateway_manager):
+    with patch(
+        "services.ai_provider_service.requests.post",
+        return_value=_mock_response(400, json_body={"error": {"message": "model not found"}}),
+    ), patch.object(gateway_manager, "mark_provider_failed") as mock_mark_failed, \
+       patch.object(gateway_manager, "evict_model") as mock_evict:
+        text, diagnostics = ai_provider_service.call_ai_response([{"role": "user", "content": "hi"}])
 
-    assert text == "recovered on next entry"
-    mock_mark_failed.assert_not_called()  # must NOT cool the key for a provider-wide outage
+    assert text is None
+    mock_mark_failed.assert_not_called()  # the gateway itself is healthy
+    mock_evict.assert_called_once_with("gateway", "gemini:gemini-3.7-flash")
 
 
-def test_call_ai_response_bad_model_evicts_model_not_key(two_provider_manager):
-    responses = [
-        _mock_response(400, json_body={"error": {"message": "model not found"}}),  # BAD_MODEL
-        _mock_response(200, _success_body("next model in queue")),
-    ]
-    with patch("services.ai_provider_service.requests.post", side_effect=responses), \
-         patch.object(two_provider_manager, "mark_provider_failed") as mock_mark_failed, \
-         patch.object(two_provider_manager, "evict_model") as mock_evict:
-        text, diagnostics = ai_provider_service.call_ai_response(
-            [{"role": "user", "content": "hi"}], max_retries=3
-        )
-
-    assert text == "next model in queue"
-    mock_mark_failed.assert_not_called()
-    mock_evict.assert_called_once_with("groq", "model-a")
-
-
-def test_call_ai_response_non_retryable_stops_immediately(two_provider_manager):
-    """Must not burn through the rest of the queue on a request that
-    will never succeed anywhere."""
-    responses = [
-        _mock_response(418, text="I'm a teapot"),  # NON_RETRYABLE
-    ]
-    with patch("services.ai_provider_service.requests.post", side_effect=responses) as mock_post:
+def test_call_ai_response_non_retryable_does_not_cool_or_evict(gateway_manager):
+    """A malformed-request/invalid-key style failure is a config problem,
+    not a gateway-health problem — no cooldown, no model eviction."""
+    with patch(
+        "services.ai_provider_service.requests.post",
+        return_value=_mock_response(401, text="invalid gateway key"),
+    ) as mock_post, patch.object(gateway_manager, "mark_provider_failed") as mock_mark_failed, \
+       patch.object(gateway_manager, "evict_model") as mock_evict:
         text, diagnostics = ai_provider_service.call_ai_response(
             [{"role": "user", "content": "hi"}], max_retries=5
         )
 
     assert text is None
-    assert mock_post.call_count == 1  # did not try any further queue entries
+    assert mock_post.call_count == 1  # single gateway slot, nothing else to try
+    mock_mark_failed.assert_not_called()
+    mock_evict.assert_not_called()
 
 
-def test_call_ai_response_respects_max_retries_cap(two_provider_manager):
-    """4 queue entries total (2 providers x 2 models), but max_retries=1
-    caps attempts at max_retries+1 == 2, not all 4."""
-    responses = [
-        _mock_response(503, text="down"),
-        _mock_response(503, text="still down"),
-        _mock_response(200, _success_body("would have worked")),
-    ]
-    with patch("services.ai_provider_service.requests.post", side_effect=responses) as mock_post:
+def test_call_ai_response_respects_max_retries_cap(gateway_manager):
+    """Even with max_retries set high, there's only one queue entry (the
+    single gateway slot), so only one HTTP call is ever made per
+    invocation — fallback across models/providers happens server-side."""
+    with patch(
+        "services.ai_provider_service.requests.post",
+        return_value=_mock_response(503, text="down"),
+    ) as mock_post:
         text, diagnostics = ai_provider_service.call_ai_response(
-            [{"role": "user", "content": "hi"}], max_retries=1
+            [{"role": "user", "content": "hi"}], max_retries=5
         )
 
     assert text is None
-    assert mock_post.call_count == 2
-    assert diagnostics["attempts"] == 2
+    assert mock_post.call_count == 1
+    assert diagnostics["attempts"] == 1
