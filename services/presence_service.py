@@ -125,6 +125,21 @@ def remove_connection(user_id: int, sid: str) -> None:
         )
 
 
+def get_user_sids(user_id: int) -> set[str]:
+    """
+    Every socket id registered for ``user_id`` on ANY instance (cross-checked
+    against the live sock: keys, like is_user_online). Used to end a user's
+    sockets wherever they are, e.g. on logout (audit AUD-15). Never raises;
+    returns an empty set if Redis is unavailable.
+    """
+    try:
+        sids = redis_client.smembers(_user_sockets_key(user_id)) or set()
+        return {sid.decode() if isinstance(sid, bytes) else sid for sid in sids}
+    except Exception:
+        logger.warning("[PRESENCE_LOOKUP_FAILED] user_id=%s", user_id, exc_info=True)
+        return set()
+
+
 def touch_connection(sid: str) -> None:
     """
     Refresh a single socket's TTL without needing to know its user_id.

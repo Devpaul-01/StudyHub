@@ -136,3 +136,20 @@ def test_active_thread_functions_fail_open_on_redis_error(raising_redis_client):
     assert ps.get_active_thread(5) is None
     ps.clear_active_thread(5)  # must not raise
     assert ps.get_active_threads_batch([1, 2]) == {}
+
+
+# ============================================================================
+# get_user_sids (cross-instance lookup used to end sockets on logout)
+# ============================================================================
+
+def test_get_user_sids_returns_sockets_from_every_instance(fakeredis_client):
+    ps.register_connection(1, "sid-a", "instance-1")
+    ps.register_connection(1, "sid-b", "instance-2")
+    ps.register_connection(2, "sid-c", "instance-1")
+
+    assert ps.get_user_sids(1) == {"sid-a", "sid-b"}
+    assert ps.get_user_sids(3) == set()
+
+
+def test_get_user_sids_never_raises_when_redis_is_down(raising_redis_client):
+    assert ps.get_user_sids(1) == set()

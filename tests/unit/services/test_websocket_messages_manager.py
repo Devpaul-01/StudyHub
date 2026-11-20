@@ -106,37 +106,61 @@ def test_disconnect_user_is_a_noop_when_socketio_not_initialized(manager):
     manager.disconnect_user(user_id=1)
 
 
-def test_disconnect_user_is_a_noop_when_user_has_no_open_sockets(manager):
+def test_disconnect_user_is_a_noop_when_user_has_no_open_sockets(manager, fakeredis_client):
     manager.socketio = Mock()
 
-    with patch("flask_socketio.disconnect") as mock_disconnect:
-        manager.disconnect_user(user_id=999)  # never registered in online_users
+    manager.disconnect_user(user_id=999)  # never registered anywhere
 
-    mock_disconnect.assert_not_called()
+    manager.socketio.server.disconnect.assert_not_called()
 
 
-def test_disconnect_user_force_closes_every_tracked_socket_for_that_user(manager):
+def test_disconnect_user_force_closes_every_tracked_socket_for_that_user(manager, fakeredis_client):
     manager.socketio = Mock()
     manager.online_users[5] = ["sid-a", "sid-b"]
 
-    with patch("flask_socketio.disconnect") as mock_disconnect:
-        manager.disconnect_user(user_id=5)
+    manager.disconnect_user(user_id=5)
 
-    assert mock_disconnect.call_count == 2
-    called_sids = {call.kwargs.get("sid") for call in mock_disconnect.call_args_list}
-    assert called_sids == {"sid-a", "sid-b"}
+    called = {call.args[0] for call in manager.socketio.server.disconnect.call_args_list}
+    assert called == {"sid-a", "sid-b"}
 
 
-def test_disconnect_user_swallows_exception_from_one_socket_and_continues(manager):
+def test_disconnect_user_also_closes_sockets_held_by_other_instances(manager, fakeredis_client):
+    """Audit AUD-15: a logout handled here must also end the socket that lives
+    on another instance. That socket is only known through the shared presence
+    store; the server publishes the disconnect through the message queue."""
+    from services import presence_service
+    manager.socketio = Mock()
+    manager.online_users[5] = ["sid-local"]
+    presence_service.register_connection(5, "sid-local", "instance-a")
+    presence_service.register_connection(5, "sid-remote", "instance-b")
+
+    manager.disconnect_user(user_id=5)
+
+    called = {call.args[0] for call in manager.socketio.server.disconnect.call_args_list}
+    assert called == {"sid-local", "sid-remote"}
+
+
+def test_disconnect_user_ignores_other_users_sockets(manager, fakeredis_client):
+    from services import presence_service
+    manager.socketio = Mock()
+    presence_service.register_connection(6, "sid-other-user", "instance-b")
+
+    manager.disconnect_user(user_id=5)
+
+    manager.socketio.server.disconnect.assert_not_called()
+
+
+def test_disconnect_user_swallows_exception_from_one_socket_and_continues(manager, fakeredis_client):
     """A stale/already-gone sid raising on disconnect() must not stop the
     other sockets for the same user from also being disconnected."""
     manager.socketio = Mock()
     manager.online_users[5] = ["sid-bad", "sid-good"]
+    manager.socketio.server.disconnect.side_effect = lambda sid, **kw: (_ for _ in ()).throw(RuntimeError("gone")) if sid == "sid-bad" else None
 
-    with patch("flask_socketio.disconnect", side_effect=[RuntimeError("gone"), None]) as mock_disconnect:
-        manager.disconnect_user(user_id=5)  # must not raise
+    manager.disconnect_user(user_id=5)  # must not raise
 
-    assert mock_disconnect.call_count == 2
+    called = {call.args[0] for call in manager.socketio.server.disconnect.call_args_list}
+    assert called == {"sid-bad", "sid-good"}
 
 
 # ============================================================================

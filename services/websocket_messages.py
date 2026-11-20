@@ -302,12 +302,17 @@ class MessageWebSocketManager:
         if not self.socketio:
             return
 
-        from flask_socketio import disconnect as _sio_disconnect
+        # Sockets held by THIS process plus every socket the distributed
+        # presence store knows for the user. With message_queue configured,
+        # python-socketio publishes the disconnect to all instances, so a
+        # logout handled by instance A also ends the socket living on
+        # instance B (audit AUD-15).
+        socket_ids = set(self.online_users.get(user_id, []))
+        socket_ids |= presence_service.get_user_sids(user_id)
 
-        socket_ids = list(self.online_users.get(user_id, []))
         for socket_id in socket_ids:
             try:
-                _sio_disconnect(sid=socket_id, namespace='/')
+                self.socketio.server.disconnect(socket_id, namespace='/')
             except Exception:
                 pass
 
