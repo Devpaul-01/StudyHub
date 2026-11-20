@@ -366,7 +366,7 @@ def google_callback():
                 access_token, refresh_token_val = generate_tokens_for_user(existing_user)
                 response = make_response(redirect("/student/profile/homepage"))
                 set_auth_cookies(response, access_token, refresh_token_val)
-                current_app.logger.info(f"Google login: existing user {email}")
+                current_app.logger.info(f"Google login: user {existing_user.id}")
                 return response
 
             # ✅ STILL REGISTERING → continue where they left off
@@ -381,7 +381,7 @@ def google_callback():
 
             # Any other status (for example suspended): no session, no proof.
             db.session.commit()
-            current_app.logger.info(f"Google login refused: {email} status {existing_user.status}")
+            current_app.logger.info(f"Google login refused: user {existing_user.id} status {existing_user.status}")
             return redirect(url_for("student.student_auth.login") + "?error=account_inactive")
 
         # ── 2. Brand-new user ─────────────────────────────────────────────────
@@ -482,7 +482,7 @@ def demo():
 # ONBOARDING
 # ============================================================================
 @auth_bp.route("/onboard/<email>", methods=["GET", "POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
+@limiter.limit(RateLimitTier.REGISTRATION, key_func=ip_key, methods=["POST"])
 def onboard(email):
     """
     GET renders the onboarding page. POST saves the questionnaire.
@@ -1052,7 +1052,10 @@ def check_username():
         if not data:
             return error_response("No data provided")
 
-        username = data.get("username", "").strip().lower()
+        username = data.get("username", "")
+        if not isinstance(username, str):
+            return error_response("Invalid username format")
+        username = username.strip().lower()
         if not username:
             return error_response("Username required")
         if not re.match(r"^[a-z0-9]{3,20}$", username):
@@ -1070,7 +1073,7 @@ def check_username():
 
 
 @auth_bp.route("/complete-registration", methods=["GET", "POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
+@limiter.limit(RateLimitTier.REGISTRATION, key_func=ip_key, methods=["POST"])
 def complete_registration():
     """
     Final registration step: choose a username and a password.

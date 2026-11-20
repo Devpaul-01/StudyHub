@@ -362,7 +362,11 @@ def create_app(config_class=None):
     def log_request():
         """Log important requests without exposing sensitive data"""
         if request.method in ['POST', 'PUT', 'DELETE']:
-            app.logger.info(f"{request.method} {request.path} from {request.remote_addr}")
+            # Log the route TEMPLATE (e.g. /student/verify-email/<token>), never the
+            # concrete path: paths carry single-use tokens and email addresses
+            # (audit AUD-14).
+            route = request.url_rule.rule if request.url_rule else "(unmatched)"
+            app.logger.info(f"{request.method} {route} from {request.remote_addr}")
     
     # ========================================================================
     # Register Blueprints
