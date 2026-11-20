@@ -19,7 +19,6 @@ from datetime import timedelta
 import datetime
 import json
 import logging
-import random
 
 from models import (
     User, StudentProfile, Connection,
@@ -28,7 +27,7 @@ from models import (
 )
 from extensions import db
 from routes.student.helpers import (
-    token_required, success_response, error_response,
+    token_required, token_required_allow_pending, success_response, error_response,
     block_connection, unblock_connection,
 )
 
@@ -51,362 +50,95 @@ from services.connection_service import (
 # notify() itself) to be accurate for connection/help-request notifications.
 # Before this migration, notifications created via direct construction here
 # never triggered the increment, silently undercounting.
-from services import notification_service
+from services import notification_service, onboarding_service
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): send/accept/reject requests, help-broadcast/
 # volunteer, block-adjacent actions -> WRITE_HEAVY; mark-seen/status checks
-# -> BURST_OK; list/received/sent -> PUBLIC_READ; onboarding routes (no
-# token yet, pre-auth) -> SENSITIVE_AUTH + ip_key since they mutate
-# connection state before a session exists, same risk profile as auth.py.
+# -> BURST_OK; list/received/sent -> PUBLIC_READ. The onboarding routes are
+# authenticated too (see the ONBOARDING block below) -> WRITE_HEAVY per user.
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 logger = logging.getLogger(__name__)
 
 connections_crud_bp = Blueprint("connections_crud", __name__)
-@connections_crud_bp.route("/connections/suggestions-by-email/<email>", methods=["GET"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def connections_suggestions_by_email(email):
-    """
-    Onboarding suggestions using email. No token required.
-    Returns smart match list based on subjects, learning style, schedule.
-    """
+# ============================================================================
+# ONBOARDING: suggestions + connection requests  (audit AUD-01 / AUD-16)
+#
+# These used to live at /connections/suggestions-by-email/<email> and
+# /connections/onboard-connect*/<email>... and took the *email address from
+# the URL* as proof of identity, with no authentication. They now require a
+# real session (token_required_allow_pending: a verified, still-registering
+# user may call them) and derive the user from the token. Connecting sends
+# an ordinary pending request -- see services/onboarding_service.py.
+# ============================================================================
+
+@connections_crud_bp.route("/connections/onboarding/suggestions", methods=["GET"])
+@token_required_allow_pending
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+def onboarding_suggestions(current_user):
+    """Suggested people to connect with, based on the user's onboarding answers."""
     try:
-        if not email:
-            return error_response("Email required", 400)
-
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
-
-        onboarding = OnboardingDetails.query.filter_by(user_id=user.id).first()
-
-        # OPTIMIZED: Single join query replaces O(N) per-user queries.
-        # Fetches all candidates with their profiles and onboarding in one pass.
-        candidates_data = (
-            db.session.query(User, StudentProfile, OnboardingDetails)
-            .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
-            .outerjoin(OnboardingDetails, OnboardingDetails.user_id == User.id)
-            .filter(User.id != user.id, User.status == "approved")
-            .all()
-        )
-
-        matches = []
-
-        for candidate, profile, c_onboard in candidates_data:
-            score   = 0
-            reasons = []
-
-            # Department match
-            if profile and onboarding:
-                my_dept = getattr(onboarding, 'department', None)
-                c_dept  = profile.department if profile else None
-                if my_dept and c_dept and my_dept == c_dept:
-                    score += 40
-                    reasons.append("Same department")
-
-            if c_onboard and onboarding:
-                # Shared subjects
-                my_subs  = set(s.lower() for s in (onboarding.subjects or []))
-                c_subs   = set(s.lower() for s in (c_onboard.subjects or []))
-                shared   = my_subs & c_subs
-                if shared:
-                    score += len(shared) * 10
-                    top_shared = list(shared)[:2]
-                    reasons.append(f"Studies {', '.join(top_shared)}")
-
-                # Complementary: I need help where they are strong
-                my_help  = set(s.lower() for s in (onboarding.help_subjects or []))
-                c_strong = set(s.lower() for s in (c_onboard.strong_subjects or []))
-                comp     = my_help & c_strong
-                if comp:
-                    score += len(comp) * 15
-                    top_comp = list(comp)[:2]
-                    reasons.append(f"Can help with {', '.join(top_comp)}")
-
-                # Same learning style
-                if (onboarding.learning_style and c_onboard.learning_style
-                        and onboarding.learning_style == c_onboard.learning_style):
-                    score += 10
-                    reasons.append("Same learning style")
-
-                # Schedule overlap
-                my_sched = onboarding.study_schedule or {}
-                c_sched  = c_onboard.study_schedule or {}
-                overlap  = set(my_sched.keys()) & set(c_sched.keys())
-                if overlap:
-                    score += len(overlap) * 3
-                    reasons.append("Overlapping schedule")
-
-            # Reputation bonus
-            if candidate.reputation >= 500:
-                score += 10
-                reasons.append(candidate.reputation_level or "High reputation")
-
-            if score >= 10:
-                matches.append({
-                    "user": {
-                        "id":               candidate.id,
-                        "username":         candidate.username,
-                        "name":             candidate.name,
-                        "avatar":           candidate.avatar or "/static/default-avatar.png",
-                        "reputation":       candidate.reputation,
-                        "reputation_level": candidate.reputation_level,
-                        "department":       profile.department if profile else None,
-                        "class_level":      profile.class_name if profile else None,
-                    },
-                    "match_score": min(score, 99),
-                    "reasons":     reasons[:4]
-                })
-
-        matches.sort(key=lambda x: x["match_score"], reverse=True)
-        top_matches = matches[:10]
-
-        # Fallback: top reputation users if no algorithmic matches
-        if not top_matches:
-            top_users = User.query.filter(
-                User.id != user.id, User.status == "approved"
-            ).order_by(User.reputation.desc()).limit(6).all()
-
-            # OPTIMIZED: Batch-load fallback profiles in one query
-            top_user_ids = [tu.id for tu in top_users]
-            top_profiles_map = {
-                p.user_id: p
-                for p in StudentProfile.query.filter(
-                    StudentProfile.user_id.in_(top_user_ids)
-                ).all()
-            }
-
-            for tu in top_users:
-                tu_profile = top_profiles_map.get(tu.id)
-                top_matches.append({
-                    "user": {
-                        "id":               tu.id,
-                        "username":         tu.username,
-                        "name":             tu.name,
-                        "avatar":           tu.avatar or "/static/default-avatar.png",
-                        "reputation":       tu.reputation,
-                        "reputation_level": tu.reputation_level,
-                        "department":       tu_profile.department if tu_profile else None,
-                        "class_level":      tu_profile.class_name if tu_profile else None,
-                    },
-                    "match_score": random.randint(50, 70),
-                    "reasons":     ["Top contributor", "Active member"]
-                })
-
-        return jsonify({"status": "success", "data": {"matches": top_matches}})
-
-    except Exception as e:
-        current_app.logger.error(f"connections_suggestions_by_email error: ", exc_info=True)
+        matches = onboarding_service.get_matches(current_user)
+        return jsonify({"status": "success", "data": {"matches": matches}})
+    except Exception:
+        current_app.logger.error("onboarding_suggestions error", exc_info=True)
         return error_response("Failed to generate suggestions")
 
 
-# 2. SINGLE DIRECT-ACCEPT CONNECT (ONBOARDING)
-
-@connections_crud_bp.route("/connections/onboard-connect/<email>/<int:target_user_id>", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def onboard_connect_single(email, target_user_id):
-    """
-    Onboarding: connect with a single user and immediately set status=accepted.
-    No pending step. No token required - uses email from URL path.
-    Idempotent: already-connected pairs return success without duplication.
-    """
+@connections_crud_bp.route("/connections/onboarding/connect/<int:target_user_id>", methods=["POST"])
+@token_required_allow_pending
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+def onboarding_connect_single(current_user, target_user_id):
+    """Send one connection request during onboarding."""
     try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
-
-        if user.id == target_user_id:
+        if target_user_id == current_user.id:
             return error_response("Cannot connect with yourself", 400)
-
-        target = User.query.get(target_user_id)
-        if not target:
-            return error_response("Target user not found", 404)
-
-        existing = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == user.id, Connection.receiver_id == target_user_id),
-                and_(Connection.requester_id == target_user_id, Connection.receiver_id == user.id)
-            )
-        ).first()
-
-        if existing:
-            if existing.status == "accepted":
-                return jsonify({"status": "success", "message": "Already connected",
-                                "data": {"connection_id": existing.id}})
-            existing.status = "accepted"
-            existing.responded_at = datetime.datetime.utcnow()
-            db.session.commit()
-            return jsonify({"status": "success", "message": "Connection accepted",
-                            "data": {"connection_id": existing.id}})
-
-        connection = Connection(
-            requester_id    = user.id,
-            receiver_id     = target_user_id,
-            status          = "accepted",
-            requested_at    = datetime.datetime.utcnow(),
-            responded_at    = datetime.datetime.utcnow(),
-            requester_notes = "Connected during onboarding"
-        )
-        db.session.add(connection)
-
-        notification_service.notify(
-            user_id=target_user_id,
-            title=f"{user.name} connected with you!",
-            body=f"{user.name} just joined StudyHub and connected with you.",
-            notification_type="connection_accepted",
-            related_type="user",
-            related_id=user.id,
-        )
-
-        # AUDIT ENG-2 FIX: same reverse-duplicate race as
-        # send_connection_request — uq_connections_pair (models.py) now
-        # applies globally to the connections table, so this insert path
-        # is exposed to it too. Rolled back and reported using the same
-        # "already connected" response shape the existing-row check above
-        # already returns for this exact outcome.
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            current_app.logger.info(
-                f"Connection request race detected (uq_connections_pair): "
-                f"{user.id} <-> {target_user_id}"
-            )
-            existing = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id, Connection.receiver_id == target_user_id),
-                    and_(Connection.requester_id == target_user_id, Connection.receiver_id == user.id)
-                )
-            ).first()
-            return jsonify({
-                "status": "success",
-                "message": "Already connected",
-                "data": {"connection_id": existing.id if existing else None}
-            })
-
-        return jsonify({
-            "status":  "success",
-            "message": "Connected successfully",
-            "data":    {"connection_id": connection.id, "status": "accepted"}
-        }), 201
-
-    except Exception as e:
+        result = onboarding_service.connect_users(current_user, [target_user_id])
+        if result["skipped"]:
+            reason = result["skipped"][0]["reason"]
+            if reason == "not_found":
+                return error_response("User not found", 404)
+            message = {
+                "already_connected": "Already connected",
+                "already_requested": "Request already sent",
+            }.get(reason, "Cannot connect with this user")
+            code = 200 if reason in ("already_connected", "already_requested") else 403
+            if code == 403:
+                return error_response(message, 403)
+            return jsonify({"status": "success", "message": message, "data": result})
+        message = "Connection accepted" if result["accepted"] else "Connection request sent"
+        return jsonify({"status": "success", "message": message, "data": result}), 201
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"onboard_connect_single error: ", exc_info=True)
-        return error_response("Failed to create connection")
+        current_app.logger.error("onboarding_connect_single error", exc_info=True)
+        return error_response("Failed to send connection request")
 
 
-# 3. BULK DIRECT-ACCEPT CONNECT (ONBOARDING "CONNECT ALL")
-
-@connections_crud_bp.route("/connections/onboard-connect-all/<email>", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def onboard_connect_all(email):
-    """
-    Onboarding: connect with all supplied user IDs at once, all accepted immediately.
-    No token required - uses email from URL path.
-    Body: { "ids": [1, 2, 3] }
-    """
+@connections_crud_bp.route("/connections/onboarding/connect-all", methods=["POST"])
+@token_required_allow_pending
+@limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
+def onboarding_connect_all(current_user):
+    """Send connection requests to several suggested users at once (max 25)."""
     try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
-
-        data = request.get_json()
-        ids  = data.get("ids", [])
-
-        if not ids:
-            return error_response("No user IDs provided", 400)
-
-        connected = []
-        skipped   = []
-
-        for target_id in ids:
-            if target_id == user.id:
-                continue
-
-            target = User.query.get(target_id)
-            if not target:
-                skipped.append(target_id)
-                continue
-
-            existing = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id,   Connection.receiver_id == target_id),
-                    and_(Connection.requester_id == target_id, Connection.receiver_id == user.id)
-                )
-            ).first()
-
-            if existing:
-                if existing.status != "accepted":
-                    existing.status       = "accepted"
-                    existing.responded_at = datetime.datetime.utcnow()
-                connected.append(target_id)
-                continue
-
-            connection = Connection(
-                requester_id    = user.id,
-                receiver_id     = target_id,
-                status          = "accepted",
-                requested_at    = datetime.datetime.utcnow(),
-                responded_at    = datetime.datetime.utcnow(),
-                requester_notes = "Connected during onboarding (bulk)"
-            )
-            # AUDIT ENG-2 FIX: db.session.begin_nested() opens a SAVEPOINT
-            # scoped to just this row's INSERT — if it violates
-            # uq_connections_pair (models.py), only this savepoint rolls
-            # back (via the `with` block's own exception handling), leaving
-            # every prior iteration's already-flushed Connection AND
-            # Notification rows completely untouched in the outer,
-            # still-open transaction. This is the correct primitive here,
-            # not a full db.session.rollback(): a full rollback reverts the
-            # ENTIRE session, including prior rows' Notification inserts —
-            # and notification_service.notify() also increments a Redis
-            # unread-counter as a side effect OUTSIDE the SQL transaction,
-            # which a SQL rollback cannot undo, so a full-session rollback
-            # would silently strand that counter out of sync with the (now
-            # rolled-back) Notification row. A savepoint avoids ever
-            # putting prior rows at risk in the first place, so there is
-            # nothing to redo and no redo-vs-counter bookkeeping needed.
-            try:
-                with db.session.begin_nested():
-                    db.session.add(connection)
-                    db.session.flush()
-            except IntegrityError:
-                current_app.logger.info(
-                    f"Connection request race detected (uq_connections_pair) "
-                    f"in bulk onboarding: {user.id} <-> {target_id}"
-                )
-                skipped.append(target_id)
-                continue
-
-            notification_service.notify(
-                user_id=target_id,
-                title=f"{user.name} connected with you!",
-                body=f"{user.name} just joined and connected with you on StudyHub.",
-                notification_type="connection_accepted",
-                related_type="user",
-                related_id=user.id,
-            )
-            connected.append(target_id)
-
-        db.session.commit()
-
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error_response("Invalid JSON data received", 400)
+        ids, problem = onboarding_service.normalize_target_ids(data.get("ids"), current_user.id)
+        if problem:
+            return error_response(problem, 400)
+        result = onboarding_service.connect_users(current_user, ids)
+        result["requested_count"] = len(result["sent"]) + len(result["accepted"])
         return jsonify({
-            "status":  "success",
-            "message": f"Connected with {len(connected)} user(s)",
-            "data": {
-                "connected_count": len(connected),
-                "connected_ids":   connected,
-                "skipped_ids":     skipped
-            }
+            "status": "success",
+            "message": f"{result['requested_count']} request(s) sent",
+            "data": result,
         })
-
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"onboard_connect_all error: ", exc_info=True)
-        return error_response("Failed to connect with all users")
+        current_app.logger.error("onboarding_connect_all error", exc_info=True)
+        return error_response("Failed to send connection requests")
 
-# ADD TO connections.py (after other endpoints)
+
 
 @connections_crud_bp.route("/connections/help/broadcast", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
