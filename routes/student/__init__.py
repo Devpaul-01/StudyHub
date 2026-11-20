@@ -87,10 +87,8 @@ student_bp = Blueprint('student', __name__, url_prefix='/student')
 CSRF_EXEMPT_PATHS = {
     "/student/login",
     "/student/register",
-    "/student/onboard",  # onboarding auth is via Google session / token-in-URL, not a CSRF-protected cookie flow yet
     "/student/verify-email",
     "/student/verify-reset",
-    "/student/complete-registration",
     "/student/set-password",
     "/student/validate-user",
     "/student/learnora/api/chat",
@@ -106,17 +104,32 @@ CSRF_EXEMPT_PATHS = {
 CSRF_EXEMPT_PREFIXES = (
     "/student/verify-email/",
     "/student/verify-reset/",
-    "/student/complete-registration/",
     "/student/clear-session",
-    "/student/onboard/",
     "/google/",
+)
+
+
+# Registration-step routes that are authorised either by an access_token
+# cookie or -- for a brand-new Google user who has no JWT yet -- by the
+# Flask session set during the Google callback. Requests carrying an
+# access_token cookie are subject to normal double-submit CSRF protection
+# (audit AUD-02/AUD-05); only the cookie-less Google-session case is exempt,
+# because that user has no csrf_token cookie yet. Those routes also only
+# accept application/json bodies and the session cookie is SameSite=Lax.
+CSRF_SESSION_PROOF_PREFIXES = (
+    "/student/onboard",
+    "/student/complete-registration",
 )
 
 
 def _is_csrf_exempt(path: str) -> bool:
     if path in CSRF_EXEMPT_PATHS:
         return True
-    return any(path.startswith(prefix) for prefix in CSRF_EXEMPT_PREFIXES)
+    if any(path.startswith(prefix) for prefix in CSRF_EXEMPT_PREFIXES):
+        return True
+    if any(path == p or path.startswith(p + "/") for p in CSRF_SESSION_PROOF_PREFIXES):
+        return not request.cookies.get("access_token")
+    return False
 
 
 @student_bp.before_request
