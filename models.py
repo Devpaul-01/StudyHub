@@ -231,18 +231,62 @@ class HelpRequest(db.Model):
     subject        = db.Column(db.String(100), nullable=False)
     message        = db.Column(db.String(300))
     status         = db.Column(db.String(20), default="active")
+    # DEPRECATED (audit CON-24): written but never read. Kept for one release.
     broadcast_sent = db.Column(db.Boolean, default=False)
+    # DEPRECATED (audit CON-16): replaced by the help_request_volunteers table
+    # (atomic, unique per user). Kept read-only for one release; the migration
+    # back-fills the new table from this column.
     volunteers     = db.Column(MutableList.as_mutable(db.JSON), default=list)
     created_at     = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     expires_at     = db.Column(db.DateTime)
 
     requester = db.relationship("User", foreign_keys=[requester_id])
+    volunteer_rows = db.relationship(
+        "HelpRequestVolunteer",
+        back_populates="help_request",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="HelpRequestVolunteer.id",
+    )
+
+    # Audit CON-17: at most ONE active help request per user, enforced by the
+    # database (partial unique index) so two concurrent broadcasts can't both
+    # stay active.
+    __table_args__ = (
+        db.Index(
+            "uq_help_requests_one_active_per_user",
+            "requester_id",
+            unique=True,
+            postgresql_where=db.text("status = 'active'"),
+            sqlite_where=db.text("status = 'active'"),
+        ),
+    )
 
     def is_expired(self):
         return datetime.datetime.utcnow() > self.expires_at if self.expires_at else False
 
     def __repr__(self):
         return f"<HelpRequest {self.id}: {self.subject} by User {self.requester_id}>"
+
+
+class HelpRequestVolunteer(db.Model):
+    """One row per (help request, volunteer). Replaces the JSON list (CON-16)."""
+    __tablename__ = "help_request_volunteers"
+
+    id              = db.Column(db.Integer, primary_key=True)
+    help_request_id = db.Column(
+        db.Integer, db.ForeignKey("help_requests.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id         = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    created_at      = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+    help_request = db.relationship("HelpRequest", back_populates="volunteer_rows")
+    user         = db.relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("help_request_id", "user_id", name="uq_help_request_volunteer"),
+    )
 
 
 class ConversationAnalytics(db.Model):
@@ -1094,13 +1138,31 @@ class Connection(db.Model):
 
     status       = db.Column(db.Enum(ConnectionStatus, native_enum=False, values_callable=lambda e: [m.value for m in e]), default=ConnectionStatus.PENDING.value, index=True)
 
+    # DEPRECATED (audit CON-24): constant "connection", no longer read or
+    # written by application code. Column kept for one release (two-step
+    # rollout); drop in the follow-up migration.
     connection_type  = db.Column(db.String(30), default="connection")
+
+    # Audit CON-19: the message the requester attached to the request.
+    # Immutable once sent. requester_notes / receiver_notes are now strictly
+    # PRIVATE notes and are never shown to the other party.
+    request_message  = db.Column(db.Text)
     requester_notes  = db.Column(db.Text)
     receiver_notes   = db.Column(db.Text)
 
     requested_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+    # Time of the last status transition (accept / reject / block / re-request).
     responded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+    # DEPRECATED (audit CON-07): single flag shared by both parties. Replaced
+    # by requester_seen / receiver_seen below; no longer read or written.
     is_seen = db.Column(db.Boolean, default=False)
+
+    # Audit CON-07: one "seen" flag per party.
+    #   receiver_seen  -> receiver has seen the (pending) incoming request
+    #   requester_seen -> requester has seen the response (accepted/rejected)
+    receiver_seen  = db.Column(db.Boolean, default=False, nullable=False, server_default=db.false())
+    requester_seen = db.Column(db.Boolean, default=False, nullable=False, server_default=db.false())
 
     # Explicit "who blocked whom" column. block_user() previously swapped
     # requester_id/receiver_id on an existing row so that "receiver_id"
