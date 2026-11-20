@@ -19,6 +19,7 @@ from datetime import timedelta
 import datetime
 import json
 import logging
+import math
 import random
 
 from models import (
@@ -46,6 +47,11 @@ from services.connection_service import (
     get_user_onboarding_preview,
     notify_after_commit,
     clean_user_text,
+    accept_pending_connection,
+    reject_pending_connection,
+    cancel_pending_connection,
+    remove_accepted_connection,
+    reopen_rejected_connection,
     get_accepted_partner_ids,
     invalidate_pair_caches,
 )
@@ -68,6 +74,7 @@ from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, 
 logger = logging.getLogger(__name__)
 
 connections_crud_bp = Blueprint("connections_crud", __name__)
+CONNECTION_MESSAGE_MAX_LEN = 300   # audit CON-04
 ONBOARDING_CONNECT_MAX_IDS = 25
 _ONBOARDING_ACCOUNT_AGE = datetime.timedelta(hours=48)
 
@@ -95,6 +102,18 @@ def _resolve_onboarding_user(email):
         return None, error_response("Onboarding is already complete", 403)
 
     return user, None
+
+
+def _receiver_payload(user, with_reputation=False):
+    payload = {
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "avatar": user.avatar,
+    }
+    if with_reputation:
+        payload["reputation_level"] = user.reputation_level
+    return payload
 
 
 def _pair_row(user_id, other_id):
@@ -1564,33 +1583,47 @@ def mark_all_connections_seen(current_user):
 def send_connection_request(current_user, user_id):
     """
     Smart connection request with auto-accept for high compatibility
-    
+
     Body (optional): {
-        "message": "Hi! Let's connect and study together"
+        "message": "Hi! Let's connect and study together"   (<= 300 chars, plain text)
     }
-    
+
     Response includes:
     - is_instant: true if auto-connected (compatibility >= 70%)
     - status: "accepted" | "pending" | "already_connected"
     - compatibility_score: 0-100 match score
+
+    Audit notes:
+    - CON-04: message is validated/sanitized (plain text, <= 300 chars).
+    - CON-03: re-request after a rejection works (and swaps direction when the
+      original receiver is the one asking again).
+    - CON-08: "they asked you first" acceptance is a compare-and-set.
+    - CON-09: notifications are sent only AFTER the commit succeeds.
+    - CON-19: the message lives in request_message, never in private notes.
     """
     try:
         # Validation
         if user_id == current_user.id:
             return error_response("Cannot connect with yourself")
-        
+
+        try:
+            message = clean_user_text(
+                (request.get_json(silent=True) or {}).get("message"),
+                CONNECTION_MESSAGE_MAX_LEN,
+                field="Message",
+            )
+        except ValueError as exc:
+            return error_response(str(exc), 400)
+
         target_user = User.query.get(user_id)
         if not target_user:
             return error_response("User not found", 404)
-        
+
+        receiver_brief = _receiver_payload(target_user)
+
         # Check if connection already exists (either direction)
-        existing = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            )
-        ).first()
-        
+        existing = _pair_row(current_user.id, user_id)
+
         if existing:
             if existing.status == "accepted":
                 return jsonify({
@@ -1601,17 +1634,11 @@ def send_connection_request(current_user, user_id):
                         "is_instant": False,
                         "connection_status": "already_connected",
                         "connected_at": existing.responded_at.isoformat() if existing.responded_at else None,
-                        "receiver": {
-                            "id": target_user.id,
-                            "name": target_user.name,
-                            "username": target_user.username,
-                            "avatar": target_user.avatar
-                        }
+                        "receiver": receiver_brief,
                     }
                 }), 200
-                
+
             elif existing.status == "pending":
-                # Check who sent the original request
                 if existing.requester_id == current_user.id:
                     return jsonify({
                         "status": "success",
@@ -1621,63 +1648,62 @@ def send_connection_request(current_user, user_id):
                             "is_instant": False,
                             "connection_status": "pending_sent",
                             "requested_at": existing.requested_at.isoformat(),
-                            "receiver": {
-                                "id": target_user.id,
-                                "name": target_user.name,
-                                "username": target_user.username,
-                                "avatar": target_user.avatar
-                            }
+                            "receiver": receiver_brief,
                         }
                     }), 200
-                else:
-                    # They sent you a request - accept it instantly!
-                    existing.status = "accepted"
-                    existing.responded_at = datetime.datetime.utcnow()
-                    
-                    # Notify original requester
-                    notification_service.notify_connection_accepted(
-                        existing.requester_id, current_user.name, current_user.id
-                    )
-                    db.session.commit()
-                    
-                    return jsonify({
-                        "status": "success",
-                        "message": "Connection accepted! (They requested you first)",
-                        "data": {
-                            "connection_id": existing.id,
-                            "is_instant": True,
-                            "connection_status": "accepted",
-                            "connected_at": existing.responded_at.isoformat(),
-                            "receiver": {
-                                "id": target_user.id,
-                                "name": target_user.name,
-                                "username": target_user.username,
-                                "avatar": target_user.avatar
-                            }
-                        }
-                    }), 201
-                    
+
+                # They sent you a request first - accept it instantly (atomic).
+                connection_id = existing.id
+                requester_id = existing.requester_id
+                if not accept_pending_connection(connection_id, current_user.id):
+                    db.session.rollback()
+                    return error_response("This request is no longer pending", 409)
+                db.session.commit()
+                invalidate_pair_caches(current_user.id, user_id)
+                notify_after_commit(
+                    notification_service.notify_connection_accepted,
+                    requester_id, current_user.name, current_user.id,
+                )
+                accepted_row = Connection.query.get(connection_id)
+
+                return jsonify({
+                    "status": "success",
+                    "message": "Connection accepted! (They requested you first)",
+                    "data": {
+                        "connection_id": connection_id,
+                        "is_instant": True,
+                        "connection_status": "accepted",
+                        "connected_at": accepted_row.responded_at.isoformat(),
+                        "receiver": receiver_brief,
+                    }
+                }), 201
+
             elif existing.status == "blocked":
                 return error_response("Cannot connect with this user", 403)
-                
+
             elif existing.status == "rejected":
-                # Check cooldown period (24 hours)
+                # Cooldown period (24 hours)
                 cooldown_hours = 24
                 if existing.responded_at:
-                    hours_since_rejection = (datetime.datetime.utcnow() - existing.responded_at).total_seconds() / 3600
+                    hours_since_rejection = (
+                        datetime.datetime.utcnow() - existing.responded_at
+                    ).total_seconds() / 3600
                     if hours_since_rejection < cooldown_hours:
-                        remaining = int(cooldown_hours - hours_since_rejection)
+                        remaining = max(1, math.ceil(cooldown_hours - hours_since_rejection))
                         return error_response(
                             f"Please wait {remaining} hours before requesting again",
                             429
                         )
-                
-                # Allow re-request after cooldown
-                existing.status = "pending"
-                existing.requested_at = datetime.datetime.utcnow()
-                existing.responded_at = None
-                
-                notification_service.notify(
+
+                # Allow re-request after cooldown. Direction follows the NEW
+                # requester so the receiver can actually accept (CON-03).
+                connection_id = existing.id
+                if not reopen_rejected_connection(connection_id, current_user.id, user_id, message):
+                    db.session.rollback()
+                    return error_response("Connection state changed, please retry", 409)
+                db.session.commit()
+                notify_after_commit(
+                    notification_service.notify,
                     user_id=user_id,
                     title="New Connection Request",
                     body=f"{current_user.name} sent you a connection request again",
@@ -1685,215 +1711,137 @@ def send_connection_request(current_user, user_id):
                     related_type="user",
                     related_id=current_user.id,
                 )
-                db.session.commit()
-                
+                reopened = Connection.query.get(connection_id)
+
                 return jsonify({
                     "status": "success",
                     "message": "Connection request re-sent",
                     "data": {
-                        "connection_id": existing.id,
+                        "connection_id": connection_id,
                         "is_instant": False,
                         "connection_status": "pending",
-                        "requested_at": existing.requested_at.isoformat(),
-                        "receiver": {
-                            "id": target_user.id,
-                            "name": target_user.name,
-                            "username": target_user.username,
-                            "avatar": target_user.avatar
-                        }
+                        "requested_at": reopened.requested_at.isoformat(),
+                        "receiver": receiver_brief,
                     }
                 }), 201
-        
+
         # ============================================================================
-        # NEW: Calculate compatibility for instant connect
+        # Calculate compatibility for instant connect
         # ============================================================================
-        
+
         current_user_data = gather_user_data(current_user)
         target_user_data = gather_user_data(target_user)
-        
+
         compatibility_data = calculate_compatibility(current_user_data, target_user_data)
-        
+
         # Calculate schedule overlap if onboarding data exists
         if current_user.onboarding_details and target_user.onboarding_details:
             compatibility_data['schedule_overlap'] = calculate_schedule_overlap(
                 current_user.onboarding_details.study_schedule or {},
                 target_user.onboarding_details.study_schedule or {}
             )
-        
+
         compatibility_score = calculate_compatibility_score(compatibility_data)
-        
-        # Get custom message
-        data = request.get_json(silent=True) or {}
-        message = data.get("message", "").strip()
-        
-        # ============================================================================
-        # INSTANT CONNECT: Auto-accept if compatibility >= 70%
-        # ============================================================================
-        
-        if compatibility_score >= 70:
-            connection = Connection(
-                requester_id=current_user.id,
-                receiver_id=user_id,
-                status="accepted",  # ← AUTO-ACCEPT
-                requested_at=datetime.datetime.utcnow(),
-                responded_at=datetime.datetime.utcnow(),
-                requester_notes=message if message else f"Instant connection (compatibility: {compatibility_score}%)"
+        is_instant = compatibility_score >= 70
+        now = datetime.datetime.utcnow()
+
+        connection = Connection(
+            requester_id=current_user.id,
+            receiver_id=user_id,
+            status="accepted" if is_instant else "pending",  # auto-accept at >= 70%
+            requested_at=now,
+            responded_at=now,
+            request_message=message,
+            requester_seen=True,   # the requester just saw the outcome
+            receiver_seen=False,
+        )
+        db.session.add(connection)
+
+        # uq_connections_pair can reject this INSERT if the other user's
+        # request landed first. Report whatever state actually won the race,
+        # and (CON-09) send nothing, because nothing was committed.
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            current_app.logger.info(
+                f"Connection request race detected (uq_connections_pair): "
+                f"{current_user.id} <-> {user_id}"
             )
-            db.session.add(connection)
-            
-            # Notify both users about instant connection
-            notification_service.notify_instant_connection(
-                user_id, current_user.name, current_user.id, compatibility_score,
-                is_receiver=True,
-            )
-            notification_service.notify_instant_connection(
-                current_user.id, target_user.name, user_id, compatibility_score,
-                is_receiver=False,
-            )
-            
-            # AUDIT ENG-2 FIX: uq_connections_pair (models.py) can reject
-            # this INSERT if a concurrent request from the other direction
-            # (the target user requesting current_user at close to the same
-            # instant) already landed first. Rolled back and reported using
-            # the identical "already_connected"-shaped response the
-            # pre-existing `if existing:` check above already returns for
-            # this exact outcome — from the caller's perspective a race
-            # they lost looks the same as a request that already existed
-            # when they checked.
-            try:
-                db.session.commit()
-            except IntegrityError:
-                db.session.rollback()
-                current_app.logger.info(
-                    f"Connection request race detected (uq_connections_pair): "
-                    f"{current_user.id} <-> {user_id}"
+            existing = _pair_row(current_user.id, user_id)
+            state = existing.status if existing else "pending"
+            return jsonify({
+                "status": "success",
+                "message": ("Connection request already pending" if state == "pending"
+                            else "Already connected"),
+                "data": {
+                    "connection_id": existing.id if existing else None,
+                    "is_instant": False,
+                    "connection_status": "already_connected" if state == "accepted" else state,
+                    "receiver": receiver_brief,
+                }
+            }), 200
+
+        connection_id = connection.id
+        requested_at = connection.requested_at
+        invalidate_pair_caches(current_user.id, user_id)
+
+        if is_instant:
+            def _notify_instant():
+                notification_service.notify_instant_connection(
+                    user_id, current_user.name, current_user.id, compatibility_score,
+                    is_receiver=True,
                 )
-                existing = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                        and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-                    )
-                ).first()
-                return jsonify({
-                    "status": "success",
-                    "message": "Already connected",
-                    "data": {
-                        "connection_id": existing.id if existing else None,
-                        "is_instant": False,
-                        "connection_status": "already_connected" if existing and existing.status == "accepted" else "pending",
-                        "receiver": {
-                            "id": target_user.id,
-                            "name": target_user.name,
-                            "username": target_user.username,
-                            "avatar": target_user.avatar
-                        }
-                    }
-                }), 200
-            
+                notification_service.notify_instant_connection(
+                    current_user.id, target_user.name, user_id, compatibility_score,
+                    is_receiver=False,
+                )
+            notify_after_commit(_notify_instant)
+
             return jsonify({
                 "status": "success",
                 "message": f"Instantly connected! ({compatibility_score}% compatibility)",
                 "data": {
-                    "connection_id": connection.id,
-                    "is_instant": True,  # ← Frontend uses this
+                    "connection_id": connection_id,
+                    "is_instant": True,  # Frontend uses this
                     "connection_status": "accepted",
-                    "connected_at": connection.responded_at.isoformat(),
+                    "connected_at": requested_at.isoformat(),
                     "compatibility": {
                         "score": compatibility_score,
                         "shared_subjects": compatibility_data['shared_subjects'],
                         "mutual_help": compatibility_data['complementary_skills'],
                         "schedule_overlap": compatibility_data.get('schedule_overlap', 0)
                     },
-                    "receiver": {
-                        "id": target_user.id,
-                        "name": target_user.name,
-                        "username": target_user.username,
-                        "avatar": target_user.avatar,
-                        "reputation_level": target_user.reputation_level
-                    }
+                    "receiver": _receiver_payload(target_user, with_reputation=True),
                 }
             }), 201
-        
-        # ============================================================================
-        # REGULAR FLOW: Create pending request (compatibility < 70%)
-        # ============================================================================
-        
-        else:
-            connection = Connection(
-                requester_id=current_user.id,
-                receiver_id=user_id,
-                status="pending",
-                requested_at=datetime.datetime.utcnow(),
-                requester_notes=message if message else None
-            )
-            db.session.add(connection)
-            
-            # Create notification
-            notification_service.notify_connection_request(
-                user_id, current_user.name, current_user.id
-            )
-            
-            # AUDIT ENG-2 FIX: same race protection as the instant-connect
-            # branch above — see that block's comment for the full
-            # reasoning. Here the losing side's own request is what's being
-            # rejected by uq_connections_pair, so the graceful response
-            # reflects whatever connection state actually won the race.
-            try:
-                db.session.commit()
-            except IntegrityError:
-                db.session.rollback()
-                current_app.logger.info(
-                    f"Connection request race detected (uq_connections_pair): "
-                    f"{current_user.id} <-> {user_id}"
-                )
-                existing = Connection.query.filter(
-                    or_(
-                        and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                        and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-                    )
-                ).first()
-                return jsonify({
-                    "status": "success",
-                    "message": "Connection request already pending" if existing and existing.status == "pending" else "Already connected",
-                    "data": {
-                        "connection_id": existing.id if existing else None,
-                        "is_instant": False,
-                        "connection_status": (existing.status if existing else "pending"),
-                        "receiver": {
-                            "id": target_user.id,
-                            "name": target_user.name,
-                            "username": target_user.username,
-                            "avatar": target_user.avatar
-                        }
-                    }
-                }), 200
-            
-            return jsonify({
-                "status": "success",
-                "message": "Connection request sent (awaiting approval)",
-                "data": {
-                    "connection_id": connection.id,
-                    "is_instant": False,  # ← Frontend uses this
-                    "connection_status": "pending",
-                    "requested_at": connection.requested_at.isoformat(),
-                    "compatibility": {
-                        "score": compatibility_score,
-                        "note": "Compatibility below 70% - requires approval"
-                    },
-                    "receiver": {
-                        "id": target_user.id,
-                        "name": target_user.name,
-                        "username": target_user.username,
-                        "avatar": target_user.avatar,
-                        "reputation_level": target_user.reputation_level
-                    }
-                }
-            }), 201
-        
-    except Exception as e:
+
+        notify_after_commit(
+            notification_service.notify_connection_request,
+            user_id, current_user.name, current_user.id,
+        )
+
+        return jsonify({
+            "status": "success",
+            "message": "Connection request sent (awaiting approval)",
+            "data": {
+                "connection_id": connection_id,
+                "is_instant": False,  # Frontend uses this
+                "connection_status": "pending",
+                "requested_at": requested_at.isoformat(),
+                "compatibility": {
+                    "score": compatibility_score,
+                    "note": "Compatibility below 70% - requires approval"
+                },
+                "receiver": _receiver_payload(target_user, with_reputation=True),
+            }
+        }), 201
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Send connection request error: ", exc_info=True)
-        return error_response("Failed to send connection request")
+        current_app.logger.error("Send connection request error", exc_info=True)
+        return error_response("Failed to send connection request", 500)
+
 
 @connections_crud_bp.route("/connections/accept/<int:request_id>", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
