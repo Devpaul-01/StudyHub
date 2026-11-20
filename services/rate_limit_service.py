@@ -74,6 +74,24 @@ def ip_key() -> str:
     return ip
 
 
+def _user_id_from_request_token():
+    """Verified user_id from the Bearer header / access_token cookie, else None."""
+    try:
+        import jwt
+        token = None
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+        if not token:
+            token = request.cookies.get("access_token")
+        if not token:
+            return None
+        payload = jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=["HS256"])
+        return payload.get("user_id")
+    except Exception:
+        return None
+
+
 def user_or_ip_key() -> str:
     """
     Per-user key for authenticated routes, falling back to IP for routes
@@ -88,6 +106,16 @@ def user_or_ip_key() -> str:
     @token_required-protected route below.
     """
     user_id = getattr(g, "current_user_id", None)
+
+    # Audit CON-18: @limiter.limit(...) sits ABOVE @token_required, so the
+    # limit is evaluated BEFORE token_required has had a chance to set
+    # g.current_user_id — which silently made every "per-user" key fall back
+    # to the IP (campus NAT => unrelated students sharing one bucket). Read
+    # the user id straight from the (signature-verified) JWT instead; no DB
+    # hit, and an invalid/missing token simply falls back to the IP.
+    if not user_id:
+        user_id = _user_id_from_request_token()
+
     if user_id:
         key = f"user:{user_id}"
         logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")
@@ -130,6 +158,24 @@ def init_app(app) -> Limiter:
     """
     storage_uri = app.config.get("RATE_LIMIT_STORAGE_URI", "memory://")
     is_redis = storage_uri.startswith("redis://") or storage_uri.startswith("rediss://")
+
+    # Audit CON-18: per-instance counters (memory://) silently multiply every
+    # limit by the number of workers. Refuse to boot that combination in a
+    # multi-worker deployment; shout loudly for a single worker.
+    if not is_redis and not app.testing and not app.debug:
+        import os
+        try:
+            workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+        except ValueError:
+            workers = 1
+        msg = (
+            "[RATE_LIMIT] RATE_LIMIT_STORAGE_URI is not Redis (%s): limits are "
+            "per-process, so effective limits are multiplied by the worker count."
+            % storage_uri
+        )
+        if workers > 1:
+            raise RuntimeError(msg + f" Refusing to start with WEB_CONCURRENCY={workers}.")
+        logger.error(msg)
 
     logger.info(f"[RATE_LIMIT] ⚙️ Initializing with storage: {storage_uri}")
     logger.info(f"[RATE_LIMIT] ⚙️ Storage type: {'Redis' if is_redis else 'Memory'}")
