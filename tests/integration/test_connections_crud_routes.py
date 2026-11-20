@@ -64,7 +64,7 @@ class TestAcceptConnection:
 
         resp = client.post(f"/student/connections/accept/{conn.id}", headers=headers)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 403  # CON-22: consistent with reject/cancel
         assert "Not authorized" in resp.get_json()["message"]
 
     def test_already_accepted_request_cannot_be_accepted_again(
@@ -86,7 +86,7 @@ class TestAcceptConnection:
 
         resp = client.post("/student/connections/accept/999999", headers=headers)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 404  # CON-22
         assert "not found" in resp.get_json()["message"].lower()
 
 

@@ -1848,41 +1848,46 @@ def send_connection_request(current_user, user_id):
 @token_required
 def accept_connection(current_user, request_id):
     """
-    Accept a connection request
+    Accept a connection request.
+
+    Audit CON-08: the pending -> accepted transition is a single conditional
+    UPDATE, so it can never resurrect a connection that was blocked/cancelled
+    between the read and the write. CON-09: the notification is sent after
+    the commit. CON-22: 404/403 like reject/cancel.
     """
     try:
         connection = Connection.query.get(request_id)
-        
+
         if not connection:
-            return error_response("Connection request not found")
-        
+            return error_response("Connection request not found", 404)
+
         # Verify user is the receiver
         if connection.receiver_id != current_user.id:
-            return error_response("Not authorized to accept this request")
-        
-        if connection.status != "pending":
-            return error_response("Request is not pending")
-        
-        # Accept connection
-        connection.status = "accepted"
-        connection.responded_at = datetime.datetime.utcnow()
-        
-        # Create notification for requester
-        notification_service.notify_connection_accepted(
-            connection.requester_id, current_user.name, current_user.id
-        )
-        
-        db.session.commit()
-        
-        # Get requester info
-        requester = User.query.get(connection.requester_id)
+            return error_response("Not authorized to accept this request", 403)
 
-        # Activity feed: single row from the acceptor's side (current_user
-        # just "connected with" requester), not one per party — a party's
-        # own accepted connections are exactly who _broadcast_to_connections
-        # fans this out to, matching the "connections (both parties)" scope
-        # in the Live Activity design doc by reaching each side's own
-        # network, not by writing the row twice.
+        if connection.status != "pending":
+            return error_response("Request is not pending", 400)
+
+        requester_id = connection.requester_id
+        connection_id = connection.id
+
+        if not accept_pending_connection(connection_id, current_user.id):
+            # Lost a race with cancel / block / another accept.
+            db.session.rollback()
+            return error_response("Request is no longer pending", 409)
+
+        db.session.commit()
+        invalidate_pair_caches(current_user.id, requester_id)
+
+        notify_after_commit(
+            notification_service.notify_connection_accepted,
+            requester_id, current_user.name, current_user.id,
+        )
+
+        requester = User.query.get(requester_id)
+
+        # Activity feed: single row from the acceptor's side (fans out to the
+        # acceptor's own connections). record_live_activity swallows errors.
         record_live_activity(
             current_user.id,
             'connection_accepted',
@@ -1895,7 +1900,7 @@ def accept_connection(current_user, request_id):
         return success_response(
             "Connection accepted",
             data={
-                "connection_id": connection.id,
+                "connection_id": connection_id,
                 "connected_user": {
                     "id": requester.id,
                     "name": requester.name,
@@ -1904,11 +1909,11 @@ def accept_connection(current_user, request_id):
                 }
             }
         )
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Accept connection error: ", exc_info=True)
-        return error_response("Failed to accept connection")
+        current_app.logger.error("Accept connection error", exc_info=True)
+        return error_response("Failed to accept connection", 500)
 
 
 @connections_crud_bp.route("/connections/reject/<int:request_id>", methods=["POST"])
@@ -1916,33 +1921,33 @@ def accept_connection(current_user, request_id):
 @token_required
 def reject_connection(current_user, request_id):
     """
-    Reject a connection request
+    Reject a connection request (atomic pending -> rejected, audit CON-08).
     """
     try:
         connection = Connection.query.get(request_id)
-        
+
         if not connection:
-            return error_response("Connection request not found")
-        
+            return error_response("Connection request not found", 404)
+
         # Verify user is the receiver
         if connection.receiver_id != current_user.id:
             return error_response("Not authorized to reject this request", 403)
-        
+
         if connection.status != "pending":
             return error_response("Request is not pending", 400)
-        
-        # Reject connection
-        connection.status = "rejected"
-        connection.responded_at = datetime.datetime.utcnow()
-        
+
+        if not reject_pending_connection(connection.id, current_user.id):
+            db.session.rollback()
+            return error_response("Request is no longer pending", 409)
+
         db.session.commit()
-        
+
         return success_response("Connection request rejected")
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Reject connection error: ", exc_info=True)
-        return error_response("Failed to reject connection")
+        current_app.logger.error("Reject connection error", exc_info=True)
+        return error_response("Failed to reject connection", 500)
 
 
 @connections_crud_bp.route("/connections/cancel/<int:request_id>", methods=["DELETE"])
@@ -1950,31 +1955,37 @@ def reject_connection(current_user, request_id):
 @token_required
 def cancel_connection_request(current_user, request_id):
     """
-    Cancel a pending connection request you sent
+    Cancel a pending connection request you sent.
+
+    Audit CON-08: a conditional DELETE (status='pending'), so a cancel that
+    races with the receiver's accept can no longer delete the now-accepted
+    connection.
     """
     try:
         connection = Connection.query.get(request_id)
-        
+
         if not connection:
             return error_response("Connection request not found", 404)
-        
+
         # Verify user is the requester
-        if connection.requester_id !=     current_user.id:
+        if connection.requester_id != current_user.id:
             return error_response("Not authorized to cancel this request", 403)
-        
+
         if connection.status != "pending":
             return error_response("Request is not pending", 400)
-        
-        # Delete the request
-        db.session.delete(connection)
+
+        if not cancel_pending_connection(connection.id, current_user.id):
+            db.session.rollback()
+            return error_response("Request is no longer pending", 409)
+
         db.session.commit()
-        
+
         return success_response("Connection request cancelled")
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Cancel connection error: ", exc_info=True)
-        return error_response("Failed to cancel connection")
+        current_app.logger.error("Cancel connection error", exc_info=True)
+        return error_response("Failed to cancel connection", 500)
 
 
 @connections_crud_bp.route("/connections/remove/<int:user_id>", methods=["DELETE"])
@@ -1982,31 +1993,22 @@ def cancel_connection_request(current_user, request_id):
 @token_required
 def remove_connection(current_user, user_id):
     """
-    Remove/unfriend a connection
+    Remove/unfriend a connection (conditional DELETE of an ACCEPTED row).
     """
     try:
-        # Find connection (either direction)
-        connection = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            ),
-            Connection.status == "accepted"
-        ).first()
-        
-        if not connection:
+        if not remove_accepted_connection(current_user.id, user_id):
+            db.session.rollback()
             return error_response("Connection not found", 404)
-        
-        # Delete the connection
-        db.session.delete(connection)
+
         db.session.commit()
-        
+        invalidate_pair_caches(current_user.id, user_id)
+
         return success_response("Connection removed")
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Remove connection error: ", exc_info=True)
-        return error_response("Failed to remove connection")
+        current_app.logger.error("Remove connection error", exc_info=True)
+        return error_response("Failed to remove connection", 500)
 
 # PHASE-1 WIRING FIX: get_mutual_connection_count and get_connection_health
 # used to be defined here. Both now live in services/connection_service.py
