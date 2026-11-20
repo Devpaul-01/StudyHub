@@ -688,11 +688,29 @@ def get_connection_health_batch(user_id, other_user_ids):
 
         now = datetime.datetime.utcnow()
 
+        # Audit CON-23: recency = last real interaction (latest message in
+        # either direction), falling back to when the connection was made.
+        # ONE grouped query for all relevant partners.
+        from models import Message
+        last_msg = {}
+        msg_rows = db.session.query(
+            Message.sender_id, Message.receiver_id, func.max(Message.sent_at)
+        ).filter(
+            or_(
+                and_(Message.sender_id == user_id, Message.receiver_id.in_(relevant_ids)),
+                and_(Message.receiver_id == user_id, Message.sender_id.in_(relevant_ids)),
+            )
+        ).group_by(Message.sender_id, Message.receiver_id).all()
+        for snd, rcv, ts in msg_rows:
+            partner = rcv if snd == user_id else snd
+            if ts and (partner not in last_msg or ts > last_msg[partner]):
+                last_msg[partner] = ts
+
         for other_id in relevant_ids:
             connection = conn_by_other[other_id]
             score = 100
 
-            last_interaction = connection.responded_at or connection.requested_at
+            last_interaction = last_msg.get(other_id) or connection.responded_at or connection.requested_at
             days_since = (now - last_interaction).days if last_interaction else 999
 
             if days_since > 30:
