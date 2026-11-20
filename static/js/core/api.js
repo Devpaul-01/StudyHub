@@ -359,6 +359,7 @@ async refreshAccessToken() {
       if (!response.ok) {
         const err = new Error(data.message || 'Request failed');
         err.status = response.status;
+        err.data = data;   // full error body (callers may need data.data / data.errors)
         throw err;
       }
       

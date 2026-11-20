@@ -261,6 +261,9 @@
     </div>
     <a href="/student/reset-password" class="forgot-password-link">Forgot password?</a>
 </div>
+<p class="auth-resume-hint" style="text-align:center;font-size:0.85rem;opacity:0.8;margin:0.5rem 0;">
+    Didn't finish signing up? <a href="/student/register">Start again with your email</a> and we'll send a new link.
+</p>
 
 
 
@@ -303,6 +306,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         const oauthErrorMessages = {
             oauth_failed: 'Google sign-in failed. Please try again or log in with your password.',
             account_exists_use_password: 'An account already exists for that email. Please log in with your password.',
+            email_not_verified: 'Google has not verified that email address, so we cannot use it to sign you in.',
+            account_inactive: 'This account is not active. Please contact support.',
         };
         showToast(oauthErrorMessages[oauthError] || 'Google sign-in failed. Please try again.', 'error', 7000);
         // Strip the query param so a page refresh doesn't re-show the toast.

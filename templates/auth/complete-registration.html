@@ -206,9 +206,20 @@
                         checkText.textContent = 'Available!';
                     }
                 } catch (error) {
-                    checkDiv.className = 'username-check taken';
-                    checkIcon.textContent = '❌';
-                    checkText.textContent = 'Already taken';
+                    if (error.status === 429) {
+                        // Rate limited: say so instead of claiming the name is taken.
+                        checkDiv.className = 'username-check checking';
+                        checkIcon.textContent = '⏳';
+                        checkText.textContent = 'Too many checks - wait a moment';
+                    } else if (error.status === 400 && /taken/i.test(error.message || '')) {
+                        checkDiv.className = 'username-check taken';
+                        checkIcon.textContent = '❌';
+                        checkText.textContent = 'Already taken';
+                    } else {
+                        checkDiv.className = 'username-check checking';
+                        checkIcon.textContent = '⚠️';
+                        checkText.textContent = "Couldn't check right now";
+                    }
                 }
             }, 500);
         });

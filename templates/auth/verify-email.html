@@ -203,7 +203,13 @@
             } catch (error) {
                 console.error('Verification error:', error);
                 showState('error-state');
-                errorMessage.textContent = 'Verification failed. Please check your connection and try again.';
+                if (error.status && error.message) {
+                    // e.g. "This link was already used. Sign in to continue, or request a
+                    // new link from the sign-up page." -- show the server's explanation.
+                    errorMessage.textContent = error.message;
+                } else {
+                    errorMessage.textContent = 'Verification failed. Please check your connection and try again.';
+                }
             }
         }
 

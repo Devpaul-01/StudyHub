@@ -112,11 +112,10 @@
                            placeholder="john@university.edu"
                            required>
                     <span class="form-error hidden" id="email_error"></span>
-                    <span class="form-help" id="email_help">We'll send a verification link to this email</span>
+                    <span class="form-help" id="email_help">We'll email you a link to continue. Started signing up before? Enter the same email and we'll send a new link.</span>
                 </div>
 
                 <!-- Hidden flag: set to "true" by JS when email comes from Google OAuth -->
-                <input type="hidden" id="google_verified" name="google_verified" value="false">
               
                 <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">
                     Create Account
@@ -145,39 +144,6 @@
 // ✅ COMPLETELY FIXED Registration JavaScript
 document.addEventListener("DOMContentLoaded", async () => {
     console.log("✅ Registration page loaded");
-    
-    // Check for Google OAuth data
-    try {
-        const result = await api.get("/google_temp_info");
-        const data = result.data || result;
-        
-        if (data.email) {
-            const emailInput = document.getElementById("email");
-            emailInput.value = data.email;
-            emailInput.readOnly = true;
-            emailInput.classList.add("input-verified");
-
-            // Mark as Google-verified so the backend skips email verification
-            document.getElementById("google_verified").value = "true";
-
-            // Update help text to reflect no verification email will be sent
-            const helpEl = document.getElementById("email_help");
-            if (helpEl) {
-                helpEl.innerHTML = '✅ Verified via Google &mdash; no confirmation email needed';
-                helpEl.style.color = "var(--color-success, #22c55e)";
-            }
-
-            if (typeof showToast === 'function') {
-                showToast("Email verified via Google — you're good to go!", "success");
-            }
-        }
-        
-        if (data.name) {
-            document.getElementById("full_name").value = data.name;
-        }
-    } catch (error) {
-        console.error("Error fetching Google info:", error);
-    }
     
     // ✅ FIXED: Google OAuth button with correct path
     const googleBtn = document.getElementById("google-register-btn");
@@ -229,10 +195,7 @@ async function handleRegistration(e) {
     const formData = new FormData(e.target);
     const data = {
         full_name: formData.get("full_name"),
-        email: formData.get("email"),
-      
-        // Pass the boolean — "true" string → true, anything else → false
-        google_verified: formData.get("google_verified") === "true"
+        email: formData.get("email")
     };
     
     console.log("Form data:", data);
@@ -253,24 +216,15 @@ async function handleRegistration(e) {
         console.log("Registration result:", result);
         
         if (result.status === "success") {
-            if (result.data && result.data.redirect_url) {
-                // Google-verified path: skip email check, go straight to onboarding
-                if (typeof showToast === 'function') {
-                    showToast(result.message, "success", 3000);
-                }
-                setTimeout(() => {
-                    window.location.href = result.data.redirect_url;
-                }, 1000);
+            // The answer is the same for new and existing addresses (no account
+            // enumeration): tell the user what to do next, whichever case it is.
+            if (typeof showToast === 'function') {
+                showToast(result.message, "success", 8000);
             } else {
-                // Standard path: verification email sent
-                if (typeof showToast === 'function') {
-                    showToast(result.message, "success", 5000);
-                } else {
-                    alert(result.message);
-                }
-                e.target.reset();
-                await clearGoogleSession();
+                alert(result.message);
             }
+            e.target.reset();
+            await clearGoogleSession();
         } else {
             throw new Error(result.message || "Registration failed");
         }
@@ -279,14 +233,7 @@ async function handleRegistration(e) {
         
         const errorMsg = error.message || "Registration failed. Please try again.";
         
-        if (errorMsg.includes("Email already registered")) {
-            showFieldError("email", "This email is already registered");
-            if (typeof showToast === 'function') {
-                showToast("Email already registered. Try logging in instead.", "error");
-            } else {
-                alert("Email already registered. Try logging in instead.");
-            }
-        } else if (errorMsg.includes("Invalid email")) {
+        if (errorMsg.includes("Invalid email")) {
             showFieldError("email", "Please enter a valid email address");
         } else {
             if (typeof showToast === 'function') {
