@@ -852,11 +852,8 @@
         </div>`;
 
     try {
-        const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
-        if (!email) throw new Error('Email not found');
-
-        // ✅ Updated to use global API client
-        const result = await api.get(`/connections/suggestions-by-email/${email}`);
+        // The server identifies the user from the session cookie; no email in the URL.
+        const result = await api.get('/connections/onboarding/suggestions');
 
         if (result.status === 'success') {
             const matches = result.data.matches;
@@ -883,13 +880,20 @@
     }
 }
 
+    // Names, usernames and departments are user-controlled: never inject them raw.
+    function escapeHtml(value) {
+      return String(value === null || value === undefined ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function renderUserCards(matches) {
       const container = document.getElementById('users-container');
       container.innerHTML = '';
 
       matches.forEach(match => {
         const user  = match.user;
-        const score = match.match_score || 0;
+        const score = (typeof match.match_score === 'number') ? match.match_score : null;
         const reasons = (match.reasons || []).slice(0, 3);
 
         const card = document.createElement('div');
@@ -899,30 +903,30 @@
         card.innerHTML = `
           <div class="avatar-wrap">
             <div class="avatar-ring"></div>
-            <img src="${user.avatar || '/static/default-avatar.png'}"
-                 alt="${user.name}"
+            <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}"
+                 alt="${escapeHtml(user.name)}"
                  class="avatar-img"
                  onerror="this.src='/static/default-avatar.png'">
           </div>
           <div class="user-info">
             <div class="user-name-row">
-              <span class="user-name">${user.name}</span>
-              <span class="user-handle">@${user.username}</span>
+              <span class="user-name">${escapeHtml(user.name)}</span>
+              <span class="user-handle">@${escapeHtml(user.username)}</span>
             </div>
             <div class="user-meta">
-              ${user.department ? `<span class="badge badge-dept">📚 ${user.department}</span>` : ''}
-              <span class="badge badge-score">⚡ ${score}% match</span>
-              <span class="badge badge-rep">⭐ ${user.reputation_level || 'Member'}</span>
+              ${user.department ? `<span class="badge badge-dept">📚 ${escapeHtml(user.department)}</span>` : ''}
+              ${score !== null ? `<span class="badge badge-score">⚡ ${score}% match</span>` : ''}
+              <span class="badge badge-rep">⭐ ${escapeHtml(user.reputation_level || 'Member')}</span>
             </div>
             ${reasons.length ? `
               <div class="match-reasons">
-                ${reasons.map(r => `<span class="reason-pill">${r}</span>`).join('')}
+                ${reasons.map(r => `<span class="reason-pill">${escapeHtml(r)}</span>`).join('')}
               </div>` : ''}
           </div>
           <div class="user-action">
             <button id="connect-${user.id}"
                     class="connect-btn"
-                    onclick="connectUser(${user.id}, this)">
+                    onclick="connectUser(${Number(user.id)}, this)">
               Connect
             </button>
           </div>`;
@@ -932,7 +936,7 @@
     }
 
     // =========================================================================
-    // CONNECT  — direct accepted connection
+    // CONNECT  — sends a normal connection request (the other person must accept)
     // =========================================================================
     async function connectUser(userId, btn) {
     if (!btn) btn = document.getElementById(`connect-${userId}`);
@@ -940,15 +944,12 @@
     btn.textContent = '…';
 
     try {
-        const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
-
-        // ✅ Updated to use global API client
-        const result = await api.post(`/connections/onboard-connect/${email}/${userId}`);
+        const result = await api.post(`/connections/onboarding/connect/${userId}`);
 
         if (result.status === 'success') {
-            btn.textContent = '✓ Connected';
+            btn.textContent = '✓ Request sent';
             btn.classList.add('connected');
-            showToast('Connected!', 'success');
+            showToast('Request sent!', 'success');
         } else {
             btn.disabled = false;
             btn.textContent = 'Connect';
@@ -968,13 +969,10 @@
     const ids = Array.from(cards).map(c => parseInt(c.getAttribute('data-user-id'))).filter(Boolean);
     const allBtn = document.getElementById('connect-all');
     allBtn.disabled = true;
-    allBtn.textContent = 'Connecting…';
+    allBtn.textContent = 'Sending…';
 
     try {
-        const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
-
-        // ✅ Updated to use global API client
-        const result = await api.post(`/connections/onboard-connect-all/${email}`, { ids });
+        const result = await api.post('/connections/onboarding/connect-all', { ids });
 
         if (result.status === 'success') {
             cards.forEach(card => {
@@ -982,12 +980,12 @@
                 const btn = document.getElementById(`connect-${uid}`);
                 if (btn && !btn.classList.contains('connected')) {
                     btn.disabled = true;
-                    btn.textContent = '✓ Connected';
+                    btn.textContent = '✓ Request sent';
                     btn.classList.add('connected');
                 }
             });
-            allBtn.textContent = '✓ All Connected';
-            showToast('All connections accepted!', 'success');
+            allBtn.textContent = '✓ Requests sent';
+            showToast('Connection requests sent!', 'success');
         } else {
             allBtn.disabled = false;
             allBtn.textContent = '✦ Connect with all';
