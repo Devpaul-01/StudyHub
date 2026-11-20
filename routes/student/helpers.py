@@ -153,7 +153,15 @@ def verify_token(token):
     return email
 
 
-def role_required(*allowed_roles: str):
+# Account lifecycle states (User.status). Only "approved" accounts may use
+# the product API. The two pending states exist while a user is still
+# registering/onboarding and are only accepted by routes that explicitly
+# opt in via allow_pending=True (see token_required_allow_pending below).
+STATUS_APPROVED = "approved"
+PENDING_STATUSES = ("pending_onboarding", "pending_verification")
+
+
+def role_required(*allowed_roles: str, allow_pending: bool = False):
     """
     Document 3 §6.1: parameterized replacement for the old hardcoded
     "if user.role != 'student': 403" check inside token_required.
@@ -177,6 +185,14 @@ def role_required(*allowed_roles: str):
     Also sets g.current_user_id right after decoding (zero extra cost —
     the payload is already decoded), so Document 4's rate-limit service
     can key per-user without needing to decode the token a second time.
+
+    Account-status gate (audit AUD-04): a valid JWT is not enough. Users
+    who are still registering hold a JWT (issued after email verification
+    / onboarding) but must not reach product routes. Every route rejects
+    them with 403 `registration_incomplete` unless it opts in with
+    `allow_pending=True`, which additionally accepts the two pending
+    states for users whose email is verified. Any other status (for
+    example a suspended account) is always rejected.
     """
     def decorator(f):
         @wraps(f)
@@ -206,6 +222,19 @@ def role_required(*allowed_roles: str):
                 if user.role not in allowed_roles:
                     raise AuthorizationError("Access denied for this role")
 
+                if user.status != STATUS_APPROVED:
+                    pending_ok = (
+                        allow_pending
+                        and user.status in PENDING_STATUSES
+                        and bool(user.email_verified)
+                    )
+                    if not pending_ok:
+                        return jsonify({
+                            "status":  "error",
+                            "message": "Please complete your registration to continue.",
+                            "code":    "registration_incomplete",
+                        }), 403
+
                 g.current_user_id = user.id
                 try:
                     import sentry_sdk
@@ -225,6 +254,11 @@ def role_required(*allowed_roles: str):
 
 # Preserves every existing `@token_required` call site unchanged (Document 3 §6.1).
 token_required = role_required("student")
+
+# Opt-in variant for the handful of routes a user needs *while* registering
+# (onboarding suggestions/connect, "who am I"). Everything else stays on
+# token_required and is closed to users who have not finished registration.
+token_required_allow_pending = role_required("student", allow_pending=True)
 
 # New in this phase: for the one surviving admin-gated endpoint
 # (POST /leaderboard/snapshot, per Document 1 §6.3) and any future

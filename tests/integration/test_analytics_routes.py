@@ -352,10 +352,10 @@ class TestComparisonStats:
     def test_handles_zero_platform_average_without_crashing(
         self, client, make_user, auth_headers
     ):
-        # No other approved users exist yet besides this one -- the route
-        # must not divide by zero against get_average_user_stats()'s own
-        # possibly-zero averages.
-        user = make_user(total_posts=0, reputation=0, total_helpful=0, status="pending_verification")
+        # This is the only approved user and all its stats are zero, so the
+        # platform averages are zero too -- the route must not divide by
+        # zero against get_average_user_stats()'s own possibly-zero averages.
+        user = make_user(total_posts=0, reputation=0, total_helpful=0, status="approved")
 
         resp = client.get("/student/analytics/comparison", headers=auth_headers(user))
 

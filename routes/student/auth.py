@@ -20,6 +20,7 @@ from extensions import db
 from utils import send_password_reset, send_verification_email
 from .helpers import (
     generate_tokens_for_user, decode_token, verify_token, token_required,
+    token_required_allow_pending,
     success_response, error_response, set_auth_cookies, clear_auth_cookies,
     _build_access_token,
 )
@@ -176,7 +177,7 @@ def _clear_google_oauth_session():
 # GOOGLE OAUTH
 # ============================================================================
 @auth_bp.route("users/me", methods=["GET"])
-@token_required
+@token_required_allow_pending
 def current_user(current_user):
     existing_user = User.query.get(current_user.id)
 
@@ -430,7 +431,7 @@ def clear_session():
 # MISC AUTH ROUTES
 # ============================================================================
 @auth_bp.route("/auth/me", methods=["GET"])
-@token_required
+@token_required_allow_pending
 def get_current_user(current_user):
     return jsonify({
         "status": "success",
@@ -1617,6 +1618,7 @@ def verify_auth():
                     "name":     user.name,
                     "avatar":   user.avatar,
                     "role":     user.role,
+                    "status":   user.status,
                 }
             },
         }), 200
