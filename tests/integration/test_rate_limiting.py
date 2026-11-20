@@ -29,27 +29,48 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
+class TestAuthTiers:
+    def test_check_username_tier_is_30_per_minute(self, client):
+        codes = [client.post("/student/check-username", json={"username": f"abc{i}"}).status_code
+                 for i in range(31)]
+        assert 429 not in codes[:30] and codes[30] == 429
+
+    def test_registration_tier_is_10_per_minute(self, client):
+        codes = [client.post("/student/register", json={"full_name": "X", "email": "bad"}).status_code
+                 for i in range(11)]
+        assert 429 not in codes[:10] and codes[10] == 429
+
+    def test_refresh_token_tier_is_60_per_minute(self, client, csrf_headers):
+        headers = csrf_headers(client)
+        codes = [client.post("/student/refresh-token", headers=headers).status_code for _ in range(61)]
+        assert 429 not in codes[:60] and codes[60] == 429
+
+    def test_reset_flow_keeps_the_strict_5_per_minute_tier(self, client):
+        codes = [client.post("/student/verify-reset/not-a-token").status_code for _ in range(6)]
+        assert 429 not in codes[:5] and codes[5] == 429
+
+
 class TestSensitiveAuthRateLimit:
     def test_login_rate_limit_returns_429_after_tier_limit(self, client):
         """
-        RateLimitTier.SENSITIVE_AUTH = '5 per minute'. The 6th request
-        within the window from the same key (IP, since login is pre-auth
-        and keyed via ip_key()) must be rejected with 429, with the
-        standard error body shape from
-        services/rate_limit_service.py::_rate_limit_exceeded.
+        RateLimitTier.AUTH_ATTEMPT = '20 per minute' per IP (login is pre-auth,
+        keyed via ip_key()). The 21st request within the window must be
+        rejected with 429, with the standard error body shape from
+        services/rate_limit_service.py::_rate_limit_exceeded. (The tier used
+        to be 5/min, which is too tight for students sharing one campus IP;
+        per-account protection is the allow_action counter.)
         """
         payload = {"username_or_email": "nobody@example.com", "password": "wrong"}
 
         statuses = []
-        for _ in range(6):
+        for _ in range(21):
             resp = client.post("/student/login", json=payload)
             statuses.append(resp.status_code)
 
-        # First 5 attempts fail on bad credentials (400), NOT on rate
-        # limiting — only the 6th should be 429. This distinguishes
-        # "rate limiter fired too early" from "rate limiter fired at all".
-        assert statuses[:5] == [400, 400, 400, 400, 400]
-        assert statuses[5] == 429
+        # The first 20 attempts fail on bad credentials (400), NOT on rate
+        # limiting -- only the 21st should be 429.
+        assert statuses[:20] == [400] * 20
+        assert statuses[20] == 429
 
         last_resp = client.post("/student/login", json=payload)
         body = last_resp.get_json()

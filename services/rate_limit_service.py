@@ -53,7 +53,15 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────
 
 class RateLimitTier:
-    SENSITIVE_AUTH = "5 per minute"    # login, register, password-reset-request
+    SENSITIVE_AUTH = "5 per minute"    # password-reset request/verify/set, email verification, resend
+    # Audit AUD-13: login/register/check-username/refresh used to share the 5/min
+    # per-IP tier, which is too tight for a campus where many students share one
+    # NAT address (and made the live username check unusable). The real brute-force
+    # protection for login is the per-account counter (allow_action); the per-IP
+    # tiers below only bound raw request volume.
+    AUTH_ATTEMPT = "20 per minute"     # login (per IP; per-account counter does the real work)
+    REGISTRATION = "10 per minute"     # sign-up (per IP; per-email counter also applies)
+    USERNAME_CHECK = "30 per minute"   # live "is this username free" check while typing
     WRITE_HEAVY = "30 per minute"      # create/update/delete posts, threads, comments, connections...
     AI_EXPENSIVE = "10 per hour"       # AI chat / refinement / meeting-notes — these cost real $ per call
     BURST_OK = "60 per minute"         # reactions, likes, low-risk high-frequency actions
@@ -96,6 +104,55 @@ def user_or_ip_key() -> str:
     ip = get_remote_address()
     logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {ip} (fallback to IP)")
     return ip
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PER-IDENTIFIER ACTION LIMITS  (audit AUD-13)
+#
+# IP-based limits cannot stop mail flooding of one victim address or
+# credential stuffing of one account from many IPs. allow_action() counts
+# attempts per (scope, identifier) in Redis, so every app instance shares
+# the counter. The identifier (an email, say) is hashed before it becomes
+# part of a key. Like the rest of this module it fails OPEN if Redis is
+# unavailable: a Redis outage must not lock people out of logging in.
+# ─────────────────────────────────────────────────────────────────────────
+
+def allow_action(scope: str, identifier: str, limit: int, window_seconds: int) -> bool:
+    """
+    Count one attempt of ``scope`` for ``identifier`` and return False once
+    more than ``limit`` attempts happened in the current fixed window.
+    """
+    import hashlib
+    import extensions
+
+    client = extensions.redis_client
+    if client is None or not identifier:
+        return True
+    digest = hashlib.sha256(identifier.strip().lower().encode("utf-8")).hexdigest()[:32]
+    key = f"sh:1:rl:{scope}:{digest}"
+    try:
+        count = client.incr(key)
+        if count == 1:
+            client.expire(key, window_seconds)
+        return count <= limit
+    except Exception as exc:  # noqa: BLE001 - fail open on any Redis problem
+        logger.warning("[RATE_LIMIT] allow_action fail-open for scope=%s: %s", scope, exc)
+        return True
+
+
+def reset_action(scope: str, identifier: str) -> None:
+    """Forget the counter for (scope, identifier), e.g. after a successful login."""
+    import hashlib
+    import extensions
+
+    client = extensions.redis_client
+    if client is None or not identifier:
+        return
+    digest = hashlib.sha256(identifier.strip().lower().encode("utf-8")).hexdigest()[:32]
+    try:
+        client.delete(f"sh:1:rl:{scope}:{digest}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[RATE_LIMIT] reset_action failed for scope=%s: %s", scope, exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────
