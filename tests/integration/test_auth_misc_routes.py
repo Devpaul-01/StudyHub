@@ -129,32 +129,6 @@ class TestStaticPages:
 
 
 # ============================================================================
-# GET /onboard/suggestions-by-email/<email>
-# ============================================================================
-
-class TestOnboardSuggestionsByEmail:
-    def test_unknown_email_returns_error(self, client):
-        resp = client.get(
-            "/student/onboard/suggestions-by-email/nobody@example.com"
-        )
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_known_email_returns_fallback_top_users(self, client, make_user):
-        target = make_user(status="pending_onboarding")
-        make_user(reputation=500, status="approved")
-
-        resp = client.get(
-            f"/student/onboard/suggestions-by-email/{target.email}"
-        )
-
-        assert resp.status_code == 200
-        matches = resp.get_json()["data"]["matches"]
-        assert len(matches) >= 1
-        assert "match_score" in matches[0]
-
-
-# ============================================================================
 # POST /validate-user
 # ============================================================================
 

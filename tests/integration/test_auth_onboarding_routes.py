@@ -1,41 +1,54 @@
 """
 tests/integration/test_auth_onboarding_routes.py
 
-Covers the remaining untested onboarding-flow routes in
-routes/student/auth.py: GET/POST /onboard/<email> (the main onboarding
-form submission), POST /onboard/request-all/<email> (sends connection
-requests during onboarding), GET /onboard/suggestions/<token> (JWT-token
-variant of the suggestions-by-email route covered in Batch 40), and
-GET/POST /complete-registration. Google OAuth /start and /callback are
-left untested -- they require a real OAuth round trip this test
-environment cannot simulate.
+GET/POST /student/onboard/<email> and GET/POST /student/complete-registration.
 
-Both onboard() and complete_registration() authorize the caller via
-_is_request_authorized_for_email(), which accepts either a matching
-session["google_email"] or a matching JWT access-token cookie. Tests use
-whichever proof fits the scenario -- a session value for "mid-onboarding,
-no JWT yet" cases, and auth_headers() (a real JWT cookie) once a user is
-far enough along to have one. complete_registration() also accepts a
-verification token (utils.generate_verification_token-shaped JWT) as a
-third proof, used directly here via jwt.encode with the test SECRET_KEY.
+Both POST routes authorise the caller through _is_request_authorized_for_email():
+either a matching session["google_email"] (new Google user, no JWT yet) or a
+matching access_token cookie. Google OAuth /start and /callback need a real
+OAuth round trip and are covered in test_auth_google_callback.py with the
+OAuth client stubbed.
+
+The legacy /onboard/suggestions*, /onboard/request-all* routes and the
+verification-JWT proof were removed (audit AUD-09/16); the authenticated
+replacements are tested in test_connections_onboarding_routes.py.
 """
+import json
 
-import datetime
-
-import jwt
 import pytest
+from werkzeug.security import check_password_hash
+
+from models import OnboardingDetails, User, StudentProfile
 
 pytestmark = pytest.mark.integration
 
+VALID_ANSWERS = {
+    "name": "Updated Name",
+    "department": "Computer Science",
+    "class_level": "200 Level",
+    "subjects": ["Math", "Physics"],
+    "learning_style": "visual",
+    "study_preferences": ["group-study"],
+    "help_subjects": ["Math"],
+    "strong_subjects": ["Physics"],
+    "study_schedule": {"Monday": ["evening"]},
+    "session_length": "1-hour",
+}
 
-def _verification_token(email, secret_key="test-secret-key-not-for-production", hours=5):
-    """Build a utils.generate_verification_token-shaped JWT by hand."""
-    payload = {
-        "email": email,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=hours),
-        "iat": datetime.datetime.utcnow(),
-    }
-    return jwt.encode(payload, secret_key, algorithm="HS256")
+
+def _google_proof(client, email):
+    with client.session_transaction() as sess:
+        sess["google_email"] = email
+
+
+def _cookie_login(client, user):
+    from routes.student.helpers import _build_access_token
+    client.set_cookie("access_token", _build_access_token(user))
+
+
+def _registering(make_user, email, status="pending_verification", **kw):
+    return make_user(email=email, username=None, pin="PENDING_VERIFICATION",
+                     status=status, email_verified=kw.pop("email_verified", True), **kw)
 
 
 # ============================================================================
@@ -44,267 +57,139 @@ def _verification_token(email, secret_key="test-secret-key-not-for-production", 
 
 class TestOnboardGet:
     def test_renders_onboard_page(self, client):
-        resp = client.get("/student/onboard/someone@example.com")
-
-        assert resp.status_code == 200
+        assert client.get("/student/onboard/someone@example.com").status_code == 200
 
 
 class TestOnboardPost:
     def test_requires_authorization(self, client, make_user):
         user = make_user(email="noauth@example.com", status="pending_onboarding")
-
-        resp = client.post(
-            f"/student/onboard/{user.email}",
-            json={"name": "New Name"},
-        )
-
+        resp = client.post(f"/student/onboard/{user.email}", json={"name": "New Name"})
         assert resp.status_code == 401
-        assert resp.get_json()["status"] == "error"
 
-    def test_rejects_when_no_data_provided(self, client, make_user):
-        user = make_user(email="nodat@example.com", status="pending_onboarding")
-
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        resp = client.post(f"/student/onboard/{user.email}", data="")
-
-        assert resp.get_json()["status"] == "error"
+    def test_non_json_body_rejected(self, client, make_user):
+        user = _registering(make_user, "nodat@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        resp = client.post(f"/student/onboard/{user.email}", data=json.dumps(VALID_ANSWERS),
+                           content_type="text/plain")
+        assert resp.status_code == 400
 
     def test_unknown_user_rejected(self, client):
-        with client.session_transaction() as sess:
-            sess["google_email"] = "ghost@example.com"
+        _google_proof(client, "ghost@example.com")
+        resp = client.post("/student/onboard/ghost@example.com", json=VALID_ANSWERS)
+        assert resp.status_code == 404
 
-        resp = client.post(
-            "/student/onboard/ghost@example.com", json={"name": "Ghost"}
-        )
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_saves_onboarding_details_and_issues_tokens(
+    def test_saves_details_issues_tokens_and_returns_valid_redirect(
         self, client, db_session, make_user, make_student_profile
     ):
-        user = make_user(email="onboarding@example.com", status="pending_onboarding")
+        user = _registering(make_user, "onboarding@example.com", status="pending_onboarding")
         make_student_profile(user)
-
         with client.session_transaction() as sess:
             sess["google_email"] = user.email
             sess["google_name"] = "Google Name"
             sess["google_id"] = "google-sub-123"
 
-        resp = client.post(
-            f"/student/onboard/{user.email}",
-            json={
-                "name": "Updated Name",
-                "department": "Computer Science",
-                "class_level": "200",
-                "subjects": ["Math", "Physics"],
-                "learning_style": "visual",
-                "study_preferences": ["group"],
-                "help_subjects": ["Math"],
-                "strong_subjects": ["Physics"],
-                "study_schedule": {"monday": ["evening"]},
-                "session_length": "60",
-            },
-        )
+        resp = client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS)
 
         assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["status"] == "success"
-        assert body["data"]["redirect"] == f"/student/complete-registration/{user.email}"
-
+        assert resp.get_json()["data"]["redirect"] == "/student/complete-registration?email=onboarding%40example.com"
         db_session.refresh(user)
-        assert user.name == "Updated Name"
+        assert user.name == "Updated Name" and user.status == "pending_verification"
+        details = OnboardingDetails.query.filter_by(user_id=user.id).one()
+        assert details.department == "Computer Science" and details.subjects == ["Math", "Physics"]
+        assert details.class_level == "200 Level"
+        assert StudentProfile.query.filter_by(user_id=user.id).one().class_name == "200 Level"
+        assert any(c.startswith("access_token=") for c in resp.headers.getlist("Set-Cookie"))
+        with client.session_transaction() as sess:
+            assert not {"google_email", "google_name", "google_id"} & set(sess)
+
+    def test_email_match_is_case_insensitive(self, client, make_user):
+        user = _registering(make_user, "case@example.com", status="pending_onboarding")
+        _google_proof(client, "CASE@example.com")
+        assert client.post("/student/onboard/CASE@Example.com", json=VALID_ANSWERS).status_code == 200
+
+    def test_resubmission_updates_the_same_row(self, client, make_user, csrf_headers):
+        user = _registering(make_user, "reonboard@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        client.post(f"/student/onboard/{user.email}", json={**VALID_ANSWERS, "department": "Biology"})
+        # The first response logged the user in, so the second request carries
+        # an access cookie and must pass the normal double-submit CSRF check.
+        resp = client.post(f"/student/onboard/{user.email}", json={**VALID_ANSWERS, "department": "Chemistry"},
+                           headers=csrf_headers(client))
+        assert resp.status_code == 200
+        rows = OnboardingDetails.query.filter_by(user_id=user.id).all()
+        assert len(rows) == 1 and rows[0].department == "Chemistry"
+
+    def test_approved_user_updates_preferences_without_status_change_or_new_tokens(
+        self, client, db_session, make_user, make_student_profile, csrf_headers
+    ):
+        user = make_user(email="approved@example.com", status="approved")
+        make_student_profile(user)
+        _cookie_login(client, user)
+        resp = client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS, headers=csrf_headers(client))
+        assert resp.status_code == 200
+        db_session.refresh(user)
+        assert user.status == "approved"
+        assert OnboardingDetails.query.filter_by(user_id=user.id).one().department == "Computer Science"
+        assert not any(c.startswith(("access_token=", "refresh_token=")) for c in resp.headers.getlist("Set-Cookie"))
+
+    def test_pending_verification_user_stays_pending(self, client, db_session, make_user):
+        user = _registering(make_user, "stay@example.com", status="pending_verification")
+        _google_proof(client, user.email)
+        assert client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS).status_code == 200
+        db_session.refresh(user)
         assert user.status == "pending_verification"
 
-        from models import OnboardingDetails
-        details = OnboardingDetails.query.filter_by(user_id=user.id).first()
-        assert details is not None
-        assert details.department == "Computer Science"
-        assert details.subjects == ["Math", "Physics"]
+    def test_unverified_email_cannot_onboard(self, client, make_user):
+        user = _registering(make_user, "unver@example.com", email_verified=False)
+        _google_proof(client, user.email)
+        assert client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS).status_code == 403
 
-        # Auto-login issues a JWT cookie for the new user.
-        assert resp.headers.getlist("Set-Cookie")
+    def test_suspended_account_rejected(self, client, make_user):
+        user = make_user(email="susp@example.com", status="suspended")
+        _google_proof(client, user.email)
+        assert client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS).status_code == 403
 
-        # And clears the now-unneeded Google-OAuth session state.
-        with client.session_transaction() as sess:
-            assert "google_email" not in sess
-            assert "google_name" not in sess
-            assert "google_id" not in sess
+    def test_cookie_authenticated_request_needs_csrf_header(self, client, make_user):
+        user = _registering(make_user, "csrf@example.com")
+        _cookie_login(client, user)
+        assert client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS).status_code == 403
 
-    def test_updates_existing_onboarding_details_row(
-        self, client, db_session, make_user, make_student_profile
-    ):
-        user = make_user(email="reonboard@example.com", status="pending_onboarding")
-        make_student_profile(user)
+    @pytest.mark.parametrize("field,value", [
+        ("class_level", "200"),
+        ("learning_style", "telepathic"),
+        ("session_length", "forever"),
+        ("study_preferences", ["nope"]),
+        ("study_schedule", {"Funday": ["morning"]}),
+        ("study_schedule", {"Monday": ["midnight"]}),
+        ("study_schedule", ["Monday"]),
+        ("subjects", "Math"),
+        ("subjects", [1, 2]),
+        ("subjects", ["x"] * 31),
+        ("subjects", ["y" * 101]),
+        ("name", 123),
+        ("name", "n" * 101),
+        ("department", ["CS"]),
+        ("department", "d" * 101),
+    ])
+    def test_invalid_answers_rejected_with_field_error(self, client, make_user, field, value):
+        user = _registering(make_user, f"bad-{abs(hash((field, str(value))))}@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        resp = client.post(f"/student/onboard/{user.email}", json={**VALID_ANSWERS, field: value})
+        assert resp.status_code == 400
+        assert field in resp.get_json()["errors"]
+        assert OnboardingDetails.query.filter_by(user_id=user.id).first() is None
 
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        # First submission creates the OnboardingDetails row.
-        client.post(
-            f"/student/onboard/{user.email}",
-            json={"name": "First Pass", "department": "Biology"},
-        )
-
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        # Second submission should update the same row, not create another.
-        resp = client.post(
-            f"/student/onboard/{user.email}",
-            json={"name": "Second Pass", "department": "Chemistry"},
-        )
-
+    def test_free_text_department_and_empty_optionals_are_accepted(self, client, make_user):
+        user = _registering(make_user, "other@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        resp = client.post(f"/student/onboard/{user.email}", json={"department": "Marine Biology"})
         assert resp.status_code == 200
 
-        from models import OnboardingDetails
-        rows = OnboardingDetails.query.filter_by(user_id=user.id).all()
-        assert len(rows) == 1
-        assert rows[0].department == "Chemistry"
-
-
-# ============================================================================
-# POST /onboard/request-all/<email>
-# ============================================================================
-
-class TestOnboardRequestAll:
-    """
-    NEWLY DISCOVERED BUG (found while porting this file to a new branch:
-    the repo's main had moved forward since this file was first written
-    and added a route that shadows the one these tests target):
-
-    routes/student/auth.py used to register both
-      POST /onboard/request-all/<token>
-      POST /onboard/request-all/<email>
-as the same URL shape, so the token route shadowed the email route. It is
-now a single route that dispatches on whether the identifier contains "@"
-(emails always do, verification JWTs never do), so these tests exercise
-the email path directly.
-    """
-
-    def test_requires_authorization(self, client, make_user):
-        user = make_user(email="reqall1@example.com")
-
-        resp = client.post(
-            f"/student/onboard/request-all/{user.email}", json={"ids": [1]}
-        )
-
-        assert resp.status_code == 401
-
-    def test_creates_pending_connections_for_given_ids(
-        self, client, db_session, make_user
-    ):
-        user = make_user(email="reqall2@example.com")
-        target1 = make_user(email="target1@example.com")
-        target2 = make_user(email="target2@example.com")
-
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        resp = client.post(
-            f"/student/onboard/request-all/{user.email}",
-            json={"ids": [target1.id, target2.id]},
-        )
-
-        assert resp.status_code == 200
-        assert resp.get_json()["status"] == "success"
-
-        from models import Connection
-        conns = Connection.query.filter_by(requester_id=user.id).all()
-        assert {c.receiver_id for c in conns} == {target1.id, target2.id}
-        assert all(c.status == "pending" for c in conns)
-
-    def test_skips_ids_with_an_existing_connection_either_direction(
-        self, client, db_session, make_user, make_connection
-    ):
-        user = make_user(email="reqall3@example.com")
-        target = make_user(email="target3@example.com")
-        # Pre-existing connection in the REVERSE direction.
-        make_connection(target, user, status="accepted")
-
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        resp = client.post(
-            f"/student/onboard/request-all/{user.email}",
-            json={"ids": [target.id]},
-        )
-
-        assert resp.status_code == 200
-
-        from models import Connection
-        conns = Connection.query.filter(
-            ((Connection.requester_id == user.id) & (Connection.receiver_id == target.id))
-            | ((Connection.requester_id == target.id) & (Connection.receiver_id == user.id))
-        ).all()
-        # Still just the one pre-existing row -- no duplicate created.
-        assert len(conns) == 1
-        assert conns[0].status == "accepted"
-
-    def test_empty_ids_list_is_a_no_op_success(self, client, make_user):
-        user = make_user(email="reqall4@example.com")
-
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        resp = client.post(
-            f"/student/onboard/request-all/{user.email}", json={"ids": []}
-        )
-
-        assert resp.status_code == 200
-        assert resp.get_json()["status"] == "success"
-
-    def test_unknown_email_rejected(self, client):
-        with client.session_transaction() as sess:
-            sess["google_email"] = "nouser@example.com"
-
-        resp = client.post(
-            "/student/onboard/request-all/nouser@example.com", json={"ids": [1]}
-        )
-
-        assert resp.get_json()["status"] == "error"
-
-
-# ============================================================================
-# GET /onboard/suggestions/<token>  (JWT-token variant of Batch 40's
-# suggestions-by-email route)
-# ============================================================================
-
-class TestOnboardSuggestionsByToken:
-    def test_invalid_token_returns_error(self, client):
-        resp = client.get("/student/onboard/suggestions/not-a-real-token")
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_expired_token_returns_error(self, client, make_user):
-        user = make_user(email="expiredtok@example.com")
-        token = _verification_token(user.email, hours=-1)
-
-        resp = client.get(f"/student/onboard/suggestions/{token}")
-
-        body = resp.get_json()
-        assert body["status"] == "error"
-        assert "expired" in body["message"].lower()
-
-    def test_valid_token_unknown_user_rejected(self, client):
-        token = _verification_token("ghostly@example.com")
-
-        resp = client.get(f"/student/onboard/suggestions/{token}")
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_valid_token_returns_fallback_top_users(self, client, make_user):
-        target = make_user(email="suggtarget@example.com")
-        make_user(reputation=500, status="approved")
-        token = _verification_token(target.email)
-
-        resp = client.get(f"/student/onboard/suggestions/{token}")
-
-        assert resp.status_code == 200
-        matches = resp.get_json()["data"]["matches"]
-        assert len(matches) >= 1
-        assert "match_score" in matches[0]
+    def test_duplicates_are_removed_from_lists(self, client, make_user):
+        user = _registering(make_user, "dups@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        client.post(f"/student/onboard/{user.email}", json={**VALID_ANSWERS, "subjects": ["Math", " Math ", "", "Art"]})
+        assert OnboardingDetails.query.filter_by(user_id=user.id).one().subjects == ["Math", "Art"]
 
 
 # ============================================================================
@@ -313,216 +198,151 @@ class TestOnboardSuggestionsByToken:
 
 class TestCompleteRegistrationGet:
     def test_renders_blank_page_with_no_params(self, client):
-        resp = client.get("/student/complete-registration")
+        assert client.get("/student/complete-registration").status_code == 200
 
+    def test_token_param_is_no_longer_special(self, client):
+        assert client.get("/student/complete-registration?token=garbage").status_code == 200
+
+    def test_onboarding_is_optional_so_pending_onboarding_shows_the_form(self, client, make_user):
+        user = _registering(make_user, "skip@example.com", status="pending_onboarding")
+        resp = client.get(f"/student/complete-registration?email={user.email}")
         assert resp.status_code == 200
-
-    def test_invalid_token_renders_page_with_error(self, client):
-        resp = client.get("/student/complete-registration?token=not-a-real-token")
-
-        assert resp.status_code == 200
-
-    def test_pending_onboarding_user_redirects_to_onboard(self, client, make_user):
-        user = make_user(email="redir1@example.com", status="pending_onboarding")
-
-        resp = client.get(
-            f"/student/complete-registration?email={user.email}",
-            follow_redirects=False,
-        )
-
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith(f"/student/onboard/{user.email}")
 
     def test_approved_user_redirects_to_homepage(self, client, make_user):
-        user = make_user(email="redir2@example.com", status="approved")
+        user = make_user(email="done@example.com", status="approved")
+        resp = client.get(f"/student/complete-registration?email={user.email}")
+        assert resp.status_code == 302 and "/student/profile/homepage" in resp.headers["Location"]
 
-        resp = client.get(
-            f"/student/complete-registration?email={user.email}",
-            follow_redirects=False,
-        )
+    def test_pending_verification_user_shows_form(self, client, make_user):
+        user = _registering(make_user, "pv@example.com")
+        assert client.get(f"/student/complete-registration?email={user.email}").status_code == 200
 
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/student/profile/homepage")
 
-    def test_pending_verification_user_shows_form_not_redirect(self, client, make_user):
-        user = make_user(email="redir3@example.com", status="pending_verification")
-
-        resp = client.get(
-            f"/student/complete-registration?email={user.email}",
-            follow_redirects=False,
-        )
-
-        assert resp.status_code == 200
+def _complete(client, email, username="newuser", password="secret123", confirm=None, **extra):
+    return client.post("/student/complete-registration", json={
+        "email": email, "username": username, "password": password,
+        "confirm_password": password if confirm is None else confirm, **extra,
+    })
 
 
 class TestCompleteRegistrationPost:
-    def test_requires_authorization_without_token(self, client, make_user):
-        user = make_user(
-            email="noauthcr@example.com", status="pending_verification",
-            email_verified=True,
-        )
+    def test_requires_authorization(self, client, make_user):
+        user = _registering(make_user, "noauthcr@example.com")
+        assert _complete(client, user.email).status_code == 401
 
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "email": user.email,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "noauthcr",
-            },
-        )
-
-        assert resp.status_code == 401
+    def test_text_plain_body_rejected(self, client, make_user):
+        user = _registering(make_user, "tp@example.com")
+        _google_proof(client, user.email)
+        body = json.dumps({"email": user.email, "username": "tpuser", "password": "secret123", "confirm_password": "secret123"})
+        resp = client.post("/student/complete-registration", data=body, content_type="text/plain")
+        assert resp.status_code == 400
+        assert User.query.get(user.id).username is None
 
     def test_missing_fields_rejected(self, client):
-        resp = client.post("/student/complete-registration", json={"email": "x@example.com"})
+        assert client.post("/student/complete-registration", json={"email": "x@example.com"}).status_code == 400
 
-        assert resp.get_json()["status"] == "error"
+    def test_non_string_fields_rejected(self, client, make_user):
+        user = _registering(make_user, "ns@example.com")
+        _google_proof(client, user.email)
+        resp = client.post("/student/complete-registration", json={
+            "email": user.email, "username": ["a"], "password": "secret123", "confirm_password": "secret123"})
+        assert resp.status_code == 400
 
     def test_mismatched_passwords_rejected(self, client, make_user):
-        user = make_user(
-            email="mismatch@example.com", status="pending_verification",
-            email_verified=True,
-        )
-        token = _verification_token(user.email)
-
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "secret123",
-                "confirm_password": "different456",
-                "username": "mismatchu",
-            },
-        )
-
-        assert resp.get_json()["status"] == "error"
+        user = _registering(make_user, "mm@example.com")
+        _google_proof(client, user.email)
+        assert _complete(client, user.email, confirm="different1").status_code == 400
 
     def test_short_password_rejected(self, client, make_user):
-        user = make_user(
-            email="shortpw@example.com", status="pending_verification",
-            email_verified=True,
-        )
-        token = _verification_token(user.email)
+        user = _registering(make_user, "sp@example.com")
+        _google_proof(client, user.email)
+        assert _complete(client, user.email, password="abc").status_code == 400
 
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "ab1",
-                "confirm_password": "ab1",
-                "username": "shortpwu",
-            },
-        )
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_invalid_username_format_rejected(self, client, make_user):
-        user = make_user(
-            email="badname@example.com", status="pending_verification",
-            email_verified=True,
-        )
-        token = _verification_token(user.email)
-
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "Has Caps And Spaces",
-            },
-        )
-
-        assert resp.get_json()["status"] == "error"
+    @pytest.mark.parametrize("username", ["ab", "UPPER space", "has-dash", "x" * 21])
+    def test_invalid_username_format_rejected(self, client, make_user, username):
+        user = _registering(make_user, f"iu{abs(hash(username))}@example.com")
+        _google_proof(client, user.email)
+        assert _complete(client, user.email, username=username).status_code == 400
 
     def test_username_already_taken_rejected(self, client, make_user):
-        make_user(username="takenname")
-        user = make_user(
-            email="taken2@example.com", status="pending_verification",
-            email_verified=True,
-        )
-        token = _verification_token(user.email)
+        make_user(email="holder@example.com", username="taken123")
+        user = _registering(make_user, "wants@example.com")
+        _google_proof(client, user.email)
+        resp = _complete(client, user.email, username="taken123")
+        assert resp.status_code == 400 and "taken" in resp.get_json()["message"].lower()
 
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "takenname",
-            },
-        )
+    def test_unverified_email_rejected(self, client, make_user):
+        user = _registering(make_user, "unv@example.com", email_verified=False)
+        _google_proof(client, user.email)
+        assert _complete(client, user.email).status_code == 403
 
-        assert resp.get_json()["status"] == "error"
+    def test_suspended_account_rejected(self, client, make_user):
+        user = make_user(email="susp2@example.com", status="suspended", email_verified=True)
+        _google_proof(client, user.email)
+        assert _complete(client, user.email).status_code == 403
 
-    def test_unverified_email_rejected_by_finalize_password(self, client, make_user):
-        user = make_user(
-            email="unverified@example.com", status="pending_verification",
-            email_verified=False,
-        )
-        token = _verification_token(user.email)
-
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "unverifiedu",
-            },
-        )
-
-        assert resp.get_json()["status"] == "error"
-
-    def test_successful_completion_via_token(self, client, db_session, make_user, make_student_profile):
-        user = make_user(
-            email="complete1@example.com", status="pending_verification",
-            email_verified=True,
-        )
-        make_student_profile(user)
-        token = _verification_token(user.email)
-
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "token": token,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "complete1",
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["status"] == "success"
-        assert body["data"]["username"] == "complete1"
-
+    def test_approved_account_credentials_cannot_be_overwritten(self, client, db_session, make_user, csrf_headers):
+        user = make_user(email="victim@example.com", username="original1", status="approved")
+        old_hash = user.pin
+        _cookie_login(client, user)
+        resp = client.post("/student/complete-registration", headers=csrf_headers(client), json={
+            "email": user.email, "username": "attacker1", "password": "attackerpw1", "confirm_password": "attackerpw1"})
+        assert resp.status_code == 409
         db_session.refresh(user)
-        assert user.username == "complete1"
-        assert user.status == "approved"
+        assert user.username == "original1" and user.pin == old_hash
 
-    def test_successful_completion_via_session_auth(
+    def test_cookie_authenticated_request_needs_csrf_header(self, client, make_user):
+        user = _registering(make_user, "csrfcr@example.com")
+        _cookie_login(client, user)
+        assert _complete(client, user.email).status_code == 403
+
+    def test_success_via_google_session_sets_credentials_and_logs_in(
         self, client, db_session, make_user, make_student_profile
     ):
-        user = make_user(
-            email="complete2@example.com", status="pending_verification",
-            email_verified=True,
-        )
+        user = _registering(make_user, "complete2@example.com")
         make_student_profile(user)
+        _google_proof(client, user.email)
 
-        with client.session_transaction() as sess:
-            sess["google_email"] = user.email
-
-        resp = client.post(
-            "/student/complete-registration",
-            json={
-                "email": user.email,
-                "password": "secret123",
-                "confirm_password": "secret123",
-                "username": "complete2",
-            },
-        )
+        resp = _complete(client, user.email, username="complete2")
 
         assert resp.status_code == 200
-        assert resp.get_json()["status"] == "success"
+        db_session.refresh(user)
+        assert user.status == "approved" and user.username == "complete2"
+        assert check_password_hash(user.pin, "secret123")
+        cookies = resp.headers.getlist("Set-Cookie")
+        assert any(c.startswith("access_token=") for c in cookies)
+        assert any(c.startswith("refresh_token=") for c in cookies)
+        with client.session_transaction() as sess:
+            assert "google_email" not in sess
+
+    def test_success_without_onboarding_for_pending_onboarding_user(self, client, db_session, make_user):
+        user = _registering(make_user, "noonb@example.com", status="pending_onboarding")
+        _google_proof(client, user.email)
+        assert _complete(client, user.email, username="noonb").status_code == 200
+        db_session.refresh(user)
+        assert user.status == "approved"
+        assert OnboardingDetails.query.filter_by(user_id=user.id).first() is None
+
+    def test_success_via_access_cookie_with_csrf(self, client, db_session, make_user, csrf_headers):
+        user = _registering(make_user, "cookie-ok@example.com")
+        _cookie_login(client, user)
+        resp = client.post("/student/complete-registration", headers=csrf_headers(client), json={
+            "email": user.email, "username": "cookieok", "password": "secret123", "confirm_password": "secret123"})
+        assert resp.status_code == 200
+        db_session.refresh(user)
+        assert user.status == "approved"
+
+    def test_username_unique_race_is_reported_not_500(self, client, db_session, make_user, monkeypatch):
+        user = _registering(make_user, "race@example.com")
+        _google_proof(client, user.email)
+        from sqlalchemy.exc import IntegrityError
+        real_commit = db_session.commit
+        calls = {"n": 0}
+
+        def flaky_commit():
+            calls["n"] += 1
+            raise IntegrityError("stmt", {}, Exception("unique username"))
+
+        monkeypatch.setattr("routes.student.auth.db.session.commit", flaky_commit)
+        resp = _complete(client, user.email, username="racer1")
+        assert resp.status_code == 400 and "taken" in resp.get_json()["message"].lower()

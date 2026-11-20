@@ -5,11 +5,9 @@ Optimized for limited memory environments like Render free tier
 
 import logging
 import os
-from datetime import datetime, timedelta
 from threading import Thread
 
 # Third-party imports
-import jwt
 from flask import current_app
 from flask_mail import Message
 
@@ -58,25 +56,6 @@ def get_app_url():
     if not url.endswith('/'):
         url += '/'
     return url
-
-
-
-def generate_verification_token(email):
-    """
-    Generate a secure JWT token that expires in 5 hours.
-    """
-    try:
-        secret_key = os.environ.get("SECRET_KEY")
-        payload = {
-            "email": email,
-            "exp": datetime.utcnow() + timedelta(hours=5),
-            "iat": datetime.utcnow()
-        }
-        token = jwt.encode(payload, secret_key, algorithm="HS256")
-        return token
-    except Exception as e:
-        print("Token generation error:", e)
-        return None
 
 
 

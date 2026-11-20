@@ -3,10 +3,11 @@
 from flask import Blueprint, request, jsonify, redirect, url_for, current_app, make_response, render_template, session
 from werkzeug.security import check_password_hash
 import re
-import random
+from urllib.parse import quote
 from flask_dance.contrib.google import make_google_blueprint, google
 from flask_dance.consumer import oauth_authorized
 from sqlalchemy import or_, and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 import jwt
 import datetime
@@ -14,13 +15,13 @@ import os
 
 from models import User, StudentProfile, Notification, OnboardingDetails, Connection, UserActivity
 from extensions import db
-# Token issuance/verification (generate_tokens_for_user, decode_token, verify_token)
+# Token issuance/verification (generate_tokens_for_user, decode_token)
 # lives exclusively in .helpers now — utils.py no longer duplicates these, so
 # everything JWT-related is imported from a single source of truth here.
 from utils import send_password_reset, send_verification_email
 from .helpers import (
-    generate_tokens_for_user, decode_token, verify_token, token_required,
-    token_required_allow_pending,
+    generate_tokens_for_user, decode_token, token_required,
+    token_required_allow_pending, PENDING_STATUSES,
     success_response, error_response, set_auth_cookies, clear_auth_cookies,
     _build_access_token,
 )
@@ -33,7 +34,7 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key
 # Activity/streak recording and password finalization now live in
 # services/auth_service.py (Document 2 §3.10); notification construction
 # goes through services/notification_service.py (Document 2 §3.9).
-from services import auth_service, notification_service
+from services import auth_service, notification_service, onboarding_service
 from services.activity_service import record_live_activity
 from errors import ValidationError
 
@@ -42,17 +43,6 @@ auth_bp = Blueprint("student_auth", __name__)
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-DEPARTMENTS = [
-    "Architecture", "Computer Science", "Engineering (Civil)", "Engineering (Electrical)",
-    "Engineering (Mechanical)", "Medicine & Surgery", "Pharmacy", "Nursing", "Law",
-    "Accounting", "Business Administration", "Economics", "Mass Communication", "English",
-    "History", "Biology", "Chemistry", "Physics", "Mathematics", "Statistics",
-    "Psychology", "Sociology", "Political Science", "Agricultural Science",
-    "Fine Arts", "Music", "Theatre Arts",
-]
-
-CLASS_LEVELS = ["100 Level", "200 Level", "300 Level", "400 Level", "500 Level"]
-
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID")
 
@@ -99,18 +89,18 @@ privacy_settings = {
 # HELPER FUNCTIONS
 # ============================================================================
 def get_json_data():
-    """Safely get JSON data from request."""
-    try:
-        if request.is_json:
-            return request.get_json(force=True, silent=True)
-        data = request.get_data(as_text=True)
-        if data:
-            import json
-            return json.loads(data)
+    """
+    Return the parsed JSON body, or None.
+
+    Only requests that declare a JSON content type are parsed. Accepting
+    other content types (for example text/plain) would let a cross-site
+    HTML form send a body without a CORS preflight, which is the protection
+    the CSRF-exempt pre-auth routes rely on (audit AUD-02).
+    """
+    if not request.is_json:
         return None
-    except Exception as e:
-        current_app.logger.error(f"JSON parsing error: {str(e)}")
-        return None
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
 
 
 def is_valid_email(email):
@@ -119,30 +109,43 @@ def is_valid_email(email):
     return re.match(pattern, email) is not None
 
 
+def _normalize_email(email):
+    return (email or "").strip().lower()
+
+
+def _user_from_access_cookie():
+    """Return the User identified by a valid access_token cookie, else None."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except Exception:
+        return None
+    return User.query.get(payload.get("user_id"))
+
+
 def _is_request_authorized_for_email(email):
     """
     Return True when the current request is allowed to act on behalf of `email`.
 
     Two accepted proofs:
-      1. The Google OAuth session contains this email (new user mid-onboarding,
-         before they have a JWT).
-      2. A valid JWT access-token cookie belongs to this email.
+      1. The Google OAuth session contains this email (new Google user
+         mid-onboarding, before they hold a JWT).
+      2. A valid JWT access-token cookie belongs to the user with this email.
+
+    Emails are compared case-insensitively.
     """
-    # --- Google OAuth session (new users have no token yet) ---
-    if session.get("google_email") == email:
+    email = _normalize_email(email)
+    if not email:
+        return False
+
+    google_email = _normalize_email(session.get("google_email"))
+    if google_email and google_email == email:
         return True
 
-    # --- JWT cookie ---
-    token = request.cookies.get("access_token")
-    if token:
-        try:
-            payload = decode_token(token)
-            if payload.get("email") == email:
-                return True
-        except Exception:
-            pass
-
-    return False
+    user = _user_from_access_cookie()
+    return bool(user and _normalize_email(user.email) == email)
 
 
 def _clear_google_oauth_session():
@@ -459,379 +462,103 @@ def demo():
 # ============================================================================
 # ONBOARDING
 # ============================================================================
-@auth_bp.route("/onboard/suggestions-by-email/<email>", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
-def onboard_suggestions_by_email(email):
-    """Get study-buddy suggestions using email directly."""
-    try:
-        if not email:
-            return error_response("Email required")
-
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found")
-
-        matches = generate_onboarding_matches(user.id)
-
-        if not matches:
-            top_users = (
-                User.query
-                .filter(User.id != user.id, User.status == "approved")
-                .order_by(User.reputation.desc())
-                .limit(5)
-                .all()
-            )
-            matches = [
-                {
-                    "user": {
-                        "id":               tu.id,
-                        "username":         tu.username,
-                        "name":             tu.name,
-                        "avatar":           tu.avatar or "/static/default-avatar.png",
-                        "reputation":       tu.reputation,
-                        "reputation_level": tu.reputation_level,
-                    },
-                    "match_score": random.randint(50, 70),
-                    "reasons": ["Top contributor", "Active member"],
-                }
-                for tu in top_users
-            ]
-
-        return success_response("Suggestions generated", data={"matches": matches})
-
-    except Exception as e:
-        current_app.logger.error(f"Suggestions error: {str(e)}")
-        return error_response("Failed to generate suggestions")
-
-
-def _send_request_all(email):
-    """
-    Shared body for request_all() and request_all_by_token(): send a
-    connection request from `email`'s user to every id in the request
-    body's "ids" list, skipping any pair that's already connected (in
-    either direction) or already has a pending request between them.
-
-    Callers are responsible for their own authorization check and for
-    wrapping this in their own try/except for a consistent error response
-    — this only raises on genuine failures (bad user, db error) rather
-    than handling them itself, so both routes report errors the same way
-    they already did before this was factored out.
-    """
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return error_response("User not found")
-
-    data = request.get_json()
-    ids  = (data or {}).get("ids", [])
-
-    if ids:
-        for rid in ids:
-            # FIX: skip if a connection already exists in either direction
-            existing = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id, Connection.receiver_id == rid),
-                    and_(Connection.requester_id == rid,    Connection.receiver_id == user.id),
-                )
-            ).first()
-            if not existing:
-                db.session.add(Connection(
-                    status="pending",
-                    requester_id=user.id,
-                    receiver_id=rid,
-                    requested_at=datetime.datetime.utcnow(),
-                ))
-
-    db.session.commit()
-    return success_response("Connection request sent successfully")
-
-
-@auth_bp.route("/onboard/request-all/<identifier>", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
-def request_all(identifier):
-    """
-    Send connection requests to a list of user IDs during onboarding.
-
-    Flask can't tell ``/onboard/request-all/<token>`` and
-    ``/onboard/request-all/<email>`` apart (both are a single string
-    segment), so the first-registered rule used to shadow the second and the
-    email variant was unreachable. One route now dispatches on the shape of
-    the identifier: an email always contains ``@``, a verification JWT never
-    does.
-    """
-    if "@" in identifier:
-        return _request_all_by_email(identifier)
-    return _request_all_by_token(identifier)
-
-
-def _request_all_by_token(token):
-    """
-    Token-based variant (used by templates/onboarding.html, which only ever
-    holds a verification token, never a raw email). Decodes the token the
-    same way onboard_suggestions() does and then runs the shared
-    "send a connection request to every id, skipping existing connections"
-    logic.
-    """
-    email = verify_token(token)
-    if isinstance(email, dict) and "error" in email:
-        return error_response(email["error"])
-    try:
-        return _send_request_all(email)
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"request_all_by_token error: {str(e)}")
-        return error_response("An error occurred sending connection requests")
-
-
-def _request_all_by_email(email):
-    """Email-based variant: caller must prove they own the email."""
-    try:
-        if not email:
-            return error_response("Email not found")
-
-        # A raw email in a URL carries no proof on its own, so verify the
-        # caller (session or JWT cookie) owns it. The token variant doesn't
-        # need this: a validly signed verification token is the proof.
-        if not _is_request_authorized_for_email(email):
-            return error_response("Unauthorized", 401)
-
-        return _send_request_all(email)
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"request_all error: {str(e)}")
-        return error_response("An error occurred sending connection requests")
-
-
 @auth_bp.route("/onboard/<email>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def onboard(email):
-    """Handle onboarding — GET renders the page, POST saves data."""
+    """
+    GET renders the onboarding page. POST saves the questionnaire.
 
+    * Callers must prove they own `email` (access cookie or Google session).
+    * Onboarding is optional for becoming an approved user; it only enriches
+      the profile used for suggestions.
+    * Approved users may re-submit to update their preferences. That never
+      changes their account status or issues new tokens (audit AUD-05).
+    * Users who are still registering move from pending_onboarding to
+      pending_verification and receive their session cookies here.
+    """
     if request.method == "GET":
         return render_template("onboard.html")
 
-    # POST ──────────────────────────────────────────────────────────────────
     try:
-        # FIX: verify the caller owns this email before writing any data
         if not _is_request_authorized_for_email(email):
             return error_response("Unauthorized", 401)
 
-        data = request.get_json()
-        if not data:
-            return error_response("No data provided")
+        cleaned, errors = onboarding_service.validate_onboarding_payload(get_json_data())
+        if errors:
+            first = next(iter(errors.values()))
+            return error_response(first, 400, errors=errors)
 
-        user = User.query.filter_by(email=email).first()
+        user = User.query.filter_by(email=_normalize_email(email)).first()
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
+
+        if user.status not in ("approved",) + PENDING_STATUSES:
+            return error_response("This account cannot be updated right now.", 403)
 
         student_profile = user.student_profile
-
         onboarding_details = OnboardingDetails.query.filter_by(user_id=user.id).first()
         if not onboarding_details:
-            onboarding_details = OnboardingDetails(user_id=user.id, email=email)
+            onboarding_details = OnboardingDetails(user_id=user.id, email=user.email)
             db.session.add(onboarding_details)
 
-        name              = data.get("name", "").strip()
-        department        = data.get("department", "")
-        class_level       = data.get("class_level", "")
-        subjects          = data.get("subjects", [])
-        learning_style    = data.get("learning_style", "")
-        study_preferences = data.get("study_preferences", [])
-        help_subjects     = data.get("help_subjects", [])
-        strong_subjects   = data.get("strong_subjects", [])
-        study_schedule    = data.get("study_schedule", {})
-        session_length    = data.get("session_length", "")
-
-        if name:
-            user.name = name
+        if cleaned["name"]:
+            user.name = cleaned["name"]
             if student_profile:
-                student_profile.full_name = name
+                student_profile.full_name = cleaned["name"]
 
+        # Department / class are mirrored on StudentProfile (used by profile
+        # and discovery pages) and OnboardingDetails (used by matching).
         if student_profile:
-            student_profile.department = department
-            student_profile.class_name = class_level
+            student_profile.department = cleaned["department"]
+            student_profile.class_name = cleaned["class_level"]
 
-        onboarding_details.department        = department
-        onboarding_details.class_level       = class_level
-        onboarding_details.subjects          = subjects
-        onboarding_details.learning_style    = learning_style
-        onboarding_details.study_preferences = study_preferences
-        onboarding_details.help_subjects     = help_subjects
-        onboarding_details.strong_subjects   = strong_subjects
-        onboarding_details.study_schedule    = study_schedule
-        onboarding_details.session_length    = session_length
+        onboarding_details.department        = cleaned["department"]
+        onboarding_details.class_level       = cleaned["class_level"]
+        onboarding_details.subjects          = cleaned["subjects"]
+        onboarding_details.learning_style    = cleaned["learning_style"]
+        onboarding_details.study_preferences = cleaned["study_preferences"]
+        onboarding_details.help_subjects     = cleaned["help_subjects"]
+        onboarding_details.strong_subjects   = cleaned["strong_subjects"]
+        onboarding_details.study_schedule    = cleaned["study_schedule"]
+        onboarding_details.session_length    = cleaned["session_length"]
         onboarding_details.last_updated      = datetime.datetime.utcnow()
-        user.status = "pending_verification"
 
+        user_payload = {
+            "id": user.id, "name": user.name,
+            "username": user.username, "email": user.email,
+        }
+
+        if user.status == "approved":
+            db.session.commit()
+            return success_response("Preferences updated", data={"user": user_payload})
+
+        if not user.email_verified:
+            db.session.rollback()
+            return error_response("Please verify your email first.", 403)
+
+        if user.status == "pending_onboarding":
+            user.status = "pending_verification"
         db.session.commit()
-        
 
         access_token, refresh_token = generate_tokens_for_user(user)
 
-        # Auth-flow-audit fix (Finding #5): clear stale Google-OAuth
-        # session state now that a real JWT cookie exists for this user —
-        # the session value is no longer needed for authorization past
-        # this point, and leaving it around only risks it being reused as
-        # a stale authorization proof on a shared device.
+        # A real session now exists; the Google proof is no longer needed.
         _clear_google_oauth_session()
 
         response = make_response(success_response(
             "Onboarding details saved successfully",
             data={
-                "user": {
-                    "id":       user.id,
-                    "name":     user.name,
-                    "username": user.username,
-                    "email":    user.email,
-                },
-                "redirect": f"/student/complete-registration/{user.email}",
+                "user": user_payload,
+                "redirect": "/student/complete-registration?email=" + quote(user.email),
             },
         ))
         set_auth_cookies(response, access_token, refresh_token)
         return response
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Onboarding error: {str(e)}")
-        return error_response("Failed to save onboarding data")   # FIX: no str(e) leak
-
-
-def generate_onboarding_matches(user_id):
-    """
-    Generate study-buddy matches based on onboarding data.
-
-    FIX: uses joinedload to load onboarding_details in one query
-    instead of issuing one query per candidate (N+1 eliminated).
-    """
-    try:
-        user = User.query.get(user_id)
-        if not user:
-            current_app.logger.error(f"User {user_id} not found")
-            return []
-
-        progress = OnboardingDetails.query.filter_by(user_id=user_id).first()
-        if not progress:
-            current_app.logger.warning(f"No onboarding data for user {user_id}")
-            return []
-
-        # FIX: single query — onboarding_details eager-loaded, no per-row queries
-        potential_matches = (
-            User.query
-            .filter(User.id != user.id, User.status == "approved")
-            .options(joinedload(User.onboarding_details))
-            .all()
-        )
-
-        matches = []
-
-        for candidate in potential_matches:
-            cand_progress = candidate.onboarding_details
-            if not cand_progress:
-                continue
-
-            score   = 0
-            reasons = []
-
-            # Same department (20 pts)
-            if cand_progress.department == progress.department:
-                score += 20
-                reasons.append(f"Same major ({progress.department})")
-
-            # Same subjects (up to 30 pts)
-            common_subjects = set(progress.subjects or []) & set(cand_progress.subjects or [])
-            if common_subjects:
-                score += min(len(common_subjects) * 10, 30)
-                reasons.append(f"Studying {', '.join(list(common_subjects)[:2])}")
-
-            # Complementary strengths (up to 25 pts)
-            helpful_overlap = set(progress.help_subjects or []) & set(cand_progress.strong_subjects or [])
-            if helpful_overlap:
-                score += min(len(helpful_overlap) * 10, 25)
-                reasons.append(f"Can help you with {list(helpful_overlap)[0]}")
-
-            # Schedule overlap (up to 25 pts)
-            user_avail = {
-                f"{day}_{t}"
-                for day, times in (progress.study_schedule or {}).items()
-                for t in times
-            }
-            cand_avail = {
-                f"{day}_{t}"
-                for day, times in (cand_progress.study_schedule or {}).items()
-                for t in times
-            }
-            time_overlap = len(user_avail & cand_avail)
-            if time_overlap:
-                score += min(time_overlap * 5, 25)
-                reasons.append("Available at same times")
-
-            if score >= 40:
-                matches.append({
-                    "user": {
-                        "id":               candidate.id,
-                        "username":         candidate.username,
-                        "name":             candidate.name,
-                        "avatar":           candidate.avatar or "/static/images/default-avatar.png",
-                        "reputation":       candidate.reputation,
-                        "reputation_level": candidate.reputation_level,
-                    },
-                    "match_score": score,
-                    "reasons":     reasons[:4],
-                })
-
-        matches.sort(key=lambda x: x["match_score"], reverse=True)
-        return matches[:5]
-
-    except Exception as e:
-        current_app.logger.error(f"Error generating matches: {str(e)}")
-        return []
-
-
-@auth_bp.route("/onboard/suggestions/<token>", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
-def onboard_suggestions(token):
-    """Get study-buddy suggestions based on onboarding data (token-based)."""
-    try:
-        email = verify_token(token)
-
-        if isinstance(email, dict) and "error" in email:
-            return error_response(email["error"])
-
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found")
-
-        matches = generate_onboarding_matches(user.id)
-
-        if not matches:
-            top_users = (
-                User.query
-                .filter(User.id != user.id, User.status == "approved")
-                .order_by(User.reputation.desc())
-                .limit(5)
-                .all()
-            )
-            matches = [
-                {
-                    "user": {
-                        "id":               tu.id,
-                        "username":         tu.username,
-                        "name":             tu.name,
-                        "avatar":           tu.avatar or "/static/images/default-avatar.png",
-                        "reputation":       tu.reputation,
-                        "reputation_level": tu.reputation_level,
-                    },
-                    "match_score": random.randint(50, 70),
-                    "reasons": ["Top contributor", "Active member"],
-                }
-                for tu in top_users
-            ]
-
-        return success_response("Suggestions generated", data={"matches": matches})
-
-    except Exception as e:
-        current_app.logger.error(f"Suggestions error: {str(e)}")
-        return error_response("Failed to generate suggestions")
+        current_app.logger.error("Onboarding error", exc_info=True)
+        return error_response("Failed to save onboarding data")
 
 
 # ============================================================================
@@ -1354,70 +1081,55 @@ def check_username():
 @auth_bp.route("/complete-registration", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def complete_registration():
-    """Complete registration with username and password."""
+    """
+    Final registration step: choose a username and a password.
+
+    Only users who are still registering (pending_* status, verified email,
+    no username/password chosen yet) can use it. Approved accounts get 409:
+    changing credentials of an existing account is not this route's job
+    (audit AUD-02). Onboarding is optional -- it is not required first.
+    """
     if request.method == "GET":
-        email = request.args.get("email")
-        token = request.args.get("token")
-        
-        if token:
-            decoded_email = verify_token(token)
-            if isinstance(decoded_email, dict) and "error" in decoded_email:
-                return render_template("auth/complete-registration.html", error=decoded_email["error"])
-            email = decoded_email
-        
+        email = _normalize_email(request.args.get("email"))
         if email:
             user = User.query.filter_by(email=email).first()
-            if user:
-                # ✅ FIX: Only redirect to onboard if onboarding NOT done
-                if user.status == "pending_onboarding":
-                    return redirect(f"/student/onboard/{email}")
-                
-                # ✅ FIX: pending_verification → show complete-registration
-                # (don't redirect)
-                
-                # ✅ FIX: approved → redirect to homepage
-                if user.status == "approved":
-                    return redirect("/student/profile/homepage")
-        
+            if user and user.status == "approved":
+                return redirect("/student/profile/homepage")
         return render_template("auth/complete-registration.html")
 
     # ── POST ──────────────────────────────────────────────────────────────────
     try:
         data = get_json_data()
         if not data:
-            return error_response("No data provided")
+            return error_response("Invalid JSON data received")
 
-        token            = data.get("token") or request.args.get("token")
-        email            = data.get("email", "").strip().lower()
-        password         = data.get("password", "")
-        confirm_password = data.get("confirm_password", "")
-        username         = data.get("username", "").strip().lower()
+        fields = {k: data.get(k, "") for k in ("email", "password", "confirm_password", "username")}
+        if not all(isinstance(v, str) for v in fields.values()):
+            return error_response("Invalid data")
 
-        if token:
-            decoded_email = verify_token(token)
-            if isinstance(decoded_email, dict) and "error" in decoded_email:
-                return error_response(decoded_email["error"])
-            email = decoded_email
+        email            = _normalize_email(fields["email"])
+        password         = fields["password"]
+        confirm_password = fields["confirm_password"]
+        username         = fields["username"].strip().lower()
 
         if not all([email, password, confirm_password, username]):
             return error_response("All fields are required")
 
-        # Auth-flow-audit fix (Finding #1, Critical): previously this route
-        # trusted a bare `email` string from the request body/query with no
-        # proof the caller owns that address — a token (if present) proved
-        # ownership, but the frontend never sends one, so in practice every
-        # call reached this point unauthenticated. That let anyone set the
-        # username/password for ANY pending_verification account just by
-        # knowing its email (full account takeover).
-        #
-        # Fix: require the same proof of ownership onboard() already
-        # requires — either a Google-OAuth session for this exact email, or
-        # a valid JWT access-token cookie for this exact email. A verified
-        # `token` (JWT-encoded email, from the verification-email link) is
-        # ALSO still accepted as proof, since decoding it above already
-        # establishes the caller followed a link sent to that address.
-        if not token and not _is_request_authorized_for_email(email):
+        # Proof of ownership: access cookie for this email, or the Google
+        # session for this exact email.
+        if not _is_request_authorized_for_email(email):
             return error_response("Unauthorized", 401)
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return error_response("User not found", 404)
+
+        if user.status == "approved":
+            return error_response("Registration is already complete.", 409)
+        if user.status not in PENDING_STATUSES:
+            return error_response("This account cannot complete registration.", 403)
+        if not user.email_verified:
+            return error_response("Please verify your email first.", 403)
 
         if password != confirm_password:
             return error_response("Passwords do not match")
@@ -1426,11 +1138,7 @@ def complete_registration():
         if not re.match(r"^[a-z0-9]{3,20}$", username):
             return error_response("Username must be 3-20 lowercase letters and numbers only")
 
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found")
-
-        if User.query.filter_by(username=username).first():
+        if User.query.filter(User.username == username, User.id != user.id).first():
             return error_response("Username already taken")
 
         try:
@@ -1446,16 +1154,15 @@ def complete_registration():
             student_profile.username = username
             student_profile.status   = "active"
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # Lost a race for the username (unique constraint).
+            db.session.rollback()
+            return error_response("Username already taken")
 
-        # Activity feed: fire only now, not in register() — this is the
-        # point a user actually becomes a real, connectable member
-        # (status="approved"), not when the pending_verification row was
-        # first created several steps earlier. scope="global" since a
-        # brand-new user has no connections yet for the default
-        # connections-only fan-out to reach; user_signed_up is also the
-        # one activity type anonymize_for_global passes identity through
-        # for, since a "Connect" button needs a real user_id to act on.
+        # Activity feed: fire only now -- this is the point a user becomes a
+        # real, connectable member (status="approved").
         record_live_activity(
             user.id,
             'user_signed_up',
@@ -1467,20 +1174,22 @@ def complete_registration():
             scope='global',
         )
 
-        # Auth-flow-audit fix (Finding #5): this is the final step of the
-        # onboarding chain (account now "approved") — clear any leftover
-        # Google-OAuth session state so it can't be reused as a stale
-        # authorization proof for this email on a shared device afterward.
         _clear_google_oauth_session()
 
-        return success_response(
+        # Issue a fresh session so the access token carries the real
+        # username/status (users who skipped onboarding, or arrived through
+        # the Google session only, have no cookies yet).
+        access_token, refresh_token = generate_tokens_for_user(user)
+        response = make_response(success_response(
             f"Registration complete! Welcome, @{username}!",
             data={"username": username},
-        )
+        ))
+        set_auth_cookies(response, access_token, refresh_token)
+        return response
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Complete registration error: {str(e)}")
+        current_app.logger.error("Complete registration error", exc_info=True)
         return error_response("Registration failed. Please try again.")
 
 

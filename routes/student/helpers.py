@@ -119,40 +119,6 @@ def decode_token(token):
     return jwt.decode(token, secret, algorithms=["HS256"])
 
 
-def verify_token(token):
-    """
-    Decode a single-purpose verification JWT (email verification /
-    password reset, created by utils.generate_verification_token) and
-    return the email it was issued for.
-
-    This is the single source of truth for that token shape — it lives
-    here (rather than duplicated in utils.py) so there is exactly one
-    place that knows how these tokens are signed and validated, matching
-    generate_tokens_for_user/decode_token above.
-
-    Returns:
-        str: the email address, on success.
-        dict: {"error": "<message>"} on any failure (expired, malformed,
-              or missing "email" claim) — callers check for this shape
-              via `isinstance(result, dict) and "error" in result`.
-    """
-    if not token:
-        return {"error": "Token is required"}
-
-    try:
-        payload = decode_token(token)
-    except jwt.ExpiredSignatureError:
-        return {"error": "This link has expired. Please request a new one."}
-    except jwt.InvalidTokenError:
-        return {"error": "This link is invalid."}
-
-    email = payload.get("email")
-    if not email:
-        return {"error": "This link is invalid."}
-
-    return email
-
-
 # Account lifecycle states (User.status). Only "approved" accounts may use
 # the product API. The two pending states exist while a user is still
 # registering/onboarding and are only accepted by routes that explicitly
