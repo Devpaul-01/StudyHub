@@ -397,6 +397,13 @@ class MessageWebSocketManager:
             
             if not user_id:
               return False
+
+            # Audit AUD-04/AUD-15: a validly signed token is not enough --
+            # the account must still exist and be approved at connect time
+            # (users who are mid-registration or suspended get no socket).
+            account = User.query.get(user_id)
+            if not account or account.status != 'approved':
+              return False
             self.socket_to_user[request.sid] = user_id
             if user_id not in self.online_users:
               self.online_users[user_id] = []
