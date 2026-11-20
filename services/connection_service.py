@@ -613,34 +613,21 @@ def get_mutual_connection_count(user1_id, user2_id):
         return cached_count
 
     try:
-        user1_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == user1_id,
-                Connection.receiver_id == user1_id
-            ),
-            Connection.status == "accepted"
-        ).all()
+        # Audit CON-15: computed in SQL (INTERSECT of the two partner-id sets)
+        # instead of loading both users' whole connection lists into Python.
+        def _partners(uid):
+            a = db.session.query(Connection.receiver_id.label("pid")).filter(
+                Connection.requester_id == uid, Connection.status == "accepted")
+            b = db.session.query(Connection.requester_id.label("pid")).filter(
+                Connection.receiver_id == uid, Connection.status == "accepted")
+            return a.union(b)
 
-        user1_ids = set()
-        for conn in user1_connections:
-            other_id = conn.receiver_id if conn.requester_id == user1_id else conn.requester_id
-            user1_ids.add(other_id)
-
-        user2_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == user2_id,
-                Connection.receiver_id == user2_id
-            ),
-            Connection.status == "accepted"
-        ).all()
-
-        user2_ids = set()
-        for conn in user2_connections:
-            other_id = conn.receiver_id if conn.requester_id == user2_id else conn.requester_id
-            user2_ids.add(other_id)
-
-        count = len(user1_ids & user2_ids)
-        cache_service.set(cache_key, count, ttl_seconds=300)
+        count = db.session.query(func.count()).select_from(
+            _partners(user1_id).intersect(_partners(user2_id)).subquery()
+        ).scalar() or 0
+        # Short TTL: third-party connection changes (A<->C) can't invalidate
+        # the (A,B) key, so staleness is bounded instead of 5 minutes.
+        cache_service.set(cache_key, count, ttl_seconds=60)
         return count
 
     except Exception:
