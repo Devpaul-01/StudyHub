@@ -1340,31 +1340,44 @@ def list_connections(current_user):
 # 4. MUTUAL CONNECTIONS - NO PAGINATION
 # ============================================================================
 
+# Audit CON-07: each party has its OWN seen flag.
+#   receiver_seen  - the receiver has seen the incoming (pending) request
+#   requester_seen - the requester has seen the response (accepted/rejected)
+# They used to share one `is_seen` boolean, so a receiver opening the requests
+# page before accepting silently suppressed the requester's "response" badge.
+
+def _unseen_received_query(user_id):
+    return Connection.query.filter(
+        Connection.receiver_id == user_id,
+        Connection.status == "pending",
+        Connection.receiver_seen.is_(False),
+    )
+
+
+def _unseen_sent_query(user_id):
+    return Connection.query.filter(
+        Connection.requester_id == user_id,
+        Connection.status.in_(["accepted", "rejected"]),
+        Connection.requester_seen.is_(False),
+    )
+
+
 @connections_crud_bp.route("/connections/unseen/received", methods=["GET"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def unseen_received_count(current_user):
     """
-    Get count of unseen received connection requests
-    Returns the number of pending requests sent TO you that you haven't seen yet
+    Count of pending requests sent TO you that you haven't seen yet.
     """
     try:
-        count = Connection.query.filter_by(
-            receiver_id=current_user.id,
-            status="pending",
-            is_seen=False
-        ).count()
-        
         return jsonify({
             "status": "success",
-            "data": {
-                "count": count
-            }
+            "data": {"count": _unseen_received_query(current_user.id).count()}
         })
-        
-    except Exception as e:
-        current_app.logger.error(f"Unseen received connections error: ", exc_info=True)
-        return error_response("Failed to get unseen received connections count")
+
+    except Exception:
+        current_app.logger.error("Unseen received connections error", exc_info=True)
+        return error_response("Failed to get unseen received connections count", 500)
 
 
 @connections_crud_bp.route("/connections/unseen/sent", methods=["GET"])
@@ -1372,100 +1385,18 @@ def unseen_received_count(current_user):
 @token_required
 def unseen_sent_count(current_user):
     """
-    Get count of unseen sent connection requests that were responded to
-    Returns requests YOU sent that have been accepted/rejected but you haven't seen the response
+    Count of requests YOU sent that were accepted/rejected but whose response
+    you haven't seen yet.
     """
     try:
-        count = Connection.query.filter_by(
-            requester_id=current_user.id,
-            is_seen=False
-        ).filter(
-            Connection.status.in_(["accepted", "rejected"])
-        ).count()
-        
         return jsonify({
             "status": "success",
-            "data": {
-                "count": count
-            }
+            "data": {"count": _unseen_sent_query(current_user.id).count()}
         })
-        
-    except Exception as e:
-        current_app.logger.error(f"Unseen sent connections error: ", exc_info=True)
-        return error_response("Failed to get unseen sent connections count")
 
-
-@connections_crud_bp.route("/connections/unseen/all", methods=["GET"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
-def unseen_all_count(current_user):
-    """
-    Get combined count of all unseen connection activities
-    Useful for a single notification badge showing total unseen items
-    """
-    try:
-        # Unseen received requests
-        received_count = Connection.query.filter_by(
-            receiver_id=current_user.id,
-            status="pending",
-            is_seen=False
-        ).count()
-        
-        # Unseen responses to sent requests
-        sent_count = Connection.query.filter_by(
-            requester_id=current_user.id,
-            is_seen=False
-        ).filter(
-            Connection.status.in_(["accepted", "rejected"])
-        ).count()
-        
-        total = received_count + sent_count
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "total": total,
-                "received": received_count,
-                "sent_responses": sent_count
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Unseen all connections error: ", exc_info=True)
-        return error_response("Failed to get unseen connections count")
-
-
-# ============================================================================
-# MARK AS SEEN - Helper Endpoints
-# ============================================================================
-
-@connections_crud_bp.route("/connections/mark-seen/<int:connection_id>", methods=["POST"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
-def mark_connection_seen(current_user, connection_id):
-    """
-    Mark a specific connection request as seen
-    Can be called when user views the connection request
-    """
-    try:
-        connection = Connection.query.get(connection_id)
-        
-        if not connection:
-            return error_response("Connection not found", 404)
-        
-        # Verify user is involved in this connection
-        if connection.receiver_id != current_user.id and connection.requester_id != current_user.id:
-            return error_response("Not authorized", 403)
-        
-        connection.is_seen = True
-        db.session.commit()
-        
-        return success_response("Connection marked as seen")
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Mark connection seen error: ", exc_info=True)
-        return error_response("Failed to mark connection as seen")
+    except Exception:
+        current_app.logger.error("Unseen sent connections error", exc_info=True)
+        return error_response("Failed to get unseen sent connections count", 500)
 
 
 @connections_crud_bp.route("/connections/mark-received-seen", methods=["POST"])
@@ -1473,27 +1404,25 @@ def mark_connection_seen(current_user, connection_id):
 @token_required
 def mark_received_connections_seen(current_user):
     """
-    Mark all received connection requests as seen
-    Call this when user opens the received requests page
+    Mark all received connection requests as seen.
+    Call this when the user opens the received requests page. Only touches the
+    receiver's own flag, so it can never hide the requester's badge.
     """
     try:
-        updated = Connection.query.filter_by(
-            receiver_id=current_user.id,
-            status="pending",
-            is_seen=False
-        ).update({"is_seen": True})
-        
+        updated = _unseen_received_query(current_user.id).update(
+            {"receiver_seen": True}, synchronize_session=False
+        )
         db.session.commit()
-        
+
         return success_response(
             f"Marked {updated} received connections as seen",
             data={"updated_count": updated}
         )
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Mark received connections seen error: ", exc_info=True)
-        return error_response("Failed to mark received connections as seen")
+        current_app.logger.error("Mark received connections seen error", exc_info=True)
+        return error_response("Failed to mark received connections as seen", 500)
 
 
 @connections_crud_bp.route("/connections/mark-sent-seen", methods=["POST"])
@@ -1501,81 +1430,26 @@ def mark_received_connections_seen(current_user):
 @token_required
 def mark_sent_connections_seen(current_user):
     """
-    Mark all sent connection request responses as seen
-    Call this when user opens the sent requests page
+    Mark all sent-request responses as seen.
+    Call this when the user opens the sent requests page. Only touches the
+    requester's own flag.
     """
     try:
-        updated = Connection.query.filter_by(
-            requester_id=current_user.id,
-            is_seen=False
-        ).filter(
-            Connection.status.in_(["accepted", "rejected"])
-        ).update({"is_seen": True}, synchronize_session=False)
-        
+        updated = _unseen_sent_query(current_user.id).update(
+            {"requester_seen": True}, synchronize_session=False
+        )
         db.session.commit()
-        
+
         return success_response(
             f"Marked {updated} sent connection responses as seen",
             data={"updated_count": updated}
         )
-        
-    except Exception as e:
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Mark sent connections seen error: ", exc_info=True)
-        return error_response("Failed to mark sent connections as seen")
+        current_app.logger.error("Mark sent connections seen error", exc_info=True)
+        return error_response("Failed to mark sent connections as seen", 500)
 
-
-@connections_crud_bp.route("/connections/mark-all-seen", methods=["POST"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
-def mark_all_connections_seen(current_user):
-    """
-    Mark ALL unseen connections as seen (both received and sent)
-    Useful when user opens main connections page
-    """
-    try:
-        # Mark all received pending requests as seen
-        received_updated = Connection.query.filter_by(
-            receiver_id=current_user.id,
-            status="pending",
-            is_seen=False
-        ).update({"is_seen": True})
-        
-        # Mark all responded sent requests as seen
-        sent_updated = Connection.query.filter_by(
-            requester_id=current_user.id,
-            is_seen=False
-        ).filter(
-            Connection.status.in_(["accepted", "rejected"])
-        ).update({"is_seen": True}, synchronize_session=False)
-        
-        db.session.commit()
-        
-        total = received_updated + sent_updated
-        
-        return success_response(
-            f"Marked {total} connections as seen",
-            data={
-                "total_updated": total,
-                "received_updated": received_updated,
-                "sent_updated": sent_updated
-            }
-        )
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Mark all connections seen error: ", exc_info=True)
-        return error_response("Failed to mark connections as seen")
-
-
-
-# PHASE-1 WIRING FIX: get_user_onboarding_preview used to be defined here
-# (with a real bug — on exception it logged a mismatched message and
-# returned a Flask error_response() where every caller expects a dict/None).
-# It now lives in services/connection_service.py, fixed, and is imported at
-# the top of this file under the same name.
-
-            
 
 @connections_crud_bp.route("/connections/request/<int:user_id>", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
