@@ -123,8 +123,13 @@ class Config:
     REDIS_URL = os.environ.get("REDIS_URL")  # None if unset
     RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://")
     RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
+    # Cross-origin access is opt-in: an empty list means no cross-origin
+    # requests are allowed. Development overrides this with "*"; production
+    # refuses to start with "*" (credentials are enabled, see app.py).
     CORS_ALLOWED_ORIGINS = [
-        origin.strip() for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
+        origin.strip()
+        for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
     ]
     # Feature flag for the H-1 cookie redesign — defaults False so the flip
     # is a config change, not a code deploy, and is instantly reversible.
@@ -171,13 +176,43 @@ class TestingConfig(Config):
     SQLALCHEMY_ENGINE_OPTIONS = {}
 
 
+class ConfigurationError(ValueError):
+    """Raised at startup when the production configuration is unsafe."""
+
+
 class ProductionConfig(Config):
     DEBUG = False
+    # Cookies carry the session and the auth tokens: HTTPS-only unless it is
+    # explicitly turned off (audit AUD-19).
+    SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'true').lower() == 'true'
     # Reuse REDIS_URL for rate-limit storage when it's set, so provisioning
     # one Redis instance is enough (Flask-Limiter prefixes its own keys).
     # Falls back to memory:// (single-process only) if REDIS_URL is unset,
     # same as every other Redis-optional piece in this codebase.
     RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI") or os.environ.get("REDIS_URL") or "memory://"
+
+    @classmethod
+    def validate(cls):
+        """
+        Refuse to start with a configuration that is unsafe for a deployment
+        that may run several instances (audit AUD-12, AUD-13, AUD-19). All
+        problems are reported at once.
+        """
+        problems = []
+        if str(cls.RATE_LIMIT_STORAGE_URI).startswith("memory://") and cls.RATE_LIMIT_ENABLED:
+            problems.append(
+                "RATE_LIMIT_STORAGE_URI/REDIS_URL must point at Redis: in-memory rate limits "
+                "are per process, so every extra instance multiplies the limits")
+        base_url = cls.PUBLIC_BASE_URL or ""
+        if not base_url.startswith("https://"):
+            problems.append(
+                "PUBLIC_BASE_URL must be set to the public https:// origin (used for emailed links)")
+        if "*" in cls.CORS_ALLOWED_ORIGINS:
+            problems.append("CORS_ALLOWED_ORIGINS must list explicit origins, not '*' (credentials are enabled)")
+        if not cls.SESSION_COOKIE_SECURE:
+            problems.append("SESSION_COOKIE_SECURE must be true in production")
+        if problems:
+            raise ConfigurationError("Unsafe production configuration:\n  - " + "\n  - ".join(problems))
 
 
 _ENV_TO_CONFIG = {

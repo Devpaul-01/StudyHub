@@ -41,9 +41,6 @@ from routes.student.auth import google_bp
 from logging.handlers import RotatingFileHandler
 
 
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
-
 # ============================================================================
 # Logging: ExtraFormatter
 # ============================================================================
@@ -94,8 +91,15 @@ migrate = Migrate()
 def create_app(config_class=None):
     """Create and configure the Flask application"""
     config_class = config_class or get_config()
+    validate_config = getattr(config_class, "validate", None)
+    if callable(validate_config):
+        validate_config()  # production: fail fast on unsafe settings (see config.py)
     app = Flask(__name__)
     app.config.from_object(config_class)
+    if app.config.get("DEBUG") or app.config.get("TESTING"):
+        # oauthlib insists on https for the OAuth callback; only relax that
+        # for local development and tests, never in production (audit AUD-19).
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     # In create_app() or config.py
     app.config['PREFERRED_URL_SCHEME'] = 'https'
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
