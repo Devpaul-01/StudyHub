@@ -30,6 +30,7 @@ from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response,
     block_connection, unblock_connection,
+    is_request_authorized_for_email,
 )
 
 from services.online_status_service import get_user_online_status, get_online_status_batch
@@ -43,6 +44,10 @@ from services.connection_service import (
     get_mutual_connection_count,
     get_connection_health,
     get_user_onboarding_preview,
+    notify_after_commit,
+    clean_user_text,
+    get_accepted_partner_ids,
+    invalidate_pair_caches,
 )
 # Plan §5.3/§17.6: every direct Notification(...) construction in this file
 # is migrated to call notification_service.notify() (or a named template)
@@ -63,22 +68,66 @@ from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, 
 logger = logging.getLogger(__name__)
 
 connections_crud_bp = Blueprint("connections_crud", __name__)
+ONBOARDING_CONNECT_MAX_IDS = 25
+_ONBOARDING_ACCOUNT_AGE = datetime.timedelta(hours=48)
+
+
+def _resolve_onboarding_user(email):
+    """
+    Authorize + load the user for the onboarding connect routes (audit CON-01).
+
+    Returns (user, None) or (None, error_response). Requirements:
+      * the caller proves they own `email` (Google session or JWT cookie) -
+        a raw email in a URL is NOT a credential;
+      * the account is still onboarding: pending_onboarding/pending_verification,
+        or brand new (<48h) so an immediately-approved Google signup works;
+        established accounts must use the normal request/accept flow.
+    """
+    if not email or not is_request_authorized_for_email(email):
+        return None, error_response("Unauthorized", 401)
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return None, error_response("Unauthorized", 401)
+
+    is_new = bool(user.joined_at and datetime.datetime.utcnow() - user.joined_at < _ONBOARDING_ACCOUNT_AGE)
+    if user.status not in ("pending_onboarding", "pending_verification") and not is_new:
+        return None, error_response("Onboarding is already complete", 403)
+
+    return user, None
+
+
+def _pair_row(user_id, other_id):
+    return Connection.query.filter(
+        or_(
+            and_(Connection.requester_id == user_id, Connection.receiver_id == other_id),
+            and_(Connection.requester_id == other_id, Connection.receiver_id == user_id),
+        )
+    ).first()
+
+
 @connections_crud_bp.route("/connections/suggestions-by-email/<email>", methods=["GET"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def connections_suggestions_by_email(email):
     """
-    Onboarding suggestions using email. No token required.
+    Onboarding suggestions for the (authenticated) onboarding user.
     Returns smart match list based on subjects, learning style, schedule.
     """
     try:
-        if not email:
-            return error_response("Email required", 400)
-
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
+        user, err = _resolve_onboarding_user(email)
+        if err:
+            return err
 
         onboarding = OnboardingDetails.query.filter_by(user_id=user.id).first()
+
+        # Never suggest anyone this user already has ANY relationship with
+        # (blocked / rejected / pending / accepted).
+        related_ids = {
+            (c.receiver_id if c.requester_id == user.id else c.requester_id)
+            for c in Connection.query.filter(
+                or_(Connection.requester_id == user.id, Connection.receiver_id == user.id)
+            ).all()
+        }
 
         # OPTIMIZED: Single join query replaces O(N) per-user queries.
         # Fetches all candidates with their profiles and onboarding in one pass.
@@ -87,6 +136,7 @@ def connections_suggestions_by_email(email):
             .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
             .outerjoin(OnboardingDetails, OnboardingDetails.user_id == User.id)
             .filter(User.id != user.id, User.status == "approved")
+            .filter(~User.id.in_(related_ids) if related_ids else True)
             .all()
         )
 
@@ -207,49 +257,59 @@ def connections_suggestions_by_email(email):
 def onboard_connect_single(email, target_user_id):
     """
     Onboarding: connect with a single user and immediately set status=accepted.
-    No pending step. No token required - uses email from URL path.
-    Idempotent: already-connected pairs return success without duplication.
+
+    Audit CON-01: requires proof of email ownership and an account that is
+    still onboarding, and is CREATE-ONLY: it never modifies an existing row,
+    so it can no longer force-accept a pending/rejected request or lift a
+    block. Idempotent: an already-connected pair returns success.
     """
     try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
+        user, err = _resolve_onboarding_user(email)
+        if err:
+            return err
 
         if user.id == target_user_id:
             return error_response("Cannot connect with yourself", 400)
 
         target = User.query.get(target_user_id)
-        if not target:
+        if not target or target.status != "approved":
             return error_response("Target user not found", 404)
 
-        existing = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == user.id, Connection.receiver_id == target_user_id),
-                and_(Connection.requester_id == target_user_id, Connection.receiver_id == user.id)
-            )
-        ).first()
-
+        existing = _pair_row(user.id, target_user_id)
         if existing:
             if existing.status == "accepted":
                 return jsonify({"status": "success", "message": "Already connected",
                                 "data": {"connection_id": existing.id}})
-            existing.status = "accepted"
-            existing.responded_at = datetime.datetime.utcnow()
-            db.session.commit()
-            return jsonify({"status": "success", "message": "Connection accepted",
-                            "data": {"connection_id": existing.id}})
+            # pending / rejected / blocked: leave untouched, never override.
+            return error_response("Cannot connect with this user right now", 409)
 
+        now = datetime.datetime.utcnow()
         connection = Connection(
-            requester_id    = user.id,
-            receiver_id     = target_user_id,
-            status          = "accepted",
-            requested_at    = datetime.datetime.utcnow(),
-            responded_at    = datetime.datetime.utcnow(),
-            requester_notes = "Connected during onboarding"
+            requester_id=user.id,
+            receiver_id=target_user_id,
+            status="accepted",
+            requested_at=now,
+            responded_at=now,
+            requester_notes=None,
+            requester_seen=True,
+            receiver_seen=False,
         )
         db.session.add(connection)
 
-        notification_service.notify(
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            existing = _pair_row(user.id, target_user_id)
+            if existing and existing.status == "accepted":
+                return jsonify({"status": "success", "message": "Already connected",
+                                "data": {"connection_id": existing.id}})
+            return error_response("Cannot connect with this user right now", 409)
+
+        connection_id = connection.id
+        # Notify only AFTER the row is committed (audit CON-09).
+        notify_after_commit(
+            notification_service.notify,
             user_id=target_user_id,
             title=f"{user.name} connected with you!",
             body=f"{user.name} just joined StudyHub and connected with you.",
@@ -258,42 +318,16 @@ def onboard_connect_single(email, target_user_id):
             related_id=user.id,
         )
 
-        # AUDIT ENG-2 FIX: same reverse-duplicate race as
-        # send_connection_request — uq_connections_pair (models.py) now
-        # applies globally to the connections table, so this insert path
-        # is exposed to it too. Rolled back and reported using the same
-        # "already connected" response shape the existing-row check above
-        # already returns for this exact outcome.
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            current_app.logger.info(
-                f"Connection request race detected (uq_connections_pair): "
-                f"{user.id} <-> {target_user_id}"
-            )
-            existing = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id, Connection.receiver_id == target_user_id),
-                    and_(Connection.requester_id == target_user_id, Connection.receiver_id == user.id)
-                )
-            ).first()
-            return jsonify({
-                "status": "success",
-                "message": "Already connected",
-                "data": {"connection_id": existing.id if existing else None}
-            })
-
         return jsonify({
             "status":  "success",
             "message": "Connected successfully",
-            "data":    {"connection_id": connection.id, "status": "accepted"}
+            "data":    {"connection_id": connection_id, "status": "accepted"}
         }), 201
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"onboard_connect_single error: ", exc_info=True)
-        return error_response("Failed to create connection")
+        current_app.logger.error("onboard_connect_single error", exc_info=True)
+        return error_response("Failed to create connection", 500)
 
 
 # 3. BULK DIRECT-ACCEPT CONNECT (ONBOARDING "CONNECT ALL")
@@ -302,94 +336,100 @@ def onboard_connect_single(email, target_user_id):
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def onboard_connect_all(email):
     """
-    Onboarding: connect with all supplied user IDs at once, all accepted immediately.
-    No token required - uses email from URL path.
-    Body: { "ids": [1, 2, 3] }
+    Onboarding: connect with all supplied user IDs at once (accepted).
+    Body: { "ids": [1, 2, 3] }  (max ONBOARDING_CONNECT_MAX_IDS)
+
+    Audit CON-01 / CON-15: authenticated, create-only, id list validated and
+    capped, targets and existing rows loaded in two batched queries, and
+    notifications sent only after the commit.
     """
     try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return error_response("User not found", 404)
+        user, err = _resolve_onboarding_user(email)
+        if err:
+            return err
 
-        data = request.get_json()
-        ids  = data.get("ids", [])
-
-        if not ids:
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("ids", [])
+        if not isinstance(raw_ids, list) or not raw_ids:
             return error_response("No user IDs provided", 400)
+        if len(raw_ids) > ONBOARDING_CONNECT_MAX_IDS:
+            return error_response(
+                f"Too many users (max {ONBOARDING_CONNECT_MAX_IDS})", 400)
 
-        connected = []
-        skipped   = []
+        ids = []
+        for raw in raw_ids:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return error_response("IDs must be integers", 400)
+            if raw != user.id and raw not in ids:
+                ids.append(raw)
+        if not ids:
+            return error_response("No valid user IDs provided", 400)
+
+        approved = {
+            u.id for u in User.query.filter(User.id.in_(ids), User.status == "approved").all()
+        }
+        existing_rows = Connection.query.filter(
+            or_(
+                and_(Connection.requester_id == user.id, Connection.receiver_id.in_(ids)),
+                and_(Connection.receiver_id == user.id, Connection.requester_id.in_(ids)),
+            )
+        ).all()
+        existing_by_other = {
+            (c.receiver_id if c.requester_id == user.id else c.requester_id): c
+            for c in existing_rows
+        }
+
+        connected, skipped, created = [], [], []
+        now = datetime.datetime.utcnow()
 
         for target_id in ids:
-            if target_id == user.id:
-                continue
-
-            target = User.query.get(target_id)
-            if not target:
+            if target_id not in approved:
                 skipped.append(target_id)
                 continue
 
-            existing = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == user.id,   Connection.receiver_id == target_id),
-                    and_(Connection.requester_id == target_id, Connection.receiver_id == user.id)
-                )
-            ).first()
-
+            existing = existing_by_other.get(target_id)
             if existing:
-                if existing.status != "accepted":
-                    existing.status       = "accepted"
-                    existing.responded_at = datetime.datetime.utcnow()
-                connected.append(target_id)
+                # Already accepted counts as connected; anything else is left
+                # untouched (never override pending/rejected/blocked).
+                (connected if existing.status == "accepted" else skipped).append(target_id)
                 continue
 
             connection = Connection(
-                requester_id    = user.id,
-                receiver_id     = target_id,
-                status          = "accepted",
-                requested_at    = datetime.datetime.utcnow(),
-                responded_at    = datetime.datetime.utcnow(),
-                requester_notes = "Connected during onboarding (bulk)"
+                requester_id=user.id,
+                receiver_id=target_id,
+                status="accepted",
+                requested_at=now,
+                responded_at=now,
+                requester_seen=True,
+                receiver_seen=False,
             )
-            # AUDIT ENG-2 FIX: db.session.begin_nested() opens a SAVEPOINT
-            # scoped to just this row's INSERT — if it violates
-            # uq_connections_pair (models.py), only this savepoint rolls
-            # back (via the `with` block's own exception handling), leaving
-            # every prior iteration's already-flushed Connection AND
-            # Notification rows completely untouched in the outer,
-            # still-open transaction. This is the correct primitive here,
-            # not a full db.session.rollback(): a full rollback reverts the
-            # ENTIRE session, including prior rows' Notification inserts —
-            # and notification_service.notify() also increments a Redis
-            # unread-counter as a side effect OUTSIDE the SQL transaction,
-            # which a SQL rollback cannot undo, so a full-session rollback
-            # would silently strand that counter out of sync with the (now
-            # rolled-back) Notification row. A savepoint avoids ever
-            # putting prior rows at risk in the first place, so there is
-            # nothing to redo and no redo-vs-counter bookkeeping needed.
+            # SAVEPOINT per row: a lost uq_connections_pair race only skips
+            # this one target.
             try:
                 with db.session.begin_nested():
                     db.session.add(connection)
                     db.session.flush()
             except IntegrityError:
-                current_app.logger.info(
-                    f"Connection request race detected (uq_connections_pair) "
-                    f"in bulk onboarding: {user.id} <-> {target_id}"
-                )
                 skipped.append(target_id)
                 continue
 
-            notification_service.notify(
-                user_id=target_id,
-                title=f"{user.name} connected with you!",
-                body=f"{user.name} just joined and connected with you on StudyHub.",
-                notification_type="connection_accepted",
-                related_type="user",
-                related_id=user.id,
-            )
+            created.append(target_id)
             connected.append(target_id)
 
         db.session.commit()
+
+        if created:
+            def _notify_all():
+                for target_id in created:
+                    notification_service.notify(
+                        user_id=target_id,
+                        title=f"{user.name} connected with you!",
+                        body=f"{user.name} just joined and connected with you on StudyHub.",
+                        notification_type="connection_accepted",
+                        related_type="user",
+                        related_id=user.id,
+                    )
+            notify_after_commit(_notify_all)
 
         return jsonify({
             "status":  "success",
@@ -401,10 +441,10 @@ def onboard_connect_all(email):
             }
         })
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"onboard_connect_all error: ", exc_info=True)
-        return error_response("Failed to connect with all users")
+        current_app.logger.error("onboard_connect_all error", exc_info=True)
+        return error_response("Failed to connect with all users", 500)
 
 # ADD TO connections.py (after other endpoints)
 
