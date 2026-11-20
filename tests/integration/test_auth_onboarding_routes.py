@@ -14,6 +14,7 @@ verification-JWT proof were removed (audit AUD-09/16); the authenticated
 replacements are tested in test_connections_onboarding_routes.py.
 """
 import json
+import time
 
 import pytest
 from werkzeug.security import check_password_hash
@@ -39,6 +40,7 @@ VALID_ANSWERS = {
 def _google_proof(client, email):
     with client.session_transaction() as sess:
         sess["google_email"] = email
+        sess["google_proof_at"] = int(time.time())
 
 
 def _cookie_login(client, user):
@@ -87,6 +89,7 @@ class TestOnboardPost:
             sess["google_email"] = user.email
             sess["google_name"] = "Google Name"
             sess["google_id"] = "google-sub-123"
+            sess["google_proof_at"] = int(time.time())
 
         resp = client.post(f"/student/onboard/{user.email}", json=VALID_ANSWERS)
 
@@ -100,7 +103,7 @@ class TestOnboardPost:
         assert StudentProfile.query.filter_by(user_id=user.id).one().class_name == "200 Level"
         assert any(c.startswith("access_token=") for c in resp.headers.getlist("Set-Cookie"))
         with client.session_transaction() as sess:
-            assert not {"google_email", "google_name", "google_id"} & set(sess)
+            assert not {"google_email", "google_name", "google_id", "google_proof_at"} & set(sess)
 
     def test_email_match_is_case_insensitive(self, client, make_user):
         user = _registering(make_user, "case@example.com", status="pending_onboarding")

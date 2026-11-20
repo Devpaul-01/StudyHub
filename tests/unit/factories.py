@@ -185,10 +185,15 @@ def make_ai_conversation(db_session, user, **overrides):
 def make_password_reset_token(db_session, user, **overrides):
     from models import PasswordResetToken
 
+    from services.auth_service import hash_one_time_token
+
     n = _next_n()
+    # The database only stores the hash; the raw value is exposed as
+    # ``row.raw_token`` so tests can call the routes the way an emailed link would.
+    raw_token = overrides.pop("raw_token", f"prt_{n}_{secrets.token_urlsafe(16)}")
     defaults = dict(
         user_id=user.id,
-        token=f"prt_{n}_{secrets.token_urlsafe(16)}",
+        token_hash=hash_one_time_token(raw_token),
         expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
         used=False,
     )
@@ -196,16 +201,22 @@ def make_password_reset_token(db_session, user, **overrides):
     row = PasswordResetToken(**defaults)
     db_session.add(row)
     db_session.flush()
+    row.raw_token = raw_token
     return row
 
 
 def make_email_verification_token(db_session, user, **overrides):
     from models import EmailVerificationToken
 
+    from services.auth_service import hash_one_time_token
+
     n = _next_n()
+    # The database only stores the hash; the raw value is exposed as
+    # ``row.raw_token`` so tests can call the routes the way an emailed link would.
+    raw_token = overrides.pop("raw_token", f"evt_{n}_{secrets.token_urlsafe(16)}")
     defaults = dict(
         user_id=user.id,
-        token=f"evt_{n}_{secrets.token_urlsafe(16)}",
+        token_hash=hash_one_time_token(raw_token),
         expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=5),
         used=False,
     )
@@ -213,6 +224,7 @@ def make_email_verification_token(db_session, user, **overrides):
     row = EmailVerificationToken(**defaults)
     db_session.add(row)
     db_session.flush()
+    row.raw_token = raw_token
     return row
 
 

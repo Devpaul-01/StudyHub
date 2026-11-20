@@ -1700,11 +1700,13 @@ class PasswordResetToken(db.Model):
     __tablename__ = "password_reset_tokens"
 
     id         = db.Column(db.Integer, primary_key=True)
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    token      = db.Column(db.String(500), unique=True, nullable=False, index=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
+    # SHA-256 hex digest of the emailed token. The raw token is never stored
+    # (a database leak must not yield usable reset links).
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=False)
-    used       = db.Column(db.Boolean, default=False)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    used       = db.Column(db.Boolean, default=False, nullable=False)
     used_at    = db.Column(db.DateTime)
 
     def is_valid(self):
@@ -1727,18 +1729,20 @@ class EmailVerificationToken(db.Model):
     PasswordResetToken's mark-used-on-first-use design closes that gap
     the same way it was already closed for password resets.
 
-    verify_token()/generate_verification_token() (helpers.py / utils.py)
-    remain in place and are still used elsewhere — only the email
-    verification flow was migrated to this opaque-token model.
+    The JWT-based verification helpers that used to coexist with this model
+    have been removed. Like PasswordResetToken, only the SHA-256 hash of the
+    token is stored.
     """
     __tablename__ = "email_verification_tokens"
 
     id         = db.Column(db.Integer, primary_key=True)
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    token      = db.Column(db.String(500), unique=True, nullable=False, index=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
+    # SHA-256 hex digest of the emailed token. The raw token is never stored
+    # (a database leak must not yield usable verification links).
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=False)
-    used       = db.Column(db.Boolean, default=False)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    used       = db.Column(db.Boolean, default=False, nullable=False)
     used_at    = db.Column(db.DateTime)
 
     def is_valid(self):
@@ -1784,7 +1788,7 @@ class RefreshToken(db.Model):
     family_id     = db.Column(db.String(64), nullable=False, index=True)
     created_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     expires_at    = db.Column(db.DateTime, nullable=False)
-    revoked       = db.Column(db.Boolean, default=False, index=True)
+    revoked       = db.Column(db.Boolean, default=False, nullable=False, index=True)
     revoked_at    = db.Column(db.DateTime, nullable=True)
     replaced_by_id= db.Column(db.Integer, db.ForeignKey('refresh_tokens.id'), nullable=True)
 

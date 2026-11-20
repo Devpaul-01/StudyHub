@@ -87,6 +87,7 @@ student_bp = Blueprint('student', __name__, url_prefix='/student')
 CSRF_EXEMPT_PATHS = {
     "/student/login",
     "/student/register",
+    "/student/resend-verification",
     "/student/verify-email",
     "/student/verify-reset",
     "/student/set-password",

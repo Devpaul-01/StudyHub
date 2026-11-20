@@ -151,7 +151,7 @@ def test_issue_password_reset_token_returns_raw_token_and_persists_row(db_sessio
     db_session.commit()
 
     from models import PasswordResetToken
-    row = PasswordResetToken.query.filter_by(token=raw_token).first()
+    row = PasswordResetToken.query.filter_by(token_hash=auth_service.hash_one_time_token(raw_token)).first()
     assert row is not None
     assert row.used is False
     assert row.expires_at == now + datetime.timedelta(hours=1)
@@ -161,19 +161,20 @@ def test_consume_password_reset_token_valid(db_session, make_user, make_password
     user = make_user()
     token_row = make_password_reset_token(user)
 
-    result_user = auth_service.consume_password_reset_token(token_row.token)
+    result_user = auth_service.consume_password_reset_token(token_row.raw_token)
 
     assert result_user.id == user.id
-    refreshed = type(token_row).query.get(token_row.id)
-    assert refreshed.used is True
-    assert refreshed.used_at is not None
+    # consume_* spends the token with a bulk UPDATE and does not commit.
+    db_session.refresh(token_row)
+    assert token_row.used is True
+    assert token_row.used_at is not None
 
 
 def test_consume_password_reset_token_already_used_raises(db_session, make_user, make_password_reset_token):
     user = make_user()
     token_row = make_password_reset_token(user, used=True)
     with pytest.raises(ValidationError):
-        auth_service.consume_password_reset_token(token_row.token)
+        auth_service.consume_password_reset_token(token_row.raw_token)
 
 
 def test_consume_password_reset_token_expired_raises(db_session, make_user, make_password_reset_token):
@@ -182,7 +183,7 @@ def test_consume_password_reset_token_expired_raises(db_session, make_user, make
         user, expires_at=datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
     )
     with pytest.raises(ValidationError):
-        auth_service.consume_password_reset_token(token_row.token)
+        auth_service.consume_password_reset_token(token_row.raw_token)
 
 
 def test_consume_password_reset_token_nonexistent_raises(db_session):
@@ -209,17 +210,17 @@ def test_issue_email_verification_token_5h_expiry(db_session, make_user):
     db_session.commit()
 
     from models import EmailVerificationToken
-    row = EmailVerificationToken.query.filter_by(token=raw_token).first()
+    row = EmailVerificationToken.query.filter_by(token_hash=auth_service.hash_one_time_token(raw_token)).first()
     assert row.expires_at == now + datetime.timedelta(hours=5)
 
 
 def test_consume_email_verification_token_valid(db_session, make_user, make_email_verification_token):
     user = make_user()
     token_row = make_email_verification_token(user)
-    result_user = auth_service.consume_email_verification_token(token_row.token)
+    result_user = auth_service.consume_email_verification_token(token_row.raw_token)
     assert result_user.id == user.id
-    refreshed = type(token_row).query.get(token_row.id)
-    assert refreshed.used is True
+    db_session.refresh(token_row)
+    assert token_row.used is True
 
 
 def test_consume_email_verification_token_expired_raises(db_session, make_user, make_email_verification_token):
@@ -228,14 +229,14 @@ def test_consume_email_verification_token_expired_raises(db_session, make_user, 
         user, expires_at=datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
     )
     with pytest.raises(ValidationError):
-        auth_service.consume_email_verification_token(token_row.token)
+        auth_service.consume_email_verification_token(token_row.raw_token)
 
 
 def test_consume_email_verification_token_already_used_raises(db_session, make_user, make_email_verification_token):
     user = make_user()
     token_row = make_email_verification_token(user, used=True)
     with pytest.raises(ValidationError):
-        auth_service.consume_email_verification_token(token_row.token)
+        auth_service.consume_email_verification_token(token_row.raw_token)
 
 
 # ============================================================================

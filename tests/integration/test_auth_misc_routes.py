@@ -12,6 +12,8 @@ start/callback are left untested -- they require a real OAuth round
 trip this test environment cannot simulate.
 """
 
+import time
+
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -56,12 +58,22 @@ class TestGoogleTempInfo:
         with client.session_transaction() as sess:
             sess["google_email"] = "gtest@example.com"
             sess["google_name"] = "G Test"
+            sess["google_proof_at"] = int(time.time())
 
         resp = client.get("/student/google_temp_info")
 
         body = resp.get_json()
         assert body["email"] == "gtest@example.com"
         assert body["name"] == "G Test"
+
+    def test_stale_google_proof_is_not_returned(self, client):
+        with client.session_transaction() as sess:
+            sess["google_email"] = "old@example.com"
+            sess["google_name"] = "Old"
+            sess["google_proof_at"] = int(time.time()) - 3 * 3600
+
+        body = client.get("/student/google_temp_info").get_json()
+        assert body["email"] is None and body["name"] is None
 
 
 # ============================================================================
@@ -138,12 +150,16 @@ class TestValidateUser:
 
         assert resp.get_json()["status"] == "error"
 
-    def test_unknown_user_rejected(self, client):
-        resp = client.post(
-            "/student/validate-user", json={"data": "nobody@example.com"}
-        )
+    def test_unknown_user_gets_the_same_answer_as_known_user(self, client, make_user, monkeypatch):
+        from services.job_queue import email_queue
+        monkeypatch.setattr(email_queue, "enqueue", lambda *a, **k: None)
+        make_user(email="known@example.com")
 
-        assert resp.get_json()["status"] == "error"
+        unknown = client.post("/student/validate-user", json={"data": "nobody@example.com"})
+        known = client.post("/student/validate-user", json={"data": "known@example.com"})
+
+        assert unknown.status_code == known.status_code == 200
+        assert unknown.get_json() == known.get_json()
 
     def test_known_email_enqueues_reset_email(self, client, make_user, monkeypatch):
         from services.job_queue import email_queue
@@ -205,7 +221,7 @@ class TestVerifyEmail:
         user = make_user(email_verified=False, status="pending_verification")
         token_row = make_email_verification_token(user)
 
-        resp = client.post(f"/student/verify-email/{token_row.token}")
+        resp = client.post(f"/student/verify-email/{token_row.raw_token}")
 
         assert resp.status_code == 200
         body = resp.get_json()
@@ -222,8 +238,24 @@ class TestVerifyEmail:
         user = make_user(email_verified=True, status="approved")
         token_row = make_email_verification_token(user, used=True)
 
-        resp = client.post(f"/student/verify-email/{token_row.token}")
+        resp = client.post(f"/student/verify-email/{token_row.raw_token}")
 
+        # A used link opened by someone who is not signed in as that user does
+        # not reveal a session; it points to sign-in instead.
         body = resp.get_json()
+        assert body["status"] == "error"
+        assert body["data"]["already_verified"] is True
+        assert body["data"]["login_url"] == "/student/login"
+
+    def test_replay_in_the_signed_in_browser_is_friendly(
+        self, client, make_user, make_email_verification_token, auth_headers
+    ):
+        from routes.student.helpers import _build_access_token
+        user = make_user(email_verified=True, status="approved")
+        token_row = make_email_verification_token(user, used=True)
+        client.set_cookie("access_token", _build_access_token(user))
+
+        body = client.post(f"/student/verify-email/{token_row.raw_token}").get_json()
+
         assert body["status"] == "success"
         assert body["data"]["already_verified"] is True

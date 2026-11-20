@@ -1,7 +1,9 @@
 # routes/student/auth.py
 
 from flask import Blueprint, request, jsonify, redirect, url_for, current_app, make_response, render_template, session
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
+import secrets
+import time
 import re
 from urllib.parse import quote
 from flask_dance.contrib.google import make_google_blueprint, google
@@ -23,14 +25,14 @@ from .helpers import (
     generate_tokens_for_user, decode_token, token_required,
     token_required_allow_pending, PENDING_STATUSES,
     success_response, error_response, set_auth_cookies, clear_auth_cookies,
-    _build_access_token,
+    _build_access_token, public_url,
 )
 # Phase 5b (Document 4 §1): SENSITIVE_AUTH-tier rate limiting on every
 # pre-auth route in this file (login, register, password-reset trigger,
 # complete-registration) — the specific gap Document 03 §C flagged as
 # unthrottled brute-force/email-enumeration risk. ip_key() since these are
 # all pre-authentication (no user identity yet to key on).
-from services.rate_limit_service import limiter, RateLimitTier, ip_key
+from services.rate_limit_service import limiter, RateLimitTier, ip_key, allow_action, reset_action
 # Activity/streak recording and password finalization now live in
 # services/auth_service.py (Document 2 §3.10); notification construction
 # goes through services/notification_service.py (Document 2 §3.9).
@@ -125,14 +127,38 @@ def _user_from_access_cookie():
     return User.query.get(payload.get("user_id"))
 
 
+# How long the Google sign-in proof stays valid. The Flask session is a signed
+# client-side cookie, so it cannot be revoked server-side; a short lifetime
+# limits how long a copied cookie is useful (audit AUD-10).
+GOOGLE_PROOF_TTL_SECONDS = 30 * 60
+
+
+def _set_google_proof(email, name, google_sub):
+    session["google_email"] = email
+    session["google_name"] = name
+    session["google_id"] = google_sub
+    session["google_proof_at"] = int(time.time())
+
+
+def _google_session_email():
+    """The Google-verified email in the session, if the proof is still fresh."""
+    email = _normalize_email(session.get("google_email"))
+    issued = session.get("google_proof_at")
+    if not email or not isinstance(issued, int):
+        return None
+    if time.time() - issued > GOOGLE_PROOF_TTL_SECONDS:
+        return None
+    return email
+
+
 def _is_request_authorized_for_email(email):
     """
     Return True when the current request is allowed to act on behalf of `email`.
 
     Two accepted proofs:
-      1. The Google OAuth session contains this email (new Google user
+      1. A fresh Google OAuth session for this email (new Google user
          mid-onboarding, before they hold a JWT).
-      2. A valid JWT access-token cookie belongs to the user with this email.
+      2. A valid JWT access-token cookie belonging to the user with this email.
 
     Emails are compared case-insensitively.
     """
@@ -140,8 +166,7 @@ def _is_request_authorized_for_email(email):
     if not email:
         return False
 
-    google_email = _normalize_email(session.get("google_email"))
-    if google_email and google_email == email:
+    if _google_session_email() == email:
         return True
 
     user = _user_from_access_cookie()
@@ -168,6 +193,7 @@ def _clear_google_oauth_session():
     session.pop("google_email", None)
     session.pop("google_name", None)
     session.pop("google_id", None)
+    session.pop("google_proof_at", None)
 
 
 # record_activity/update_login_streak/_get_or_create_today_activity/
@@ -251,6 +277,13 @@ def google_callback():
         if not email:
             return redirect(url_for("student.student_auth.login") + "?error=oauth_failed")
 
+        # Google can return an address the account holder never verified
+        # (accounts may be created with a third-party address). Only a
+        # verified address proves ownership of the mailbox (audit AUD-10).
+        if google_info.get("verified_email") is not True:
+            current_app.logger.warning("Google OAuth: unverified email address - refusing")
+            return redirect(url_for("student.student_auth.login") + "?error=email_not_verified")
+
         # ── 1. Existing user ─────────────────────────────────────────────────
         existing_user = User.query.filter_by(email=email).first()
 
@@ -301,7 +334,12 @@ def google_callback():
             #   protect, and backfilling google_id now is not a new grant.
             # - google_id NULL AND pin is a real hash -> a password
             #   account. Google auth must not bypass it.
-            is_google_account = bool(existing_user.google_id) or existing_user.pin == "PENDING_VERIFICATION"
+            # A registration that was started with an email link but never
+            # finished has no password. Google just proved control of this
+            # mailbox, so the account is explicitly claimed for this Google
+            # identity and its email counts as verified.
+            claimable = (not existing_user.google_id) and existing_user.pin == auth_service.PENDING_PIN
+            is_google_account = bool(existing_user.google_id) or claimable
 
             if not is_google_account:
                 # A real password has been set for this email and it was
@@ -319,6 +357,8 @@ def google_callback():
             # predate this column, and keep it current otherwise.
             if google_sub and existing_user.google_id != google_sub:
                 existing_user.google_id = google_sub
+            if claimable and not existing_user.email_verified:
+                existing_user.email_verified = True
 
             # ✅ APPROVED USER → Login
             if existing_user.status == "approved":
@@ -329,48 +369,28 @@ def google_callback():
                 current_app.logger.info(f"Google login: existing user {email}")
                 return response
 
-            # ✅ NEEDS ONBOARDING → Go to onboard (FIXED!)
-            if existing_user.status == "pending_onboarding":
+            # ✅ STILL REGISTERING → continue where they left off
+            if existing_user.status in PENDING_STATUSES:
                 db.session.commit()
-                # Auth-flow-audit fix (Finding #1/#5 interaction): onboard()
-                # and complete_registration() authorize via
-                # _is_request_authorized_for_email(), which accepts either
-                # this session value or a JWT cookie. Returning Google
-                # users redirected here have neither set yet at this point
-                # in the flow — without this, a legitimate returning user
-                # would be incorrectly blocked by the same ownership check
-                # that (correctly) now blocks unauthenticated callers in
-                # complete_registration(). Set the session proof here,
-                # exactly as the brand-new-user branch already does.
-                session["google_email"] = email
-                session["google_name"]  = existing_user.name
-                session["google_id"]    = google_sub
-                current_app.logger.info(f"Google login: user {email} needs onboarding")
-                return redirect(f"/student/onboard/{email}")
+                # onboard() / complete_registration() accept this fresh
+                # Google proof for users who do not hold a JWT yet.
+                _set_google_proof(email, existing_user.name, google_sub)
+                if existing_user.status == "pending_onboarding":
+                    return redirect("/student/onboard/" + quote(email))
+                return redirect("/student/complete-registration?email=" + quote(email))
 
-            # ✅ NEEDS COMPLETE-REGISTRATION → Go to complete-registration
-            if existing_user.status == "pending_verification":
-                db.session.commit()
-                session["google_email"] = email
-                session["google_name"]  = existing_user.name
-                session["google_id"]    = google_sub
-                current_app.logger.info(f"Google login: user {email} needs complete-registration")
-                return redirect(f"/student/complete-registration?email={email}")
-
-            # Fallback for any other status
+            # Any other status (for example suspended): no session, no proof.
             db.session.commit()
-            session["google_email"] = email
-            session["google_name"]  = existing_user.name
-            session["google_id"]    = google_sub
-            current_app.logger.info(f"Google login: user {email} in unknown status: {existing_user.status}")
-            return redirect(f"/student/complete-registration?email={email}")
+            current_app.logger.info(f"Google login refused: {email} status {existing_user.status}")
+            return redirect(url_for("student.student_auth.login") + "?error=account_inactive")
 
         # ── 2. Brand-new user ─────────────────────────────────────────────────
+        name = (name or "").strip()[:100] or email.split("@")[0]
         new_user = User(
             name=name,
             email=email,
             role="student",
-            pin="PENDING_VERIFICATION",
+            pin=auth_service.PENDING_PIN,
             status="pending_onboarding",
             email_verified=True,
             google_id=google_sub,
@@ -385,7 +405,7 @@ def google_callback():
             user_id=new_user.id,
             full_name=name,
             date_of_birth=None,
-            pin="PENDING_VERIFICATION",
+            pin=auth_service.PENDING_PIN,
             status="incomplete",
             department="",
             class_name="",
@@ -400,12 +420,10 @@ def google_callback():
         auth_service.record_activity(new_user.id, "register", score=5)
         db.session.commit()
 
-        session["google_name"]  = name
-        session["google_id"]    = google_sub
-        session["google_email"] = email
+        _set_google_proof(email, name, google_sub)
 
-        current_app.logger.info(f"Google signup: new user {email} created, redirecting to onboarding")
-        return redirect(f"/student/onboard/{email}")
+        current_app.logger.info("Google signup: new user created, redirecting to onboarding")
+        return redirect("/student/onboard/" + quote(email))
 
     except Exception as e:
         db.session.rollback()
@@ -416,10 +434,11 @@ def google_callback():
 @auth_bp.route("/google_temp_info")
 def temp_info():
     """Get temporary OAuth info from session."""
+    fresh_email = _google_session_email()
     return jsonify({
         "status": "success",
-        "email": session.get("google_email"),
-        "name":  session.get("google_name"),
+        "email": fresh_email,
+        "name":  session.get("google_name") if fresh_email else None,
     })
 
 
@@ -564,65 +583,79 @@ def onboard(email):
 # ============================================================================
 # REGISTER
 # ============================================================================
+GENERIC_SIGNUP_MESSAGE = (
+    "Check your email for the next step. If you already have an account, "
+    "sign in or reset your password instead."
+)
+
+
+def _send_verification_link(user):
+    """
+    Issue a fresh verification token (older unused ones are invalidated),
+    commit it and queue the email. Raises if the email cannot be queued.
+    """
+    token = auth_service.issue_email_verification_token(user)
+    db.session.commit()
+    send_verification_email(
+        user.email, public_url("student.student_auth.verify_email_api", token=token)
+    )
+
+
 @auth_bp.route("/register", methods=["GET", "POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
+@limiter.limit(RateLimitTier.REGISTRATION, key_func=ip_key, methods=["POST"])
 def register():
-    """Registration endpoint."""
+    """
+    Start a registration with a name and an email address.
+
+    The response is the same whether or not the address is already known
+    (no account enumeration). Signing up again with an address whose
+    registration was never finished simply sends a fresh link, which is also
+    how a user recovers from a lost or expired email (audit AUD-03/06).
+    """
     if request.method == "GET":
         return render_template("auth/register.html")
-
-    current_app.logger.info("=== REGISTER REQUEST ===")
-    current_app.logger.info(f"Content-Type: {request.content_type}")
 
     try:
         data = get_json_data()
         if data is None:
             return error_response("Invalid JSON data received")
 
-        full_name       = data.get("full_name", "").strip()
-        email           = data.get("email", "").strip().lower()
-        google_verified_claim = bool(data.get("google_verified", False))
+        full_name = data.get("full_name", "")
+        email = data.get("email", "")
+        if not isinstance(full_name, str) or not isinstance(email, str):
+            return error_response("Invalid data")
+        full_name = full_name.strip()
+        email = _normalize_email(email)
 
         if not all([full_name, email]):
             return error_response("All fields are required")
+        if len(full_name) > 100 or len(email) > 120:
+            return error_response("Name or email is too long")
         if not is_valid_email(email):
             return error_response("Invalid email format")
 
-        # Auth-flow-audit fix (related to Findings #1/#2): google_verified
-        # was previously a client-asserted boolean taken at face value —
-        # any direct POST to this endpoint could set
-        # {"google_verified": true} and skip the email-verification step
-        # entirely (email_verified=True, status="pending_verification"
-        # instead of requiring the verify-email link), with no proof the
-        # caller actually completed Google OAuth for this address. The
-        # legitimate frontend flow only ever sets this flag after a real
-        # GET /google_temp_info success, which reflects
-        # session["google_email"] having been set by an actual Google
-        # OAuth callback — so that same server-side session value is the
-        # correct thing to check here, not the client's claim.
-        google_verified = google_verified_claim and session.get("google_email") == email
+        if not allow_action("register", email, 5, 3600):
+            return error_response("Too many attempts for this email. Please try again later.", 429)
 
         existing_user = User.query.filter_by(email=email).first()
         if existing_user:
-            current_app.logger.error(f"Email {email} already exists")
-            return error_response("Email already registered")
+            if existing_user.status in PENDING_STATUSES:
+                try:
+                    _send_verification_link(existing_user)
+                except Exception:
+                    db.session.rollback()
+                    current_app.logger.error("Could not queue verification email", exc_info=True)
+                    return error_response(
+                        "We couldn't send the email right now. Please try again in a few minutes.", 503)
+            return success_response(GENERIC_SIGNUP_MESSAGE)
 
-        # If this is a genuinely Google-verified registration, capture the
-        # Google account id too — matches google_callback()'s own new-user
-        # path and lets is_google_account (see google_callback, Finding #2)
-        # keep recognizing this account as Google-originated later, even
-        # after complete_registration() sets a real password hash on `pin`.
-        google_sub_for_register = session.get("google_id") if google_verified else None
-
-        # FIX: dict() copies so each user gets independent mutable dicts
         new_user = User(
             name=full_name,
             email=email,
             role="student",
-            pin="PENDING_VERIFICATION",
-            status="pending_verification",  # ✅ Same for both (was pending_onboarding for Google)
-            email_verified=google_verified,
-            google_id=google_sub_for_register,
+            pin=auth_service.PENDING_PIN,
+            status="pending_verification",
+            email_verified=False,
             privacy_settings=dict(privacy_settings),
             notification_settings=dict(notification_settings),
             connection_settings=dict(connection_settings),
@@ -630,16 +663,15 @@ def register():
         db.session.add(new_user)
         db.session.flush()
 
-        student_profile = StudentProfile(
+        db.session.add(StudentProfile(
             user_id=new_user.id,
             full_name=full_name,
             date_of_birth=None,
-            pin="PENDING_VERIFICATION",
+            pin=auth_service.PENDING_PIN,
             status="incomplete",
             department="",
             class_name="",
-        )
-        db.session.add(student_profile)
+        ))
 
         notification_service.notify_welcome(
             new_user.id, email.split('@')[0],
@@ -647,50 +679,91 @@ def register():
             rich=True,
         )
         auth_service.record_activity(new_user.id, "register", score=5)
-        db.session.commit()
-
-        if google_verified:
-            current_app.logger.info(f"Google-verified registration for {email}")
-            _clear_google_oauth_session()
-            return success_response(
-                "Account created! Let's set up your profile.",
-                data={
-                    "google_verified": True,
-                    "redirect_url": f"/student/onboard/{email}",  # ✅ FIX: Was complete-registration
-                },
-            )
-
-        # Auth-flow-audit fix (Finding #3, Important): previously issued a
-        # stateless JWT (generate_verification_token) that stayed valid and
-        # reusable for its full 5-hour life regardless of how many times it
-        # was used, and auto-logged in on every first-time success — a
-        # leaked/forwarded verification email was a live session-hijack
-        # vector for that whole window. Now uses the same opaque,
-        # single-use, DB-backed token pattern already used for password
-        # resets (auth_service.issue_email_verification_token /
-        # consume_email_verification_token), so a captured link stops
-        # working the instant it's used once.
         token = auth_service.issue_email_verification_token(new_user)
-        db.session.commit()
 
-        verification_url = url_for("student.student_auth.verify_email_api", token=token, _external=True)
-        send_verification_email(email, verification_url)
+        # User, profile and token are committed together; only then is the
+        # email queued. If queueing fails the account is not stranded: signing
+        # up again with the same address sends a new link.
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()  # lost a race for the same email
+            return success_response(GENERIC_SIGNUP_MESSAGE)
 
-        return success_response("Registration successful! Check your email for verification link.")
+        try:
+            send_verification_email(
+                email, public_url("student.student_auth.verify_email_api", token=token))
+        except Exception:
+            current_app.logger.error("Could not queue verification email", exc_info=True)
+            return error_response(
+                "We couldn't send the email right now. Please try again in a few minutes.", 503)
 
-    except Exception as e:
+        return success_response(GENERIC_SIGNUP_MESSAGE)
+
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Registration error: {str(e)}")
+        current_app.logger.error("Registration error", exc_info=True)
         return error_response("Registration failed. Please try again.")
+
+
+@auth_bp.route("/resend-verification", methods=["POST"])
+@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
+def resend_verification():
+    """
+    Send a new verification/resume link to a registration that was started
+    but not finished. Always answers the same way, whether or not the
+    address is known.
+    """
+    try:
+        data = get_json_data() or {}
+        email = data.get("email", "")
+        if not isinstance(email, str) or not is_valid_email(_normalize_email(email)):
+            return error_response("Please enter a valid email address")
+        email = _normalize_email(email)
+
+        if not allow_action("resend_verification", email, 3, 3600):
+            return error_response("Too many requests for this email. Please try again later.", 429)
+
+        user = User.query.filter_by(email=email).first()
+        if user and user.status in PENDING_STATUSES:
+            try:
+                _send_verification_link(user)
+            except Exception:
+                db.session.rollback()
+                current_app.logger.error("Could not queue verification email", exc_info=True)
+        return success_response("If that email is waiting to be verified, we've sent a new link.")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.error("Resend verification error", exc_info=True)
+        return error_response("Request failed. Please try again.")
 
 
 # ============================================================================
 # LOGIN
 # ============================================================================
+_dummy_password_hash = None
+
+
+def _dummy_hash():
+    """A real hash to compare against when the account does not exist, so unknown and known accounts take similar time."""
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = generate_password_hash(secrets.token_urlsafe(16))
+    return _dummy_password_hash
+
+
 @auth_bp.route("/login", methods=["GET", "POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
+@limiter.limit(RateLimitTier.AUTH_ATTEMPT, key_func=ip_key, methods=["POST"])
 def login():
-    """Login endpoint."""
+    """
+    Log in with username/email and password.
+
+    Anything that is not a correct password for an existing account gets the
+    same "Invalid credentials" answer (no account or state enumeration, audit
+    AUD-11). The state of the account is only described to someone who has
+    proven they know its password. Failed attempts are also counted per
+    account across all IPs.
+    """
     if request.method == "GET":
         return render_template("auth/login.html")
 
@@ -699,41 +772,53 @@ def login():
         if data is None:
             return error_response("Invalid JSON data received")
 
-        username_or_email = data.get("username_or_email", "").strip().lower()
+        username_or_email = data.get("username_or_email", "")
         password          = data.get("password", "")
+        if not isinstance(username_or_email, str) or not isinstance(password, str):
+            return error_response("Invalid data")
+        username_or_email = username_or_email.strip().lower()
 
         if not username_or_email or not password:
             return error_response("Username/Email and password required")
+
+        if not allow_action("login", username_or_email, 10, 900):
+            return error_response("Too many sign-in attempts. Please wait a few minutes and try again.", 429)
 
         user = User.query.filter(
             or_(User.username == username_or_email, User.email == username_or_email)
         ).first()
 
-        if not user:
+        has_password = bool(user) and user.pin != auth_service.PENDING_PIN
+        password_ok = check_password_hash(user.pin if has_password else _dummy_hash(), password)
+        if not (user and has_password and password_ok):
             return error_response("Invalid credentials")
 
-        if user.pin == "PENDING_VERIFICATION":
-            return error_response("Please complete your registration. Check your email for the verification link.")
+        reset_action("login", username_or_email)
 
         if not user.email_verified:
             return error_response("Please verify your email before logging in.")
 
-        if not user.username:
-            return error_response("Please complete your registration.")
+        # Verified user who set a password (for example through "forgot
+        # password") but never chose a username: sign them in and send them
+        # to finish -- they are not locked out of their own registration.
+        if user.status in PENDING_STATUSES:
+            access_token, refresh_token = generate_tokens_for_user(user)
+            response = make_response(success_response(
+                "Let's finish setting up your account.",
+                data={
+                    "user": {"id": user.id, "name": user.name, "username": user.username, "email": user.email},
+                    "redirect": "/student/complete-registration?email=" + quote(user.email),
+                },
+            ))
+            set_auth_cookies(response, access_token, refresh_token)
+            return response
 
-        if not check_password_hash(user.pin, password):
-            return error_response("Invalid credentials")
-
-        if user.status != "approved":
-            return error_response("Your account is pending approval.")
+        if user.status != "approved" or not user.username:
+            return error_response("Your account is not active.")
 
         user = auth_service.record_login_and_commit(user)
 
         access_token, refresh_token = generate_tokens_for_user(user)
-
-        # Auth-flow-audit fix (Finding #5): clear any stale Google-OAuth
-        # session state on every successful login, not only when the
-        # frontend remembers to call /clear-session.
         _clear_google_oauth_session()
 
         response = make_response(success_response(
@@ -752,308 +837,214 @@ def login():
         set_auth_cookies(response, access_token, refresh_token)
         return response
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Login error: {str(e)}")
-        return error_response("Login failed. Please try again.")   # FIX: no str(e) leak
+        current_app.logger.error("Login error", exc_info=True)
+        return error_response("Login failed. Please try again.")
 
 
 # ============================================================================
 # PASSWORD RESET / EMAIL VERIFICATION
 # ============================================================================
+GENERIC_RESET_MESSAGE = "If an account exists for that email or username, a password reset link has been sent."
+
+
 @auth_bp.route("/validate-user", methods=["POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def validate_user():
     """
-    Validate user and send password reset email.
+    "Forgot password": email a single-use reset link (valid 1 hour).
 
-    Document 3 §4: issues an opaque, DB-backed PasswordResetToken
-    (services/auth_service.py::issue_password_reset_token) — revocable
-    and single-use.
-
-    Auth-flow-audit note (Finding #3): email verification (register() /
-    verify_email_api()) was originally left on the shared stateless JWT
-    per this section's scoping decision, but was subsequently migrated to
-    the same opaque/single-use/DB-backed pattern used here
-    (EmailVerificationToken), because a leaked/forwarded verification
-    link turned out to be a real session-hijack vector (a successful
-    verification auto-logs the user in) — see auth_service.py's
-    EMAIL VERIFICATION TOKENS section for the full rationale. This
-    function and its token flow are unaffected by that change.
+    The answer is identical for known and unknown accounts. Requests are
+    also limited per account, so one address cannot be mail-flooded from many
+    IPs. A registration whose email was never verified gets a verification
+    link instead (a reset cannot verify an address).
     """
     try:
-        data       = request.get_json()
-        user_input = data.get("data")
+        data = get_json_data()
+        user_input = data.get("data") if data else None
+        if not isinstance(user_input, str) or not user_input.strip():
+            return error_response("Kindly enter your email or username")
+        user_input = user_input.strip().lower()
 
-        if not user_input:
-            return error_response("Kindly enter email or username")
+        if not allow_action("reset_request", user_input, 3, 3600):
+            return error_response("Too many requests for this account. Please try again later.", 429)
 
-        result = User.query.filter(
+        user = User.query.filter(
             or_(User.email == user_input, User.username == user_input)
         ).first()
 
-        if not result:
-            return error_response("User not found, kindly check inputted value")
+        if user:
+            try:
+                if not user.email_verified:
+                    if user.status in PENDING_STATUSES:
+                        _send_verification_link(user)
+                else:
+                    reset_token = auth_service.issue_password_reset_token(user)
+                    db.session.commit()
+                    send_password_reset(
+                        user.email, public_url("student.student_auth.reset_password_api", token=reset_token))
+            except Exception:
+                db.session.rollback()
+                current_app.logger.error("Could not send password reset email", exc_info=True)
 
-        reset_token = auth_service.issue_password_reset_token(result)
-        db.session.commit()
+        return success_response(GENERIC_RESET_MESSAGE)
 
-        verification_url = url_for("student.student_auth.reset_password_api", token=reset_token, _external=True)
-        send_password_reset(result.email, verification_url)
-
-        return success_response("A password reset link has been sent to your email.")
-
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Password reset error: {str(e)}")
-        return error_response("Password reset failed. Please try again.")   # FIX: no str(e) leak
+        current_app.logger.error("Password reset error", exc_info=True)
+        return error_response("Password reset failed. Please try again.")
+
 
 @auth_bp.route("/verify-reset/<token>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def reset_password_api(token):
     """
-    Verify password reset token.
-
-    Document 3 §4: this is now a read-only PEEK at the PasswordResetToken
-    row (is_valid() check only — does NOT mark it used) so the link can
-    be safely opened/previewed without burning the single-use token; the
-    token is actually consumed in set_password() below, at the point the
-    password is genuinely changed.
+    Check a reset link. Read-only: opening or previewing the link does not
+    spend it; it is spent by set_password() when the password changes.
     """
     if request.method == "GET":
         return render_template("auth/verify_reset.html")
 
-    from models import PasswordResetToken
+    from errors import ValidationError
 
-    current_app.logger.info(f"🔍 [verify-reset] Verifying token: {token[:20]}...")
+    try:
+        user = auth_service.peek_password_reset_token(token)
+    except ValidationError as e:
+        return error_response(str(e))
 
-    reset_row = PasswordResetToken.query.filter_by(token=token).first()
-    
-    if not reset_row:
-        current_app.logger.warning(f"❌ [verify-reset] Token not found in database: {token[:20]}...")
-        return error_response("This password reset link is invalid or has expired.")
-
-    current_app.logger.info(f"📊 [verify-reset] Token found:")
-    current_app.logger.info(f"   - user_id: {reset_row.user_id}")
-    current_app.logger.info(f"   - used: {reset_row.used}")
-    current_app.logger.info(f"   - expires_at: {reset_row.expires_at}")
-    current_app.logger.info(f"   - is_valid: {reset_row.is_valid()}")
-
-    if not reset_row.is_valid():
-        current_app.logger.warning(f"❌ [verify-reset] Token is INVALID:")
-        if reset_row.used:
-            current_app.logger.warning(f"   - Token already used")
-        if reset_row.expires_at < datetime.datetime.utcnow():
-            current_app.logger.warning(f"   - Token expired at: {reset_row.expires_at}")
-        return error_response("This password reset link is invalid or has expired.")
-
-    user = User.query.get(reset_row.user_id)
-    if not user:
-        current_app.logger.warning(f"❌ [verify-reset] User not found for token: {token[:20]}...")
-        return error_response("User not found")
-
-    current_app.logger.info(f"✅ [verify-reset] Token verified successfully for user: {user.email}")
-    
     return success_response(
         "Password Reset Link Verified!",
         data={
             "email": user.email,
             "token": token,
-            "redirect_url": f"/student/set-password?token={token}&email={user.email}",
+            "redirect_url": "/student/set-password?token=" + quote(token) + "&email=" + quote(user.email),
         },
     )
+
 
 @auth_bp.route("/set-password", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key, methods=["POST"])
 def set_password():
     """
-    Set new password after reset.
+    Choose a new password with a reset token.
 
-    Document 3 §4: consumes the opaque PasswordResetToken (marks it used,
-    single-use enforced) via auth_service.consume_password_reset_token —
-    this is the point the reset link is actually spent, distinct from the
-    read-only peek in reset_password_api() above. finalize_password()
-    still does the actual pin/password_hash write, unchanged.
+    The token is spent, the password written and every session of the user
+    revoked in ONE transaction: if anything fails the token stays usable, and
+    two simultaneous requests cannot both succeed (audit AUD-07/AUD-08).
     """
     if request.method == "GET":
         return render_template("auth/set_password.html")
 
-    from models import PasswordResetToken
+    from errors import ValidationError
 
-    data = request.get_json() or {}
+    data = get_json_data() or {}
     token = data.get("token") or request.args.get("token")
     password = data.get("password", "")
     confirm_password = data.get("confirm_password", "")
 
-    current_app.logger.info(f"🔍 [set-password] Received request:")
-    current_app.logger.info(f"   - token: {token[:20] if token else 'MISSING'}...")
-    current_app.logger.info(f"   - password length: {len(password) if password else 0}")
-    current_app.logger.info(f"   - confirm_password length: {len(confirm_password) if confirm_password else 0}")
-
-    if not token:
-        current_app.logger.warning("❌ [set-password] No token provided in request")
+    if not isinstance(token, str) or not token:
         return error_response("Reset token is required")
-
-    # ✅ Check token exists and is valid BEFORE consuming
-    reset_row = PasswordResetToken.query.filter_by(token=token).first()
-    
-    if not reset_row:
-        current_app.logger.warning(f"❌ [set-password] Token not found in database: {token[:20]}...")
-        return error_response("This password reset link is invalid or has expired.")
-
-    current_app.logger.info(f"📊 [set-password] Token found:")
-    current_app.logger.info(f"   - user_id: {reset_row.user_id}")
-    current_app.logger.info(f"   - used: {reset_row.used}")
-    current_app.logger.info(f"   - expires_at: {reset_row.expires_at}")
-    current_app.logger.info(f"   - is_valid: {reset_row.is_valid()}")
-
-    if not reset_row.is_valid():
-        current_app.logger.warning(f"❌ [set-password] Token is INVALID:")
-        if reset_row.used:
-            current_app.logger.warning(f"   - Token already used")
-        if reset_row.expires_at < datetime.datetime.utcnow():
-            current_app.logger.warning(f"   - Token expired at: {reset_row.expires_at}")
-        return error_response("This password reset link is invalid or has expired.")
-
+    if not isinstance(password, str) or not isinstance(confirm_password, str):
+        return error_response("Invalid data")
     if not all([password, confirm_password]):
-        current_app.logger.warning("❌ [set-password] Missing password or confirm_password")
         return error_response("All fields are required")
-    
     if password != confirm_password:
-        current_app.logger.warning("❌ [set-password] Passwords do not match")
         return error_response("Passwords do not match")
-    
     if len(password) < 6:
-        current_app.logger.warning("❌ [set-password] Password too short")
         return error_response("Password must be at least 6 characters")
 
     try:
-        current_app.logger.info(f"🔄 [set-password] Attempting to consume token for user_id: {reset_row.user_id}")
-        
-        # consume_password_reset_token commits internally (Document 2 §5's
-        # documented second exception) the moment the token is marked used,
-        # independent of whatever finalize_password does below.
         reset_user = auth_service.consume_password_reset_token(token)
-        
-        current_app.logger.info(f"✅ [set-password] Token consumed successfully for: {reset_user.email}")
-        
         user = auth_service.finalize_password(reset_user.email, password)
-        
-        current_app.logger.info(f"✅ [set-password] Password updated successfully for: {user.email}")
-        
-    except LookupError as e:
-        current_app.logger.error(f"❌ [set-password] LookupError: {str(e)}")
+        auth_service.invalidate_password_reset_tokens(user.id)
+        auth_service.revoke_all_refresh_tokens(user.id)
+        db.session.commit()
+    except (ValidationError, LookupError) as e:
+        db.session.rollback()
         return error_response(str(e))
-    except ValidationError as e:
-        current_app.logger.error(f"❌ [set-password] ValidationError: {str(e)}")
-        return error_response(str(e))
-    except Exception as e:
-        current_app.logger.error(f"❌ [set-password] Unexpected error: {str(e)}")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.error("Password reset failed", exc_info=True)
         return error_response("Failed to reset password. Please try again.")
 
-    db.session.commit()
     return success_response(
-        f"Password reset complete, @{user.username}!",
+        "Password reset complete. You can now sign in.",
         data={"redirect_url": "/student/login"},
     )
-    
-    
-    
+
+
 @auth_bp.route("/verify-email/<token>", methods=["GET", "POST"])
 @limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
 def verify_email_api(token):
-    """API endpoint for email verification."""
+    """
+    Verify an email address with a single-use token and sign the user in so
+    they can continue with onboarding / complete-registration.
+
+    The token is spent atomically (see auth_service) and the verification is
+    committed in the same transaction. Re-opening an already used link only
+    gets a friendly answer in the browser that is already signed in; anyone
+    else is told to sign in or request a new link.
+    """
     if request.method == "GET":
         return render_template("auth/verify-email.html")
 
-    # Auth-flow-audit fix (Finding #3, Important): previously called
-    # verify_token(token) (JWT decode) here, which succeeded identically
-    # on every call for the token's full 5-hour life — a leaked/forwarded
-    # verification link could be replayed to auto-login as the user at
-    # any point in that window, not just once. Now consumes the opaque,
-    # single-use EmailVerificationToken issued by register() — the token
-    # itself is marked used on first successful verification, so a
-    # replay of the same link no longer decodes/succeeds at all.
-    #
-    # The pre-existing "already verified" idempotent-response branch is
-    # preserved for genuine double-clicks/page-refreshes: if the token
-    # was already consumed (ValidationError) but the underlying account
-    # is already verified+approved, we still return the friendly
-    # already-verified payload instead of a hard error. Any other
-    # invalid/expired/unknown token is a hard error, exactly as before.
     from errors import ValidationError
+    from models import EmailVerificationToken
 
     try:
         user = auth_service.consume_email_verification_token(token)
     except ValidationError:
-        # Token unknown, expired, or already used. If the account tied to
-        # this token was already fully verified/approved, this is almost
-        # certainly a harmless replay (double-click, page refresh, email
-        # link-preview bot) — keep the existing friendly response rather
-        # than surfacing an error for a state the user already reached.
-        # We can't recover which user a used/unknown token belonged to,
-        # so this can only be detected via the token row itself.
-        from models import EmailVerificationToken
-        stale_row = EmailVerificationToken.query.filter_by(token=token).first()
-        if stale_row:
-            stale_user = User.query.get(stale_row.user_id)
-            # email_verified=True alone is the correct signal that this
-            # token already did its job successfully on an earlier call —
-            # status only reaches "approved" much later, after the user
-            # also completes onboarding + complete-registration, so
-            # gating on status=="approved" here would show a hard error
-            # for a legitimate second click of the link during that
-            # in-between window, even though verification itself already
-            # genuinely succeeded.
-            if stale_user and stale_user.email_verified:
+        # Nothing was changed (the conditional UPDATE matched no row).
+        stale_row = EmailVerificationToken.query.filter_by(
+            token_hash=auth_service.hash_one_time_token(token)).first()
+        stale_user = User.query.get(stale_row.user_id) if stale_row else None
+        if stale_row and stale_row.used and stale_user and stale_user.email_verified:
+            session_user = _user_from_access_cookie()
+            if session_user and session_user.id == stale_user.id:
                 return success_response(
                     "Email already verified!",
-                    data={
-                        "email": stale_user.email,
-                        "already_verified": True,
-                    },
+                    data={"email": stale_user.email, "already_verified": True},
                 )
+            return error_response(
+                "This link was already used. Sign in to continue, or request a new link from the sign-up page.",
+                data={"already_verified": True, "login_url": "/student/login"},
+            )
         return error_response("This verification link is invalid or has expired.")
 
     try:
         email = user.email
 
-        if user.email_verified and user.status == "approved":
+        if user.status == "approved":
+            db.session.commit()
             return success_response(
                 "Email already verified!",
-                data={
-                    "email": email,
-                    "already_verified": True,
-                },
+                data={"email": email, "already_verified": True},
             )
+
+        if not auth_service.account_may_hold_session(user) and user.status not in PENDING_STATUSES:
+            db.session.rollback()
+            return error_response("This account is not active.", 403)
 
         user.email_verified = True
         db.session.commit()
 
-        # ✅ AUTO-LOGIN: Generate tokens like login does
         access_token, refresh_token = generate_tokens_for_user(user)
-
-        # ✅ Set auth cookies
         response = make_response(success_response(
             "Email verified successfully!",
-            data={
-                "email": email,
-                "redirect_url": f"/student/onboard/{email}",
-            },
+            data={"email": email, "redirect_url": "/student/onboard/" + quote(email)},
         ))
         set_auth_cookies(response, access_token, refresh_token)
-
-        current_app.logger.info(f"Email verified and auto-login for {email}")
         return response
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Verification error: {str(e)}")
+        current_app.logger.error("Verification error", exc_info=True)
         return error_response("Verification failed. Please try again.")
 
 
 @auth_bp.route("/check-username", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
+@limiter.limit(RateLimitTier.USERNAME_CHECK, key_func=ip_key)
 def check_username():
     """Check if a username is available."""
     try:
@@ -1203,46 +1194,19 @@ def reset_password():
 
 
 @auth_bp.route("/refresh-token", methods=["POST"])
-@limiter.limit(RateLimitTier.SENSITIVE_AUTH, key_func=ip_key)
+@limiter.limit(RateLimitTier.BURST_OK, key_func=ip_key)
 def refresh_token():
     """
-    Refresh access token using the refresh-token cookie.
+    Exchange the refresh-token cookie for a new access token.
 
-    Auth-flow-audit fix (Finding #6, best-option implementation):
-    previously decoded a stateless refresh JWT and reissued a new access
-    token while leaving the SAME refresh token in place for its full
-    7-day life — no rotation, no way to revoke a specific session, no way
-    to detect a stolen refresh token being replayed.
-
-    Now calls auth_service.rotate_refresh_token(), which:
-      - validates the presented token against the DB-backed RefreshToken
-        table (see models.py for the full design),
-      - if valid: revokes it and issues a brand-new refresh token in the
-        same rotation family, returned here and set as the new cookie
-        alongside a new access token,
-      - if the token was already revoked and reuse is detected OUTSIDE a
-        short (10s) grace window: treats this as a compromise signal,
-        revokes the ENTIRE token family server-side, and raises — forcing
-        this and every other session descended from that original login
-        to re-authenticate via a fresh login.
-      - if the token was already revoked but reuse falls WITHIN that
-        grace window and a valid successor token exists: treated as a
-        legitimate multi-tab race (two tabs refreshing around the same
-        moment), not theft — a working access token is returned but no
-        new refresh-token cookie is set (see rotate_refresh_token's own
-        docstring for the full reasoning; this is what makes
-        new_refresh_token possibly None below).
-
-    Access-token issuance for a rotated refresh goes through the same
-    _build_access_token() helper used by a fresh login
-    (helpers.generate_tokens_for_user), resolving what used to be a
-    second, independently hand-rolled payload dict in this route that had
-    already silently drifted from the login path once.
+    The refresh token is rotated on every use (see
+    auth_service.rotate_refresh_token for rotation, reuse detection and the
+    multi-tab grace window). Account eligibility is checked before the token
+    is rotated, so a rejected account does not burn its token.
     """
     from errors import ValidationError
 
     try:
-        # FIX: renamed local var to avoid shadowing the function name
         refresh_tok = request.cookies.get("refresh_token")
         if not refresh_tok:
             return error_response("Refresh token not found")
@@ -1250,49 +1214,24 @@ def refresh_token():
         try:
             user, new_refresh_token = auth_service.rotate_refresh_token(refresh_tok)
         except ValidationError as e:
-            # Invalid, expired, or reuse-detected (family revoked either
-            # way) — the client cannot recover without a fresh login.
-            # Clear cookies so the frontend's own state matches reality
-            # rather than holding onto now-dead credentials.
+            # Invalid, expired, reused or not-eligible: the client cannot
+            # recover without a fresh login, so drop its dead credentials.
             response = make_response(error_response(str(e)))
             clear_auth_cookies(response)
             return response
 
-        if user.status != "approved":
-            return error_response("Account not active")
-
-        # Auth-flow-audit fix (Finding #7): now uses the same
-        # _build_access_token() helper generate_tokens_for_user() uses for
-        # a fresh login, instead of a second hand-rolled payload dict.
-        # This also fixes a latent claim-shape drift the duplication had
-        # already produced: this route's payload was missing the "name"
-        # claim present in the login-issued token (nothing currently reads
-        # payload["name"], so it was harmless today, but it's exactly the
-        # kind of divergence that duplication risks and this collapses it
-        # to one definition.
         new_access_token = _build_access_token(user)
-
         response = make_response(success_response(
             "Token refreshed",
             data={"user": {"id": user.id, "username": user.username, "email": user.email, "name": user.name}},
         ))
-        # Refresh token IS now rotated on every use (see docstring above) —
-        # set_auth_cookies is called with the new refresh token so the
-        # rotated value replaces the old one in the client's cookie jar.
-        #
-        # Grace-window case: rotate_refresh_token() returns
-        # new_refresh_token=None when this request landed in the
-        # multi-tab-race grace window (see that function's docstring) —
-        # set_auth_cookies already treats refresh_token=None as "leave the
-        # existing refresh_token cookie alone," which is exactly correct
-        # here: another tab already installed the current valid refresh
-        # token for this family, and this response only needs to hand back
-        # a working access token, not overwrite it again.
+        # new_refresh_token is None in the multi-tab grace case; set_auth_cookies
+        # then leaves the refresh cookie another tab already installed alone.
         set_auth_cookies(response, new_access_token, new_refresh_token)
         return response
 
-    except Exception as e:
-        current_app.logger.error(f"Token refresh error: {str(e)}")
+    except Exception:
+        current_app.logger.error("Token refresh error", exc_info=True)
         return error_response("Token refresh failed")
 
 

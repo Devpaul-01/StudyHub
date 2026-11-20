@@ -79,11 +79,18 @@ class TestRegistrationAndVerification:
         # connection was ever attempted.
         assert enqueued.get("kwargs", {}).get("to_email") == "newstudent@example.com"
 
-    def test_register_duplicate_email_is_rejected(self, client, make_user):
+    def test_register_existing_approved_email_gets_the_generic_answer(self, client, make_user, monkeypatch):
+        from models import User
+        from services.job_queue import email_queue
+        calls = []
+        monkeypatch.setattr(email_queue, "enqueue", lambda *a, **k: calls.append(a))
         make_user(email="dupe@example.com")
+
         resp = client.post("/student/register", json=_register_payload(email="dupe@example.com"))
-        assert resp.status_code == 400
-        assert resp.get_json()["status"] == "error"
+
+        assert resp.status_code == 200 and resp.get_json()["status"] == "success"
+        assert User.query.filter_by(email="dupe@example.com").count() == 1
+        assert calls == []  # nothing is sent to an already active account
 
     def test_verify_email_marks_verified_and_auto_logs_in(self, client, make_user, make_email_verification_token):
         """
@@ -94,7 +101,7 @@ class TestRegistrationAndVerification:
         user = make_user(email_verified=False, status="pending_verification")
         token_row = make_email_verification_token(user)
 
-        resp = client.post(f"/student/verify-email/{token_row.token}")
+        resp = client.post(f"/student/verify-email/{token_row.raw_token}")
 
         assert resp.status_code == 200, resp.get_json()
         body = resp.get_json()
@@ -120,12 +127,12 @@ class TestRegistrationAndVerification:
         user = make_user(email_verified=False, status="pending_verification")
         token_row = make_email_verification_token(user)
 
-        first = client.post(f"/student/verify-email/{token_row.token}")
+        first = client.post(f"/student/verify-email/{token_row.raw_token}")
         assert first.status_code == 200
 
         # Simulate a second, independent client replaying the same link
         # (no cookies from the first call).
-        second = client.post(f"/student/verify-email/{token_row.token}")
+        second = client.post(f"/student/verify-email/{token_row.raw_token}")
         body = second.get_json()
         # Per auth.py::verify_email_api's own documented idempotent-reply
         # branch: since the account IS now verified, a replay returns a
@@ -189,7 +196,10 @@ class TestLoginAndStreak:
             "/student/login",
             json={"username_or_email": "pendinguser", "password": "correct-password"},
         )
-        assert resp.status_code == 400
+        # Correct password + verified email, registration unfinished: they are
+        # signed in and sent to finish, not locked out.
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["redirect"].startswith("/student/complete-registration?email=")
 
 
 class TestRefreshTokenRotation:

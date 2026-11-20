@@ -48,12 +48,12 @@ class TestVerifyResetToken:
         user = make_user(email="reset-me@example.com")
         reset_row = make_password_reset_token(user)
 
-        resp = client.post(f"/student/verify-reset/{reset_row.token}")
+        resp = client.post(f"/student/verify-reset/{reset_row.raw_token}")
 
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["data"]["email"] == "reset-me@example.com"
-        assert body["data"]["token"] == reset_row.token
+        assert body["data"]["token"] == reset_row.raw_token
         assert "redirect_url" in body["data"]
 
     def test_valid_token_is_not_marked_used_by_the_peek(
@@ -67,10 +67,10 @@ class TestVerifyResetToken:
         user = make_user()
         reset_row = make_password_reset_token(user)
 
-        client.post(f"/student/verify-reset/{reset_row.token}")
+        client.post(f"/student/verify-reset/{reset_row.raw_token}")
 
         from models import PasswordResetToken
-        refreshed = PasswordResetToken.query.filter_by(token=reset_row.token).first()
+        refreshed = PasswordResetToken.query.filter_by(id=reset_row.id).first()
         assert refreshed.used is False
 
     def test_nonexistent_token_returns_error(self, client):
@@ -85,7 +85,7 @@ class TestVerifyResetToken:
             user, expires_at=datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
         )
 
-        resp = client.post(f"/student/verify-reset/{reset_row.token}")
+        resp = client.post(f"/student/verify-reset/{reset_row.raw_token}")
 
         assert resp.status_code == 400
         assert "invalid or has expired" in resp.get_json()["message"]
@@ -94,7 +94,7 @@ class TestVerifyResetToken:
         user = make_user()
         reset_row = make_password_reset_token(user, used=True)
 
-        resp = client.post(f"/student/verify-reset/{reset_row.token}")
+        resp = client.post(f"/student/verify-reset/{reset_row.raw_token}")
 
         assert resp.status_code == 400
         assert "invalid or has expired" in resp.get_json()["message"]
@@ -128,7 +128,7 @@ class TestSetPassword:
         )
 
         resp = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "newpass123", "confirm_password": "newpass123",
         })
 
@@ -139,7 +139,7 @@ class TestSetPassword:
         reset_row = make_password_reset_token(user)
 
         resp = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "newpass123", "confirm_password": "different456",
         })
 
@@ -151,7 +151,7 @@ class TestSetPassword:
         reset_row = make_password_reset_token(user)
 
         resp = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "ab1", "confirm_password": "ab1",
         })
 
@@ -165,7 +165,7 @@ class TestSetPassword:
         reset_row = make_password_reset_token(user)
 
         resp = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "brandnewpass123", "confirm_password": "brandnewpass123",
         })
 
@@ -174,7 +174,7 @@ class TestSetPassword:
         assert body["data"]["redirect_url"] == "/student/login"
 
         from models import PasswordResetToken, User
-        refreshed_token = PasswordResetToken.query.filter_by(token=reset_row.token).first()
+        refreshed_token = PasswordResetToken.query.filter_by(id=reset_row.id).first()
         assert refreshed_token.used is True
 
         refreshed_user = User.query.filter_by(email="resetme2@example.com").first()
@@ -190,13 +190,13 @@ class TestSetPassword:
         reset_row = make_password_reset_token(user)
 
         first = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "firstpass123", "confirm_password": "firstpass123",
         })
         assert first.status_code == 200
 
         second = client.post("/student/set-password", json={
-            "token": reset_row.token,
+            "token": reset_row.raw_token,
             "password": "secondpass456", "confirm_password": "secondpass456",
         })
 
