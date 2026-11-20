@@ -19,6 +19,7 @@ from extensions import db
 # everything JWT-related is imported from a single source of truth here.
 from utils import send_password_reset, send_verification_email
 from .helpers import (
+    is_request_authorized_for_email,
     generate_tokens_for_user, decode_token, verify_token, token_required,
     success_response, error_response, set_auth_cookies, clear_auth_cookies,
     _build_access_token,
@@ -122,26 +123,10 @@ def _is_request_authorized_for_email(email):
     """
     Return True when the current request is allowed to act on behalf of `email`.
 
-    Two accepted proofs:
-      1. The Google OAuth session contains this email (new user mid-onboarding,
-         before they have a JWT).
-      2. A valid JWT access-token cookie belongs to this email.
+    Thin alias kept for existing call sites/tests; the implementation lives in
+    routes/student/helpers.py so the connections onboarding routes share it.
     """
-    # --- Google OAuth session (new users have no token yet) ---
-    if session.get("google_email") == email:
-        return True
-
-    # --- JWT cookie ---
-    token = request.cookies.get("access_token")
-    if token:
-        try:
-            payload = decode_token(token)
-            if payload.get("email") == email:
-                return True
-        except Exception:
-            pass
-
-    return False
+    return is_request_authorized_for_email(email)
 
 
 def _clear_google_oauth_session():

@@ -153,6 +153,38 @@ def verify_token(token):
     return email
 
 
+def is_request_authorized_for_email(email):
+    """
+    Return True when the current request is allowed to act on behalf of `email`.
+
+    A raw email in a URL carries no proof on its own. Two accepted proofs:
+      1. The Google OAuth session contains this email (new user mid-onboarding,
+         before they have a JWT).
+      2. A valid JWT access-token cookie belongs to this email.
+
+    Shared by auth.py's onboarding routes and the connections onboarding
+    routes (audit CON-01) so there is exactly one implementation.
+    """
+    from flask import session
+
+    if not email:
+        return False
+
+    if session.get("google_email") == email:
+        return True
+
+    token = request.cookies.get("access_token")
+    if token:
+        try:
+            payload = decode_token(token)
+            if payload.get("email") == email:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
 def role_required(*allowed_roles: str):
     """
     Document 3 §6.1: parameterized replacement for the old hardcoded
