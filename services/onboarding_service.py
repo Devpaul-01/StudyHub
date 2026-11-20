@@ -249,3 +249,130 @@ def connect_users(user, target_ids):
 
     db.session.commit()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Onboarding questionnaire validation (audit AUD-17)
+# ---------------------------------------------------------------------------
+CLASS_LEVELS = ("100 Level", "200 Level", "300 Level", "400 Level", "500 Level")
+LEARNING_STYLES = ("visual", "auditory", "kinesthetic", "reading")
+STUDY_PREFERENCES = ("group-study", "morning-study", "explaining-concepts", "practical-projects")
+SESSION_LENGTHS = ("30-minutes", "1-hour", "1.5-hours", "2-hours")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+TIME_SLOTS = ("morning", "afternoon", "evening")
+
+MAX_NAME_LENGTH = 100
+MAX_DEPARTMENT_LENGTH = 100
+MAX_SUBJECTS = 30
+MAX_SUBJECT_LENGTH = 100
+
+
+def _clean_string_list(value, field, errors, *, limit, item_length):
+    if value is None or value == "":
+        return []
+    if not isinstance(value, list):
+        errors[field] = f"{field} must be a list"
+        return []
+    if len(value) > limit:
+        errors[field] = f"{field} can contain at most {limit} items"
+        return []
+    cleaned = []
+    for item in value:
+        if not isinstance(item, str):
+            errors[field] = f"{field} must contain only text"
+            return []
+        item = item.strip()
+        if not item:
+            continue
+        if len(item) > item_length:
+            errors[field] = f"Each entry in {field} must be at most {item_length} characters"
+            return []
+        if item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def _choice(value, field, allowed, errors):
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or value not in allowed:
+        errors[field] = f"{field} must be one of: {', '.join(allowed)}"
+        return ""
+    return value
+
+
+def validate_onboarding_payload(data):
+    """
+    Validate and normalise the onboarding questionnaire.
+
+    Returns ``(cleaned, errors)``. ``errors`` maps field name -> message and is
+    empty when the payload is acceptable. Department stays free text (the UI
+    offers an "Other" option) but is length-limited; everything else is an
+    enumeration or a bounded list.
+    """
+    errors = {}
+    if not isinstance(data, dict):
+        return None, {"_": "Invalid data"}
+
+    name = data.get("name", "")
+    if name is None:
+        name = ""
+    if not isinstance(name, str):
+        errors["name"] = "name must be text"
+        name = ""
+    name = name.strip()
+    if len(name) > MAX_NAME_LENGTH:
+        errors["name"] = f"name must be at most {MAX_NAME_LENGTH} characters"
+
+    department = data.get("department", "")
+    if department is None:
+        department = ""
+    if not isinstance(department, str):
+        errors["department"] = "department must be text"
+        department = ""
+    department = department.strip()
+    if len(department) > MAX_DEPARTMENT_LENGTH:
+        errors["department"] = f"department must be at most {MAX_DEPARTMENT_LENGTH} characters"
+
+    schedule_raw = data.get("study_schedule", {})
+    schedule = {}
+    if schedule_raw in (None, ""):
+        schedule_raw = {}
+    if not isinstance(schedule_raw, dict):
+        errors["study_schedule"] = "study_schedule must be an object"
+    else:
+        for day, slots in schedule_raw.items():
+            if not isinstance(day, str) or day.lower() not in WEEKDAYS:
+                errors["study_schedule"] = "study_schedule days must be weekday names"
+                schedule = {}
+                break
+            if not isinstance(slots, list) or any(s not in TIME_SLOTS for s in slots):
+                errors["study_schedule"] = f"study_schedule times must be from: {', '.join(TIME_SLOTS)}"
+                schedule = {}
+                break
+            if slots:
+                schedule[day] = list(dict.fromkeys(slots))
+
+    prefs = _clean_string_list(
+        data.get("study_preferences"), "study_preferences", errors,
+        limit=len(STUDY_PREFERENCES), item_length=MAX_SUBJECT_LENGTH,
+    )
+    if "study_preferences" not in errors and any(p not in STUDY_PREFERENCES for p in prefs):
+        errors["study_preferences"] = f"study_preferences must be from: {', '.join(STUDY_PREFERENCES)}"
+
+    cleaned = {
+        "name": name,
+        "department": department,
+        "class_level": _choice(data.get("class_level"), "class_level", CLASS_LEVELS, errors),
+        "subjects": _clean_string_list(
+            data.get("subjects"), "subjects", errors, limit=MAX_SUBJECTS, item_length=MAX_SUBJECT_LENGTH),
+        "help_subjects": _clean_string_list(
+            data.get("help_subjects"), "help_subjects", errors, limit=MAX_SUBJECTS, item_length=MAX_SUBJECT_LENGTH),
+        "strong_subjects": _clean_string_list(
+            data.get("strong_subjects"), "strong_subjects", errors, limit=MAX_SUBJECTS, item_length=MAX_SUBJECT_LENGTH),
+        "learning_style": _choice(data.get("learning_style"), "learning_style", LEARNING_STYLES, errors),
+        "study_preferences": prefs,
+        "study_schedule": schedule,
+        "session_length": _choice(data.get("session_length"), "session_length", SESSION_LENGTHS, errors),
+    }
+    return cleaned, errors
