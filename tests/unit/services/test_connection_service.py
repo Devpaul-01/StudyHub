@@ -194,7 +194,8 @@ def test_unblock_connection_default_deletes_row(db_session, make_user, make_conn
     assert Connection.query.get(conn_id) is None
 
 
-def test_unblock_connection_restore_to_accepted_keeps_row(db_session, make_user, make_connection):
+def test_unblock_connection_restore_flag_is_ignored_and_row_deleted(db_session, make_user, make_connection):
+    """Audit CON-02: the legacy restore_to_accepted flag must never recreate a connection."""
     blocker, blocked = make_user(), make_user()
     conn = make_connection(blocker, blocked, status="blocked", blocked_by_id=blocker.id)
     conn_id = conn.id
@@ -205,10 +206,7 @@ def test_unblock_connection_restore_to_accepted_keeps_row(db_session, make_user,
     db_session.commit()
 
     assert success is True
-    refreshed = Connection.query.get(conn_id)
-    assert refreshed is not None
-    assert refreshed.status == "accepted"
-    assert refreshed.blocked_by_id is None
+    assert Connection.query.get(conn_id) is None
 
 
 def test_unblock_connection_wrong_user_not_authorized(db_session, make_user, make_connection):

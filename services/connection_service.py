@@ -24,10 +24,13 @@ Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`
 """
 
 import datetime
+import html
 import logging
 from collections import Counter
 
-from sqlalchemy import or_, and_
+import bleach
+from sqlalchemy import or_, and_, func
+from sqlalchemy.exc import IntegrityError
 
 from models import Connection, Post, StudentProfile, User
 from extensions import db
@@ -78,37 +81,70 @@ def is_user_blocked(user_a_id, user_b_id):
     return connection.blocked_by_id == user_a_id, connection.blocked_by_id == user_b_id
 
 
+def _pair_filter(user_a_id, user_b_id):
+    return or_(
+        and_(Connection.requester_id == user_a_id, Connection.receiver_id == user_b_id),
+        and_(Connection.requester_id == user_b_id, Connection.receiver_id == user_a_id),
+    )
+
+
 def block_connection(blocker_id, blocked_id):
     """
     Block `blocked_id` on behalf of `blocker_id`.
 
-    Reuses the existing Connection row between the two users if one exists
-    (whatever its prior status — pending, accepted, rejected), setting
-    status="blocked" and blocked_by_id=blocker_id, WITHOUT touching
-    requester_id/receiver_id. Creates a fresh row if no connection existed
-    yet. Does not commit — the caller's existing try/except/commit block
-    stays in charge of the transaction, same as before this fix.
+    Audit CON-10 / CON-08:
+      * IDEMPOTENT and never steals ownership: if the pair is already
+        blocked (by either user) the existing row is returned untouched, so a
+        blocked user can no longer "re-block" to take over the block.
+      * ATOMIC: a single conditional UPDATE (status != 'blocked'); if there is
+        no row yet, the INSERT runs inside a SAVEPOINT and a lost race
+        (uq_connections_pair) falls back to re-reading/updating the row.
 
-    Returns the (session-pending) Connection object.
+    Reuses the existing Connection row (requester_id/receiver_id are never
+    mutated). Does not commit; the caller owns the transaction.
+
+    Returns the Connection row.
     """
-    connection = _find_connection_between(blocker_id, blocked_id)
-
     now = datetime.datetime.utcnow()
 
-    if connection:
-        connection.status = "blocked"
-        connection.blocked_by_id = blocker_id
-        connection.responded_at = now
-    else:
-        connection = Connection(
-            requester_id=blocker_id,
-            receiver_id=blocked_id,
-            status="blocked",
-            blocked_by_id=blocker_id,
-            requested_at=now,
-            responded_at=now,
+    def _try_update():
+        return Connection.query.filter(
+            _pair_filter(blocker_id, blocked_id),
+            Connection.status != "blocked",
+        ).update(
+            {
+                "status": "blocked",
+                "blocked_by_id": blocker_id,
+                "responded_at": now,
+            },
+            synchronize_session=False,
         )
-        db.session.add(connection)
+
+    if _try_update():
+        db.session.expire_all()
+        return _find_connection_between(blocker_id, blocked_id)
+
+    existing = _find_connection_between(blocker_id, blocked_id)
+    if existing:
+        return existing  # already blocked: keep the original owner
+
+    connection = Connection(
+        requester_id=blocker_id,
+        receiver_id=blocked_id,
+        status="blocked",
+        blocked_by_id=blocker_id,
+        requested_at=now,
+        responded_at=now,
+    )
+    try:
+        with db.session.begin_nested():
+            db.session.add(connection)
+            db.session.flush()
+    except IntegrityError:
+        # Lost a creation race: another request inserted the pair first.
+        if _try_update():
+            db.session.expire_all()
+        return _find_connection_between(blocker_id, blocked_id)
 
     return connection
 
@@ -118,19 +154,14 @@ def unblock_connection(unblocker_id, other_id, restore_to_accepted=False):
     Remove a block between `unblocker_id` and `other_id`. Only the user who
     created the block (Connection.blocked_by_id) may remove it.
 
-    restore_to_accepted:
-        False (default) — delete the connection row entirely; the two users
-            are no longer connected and would need a fresh connection
-            request to reconnect. Matches the original
-            connections.py /connections/unblock behaviour.
-        True — keep the row and set status back to "accepted" instead of
-            deleting it, so messaging/connection status is restored
-            immediately with no new request needed. Matches the original
-            messages.py /messages/unblock behaviour.
+    Audit CON-02: unblocking ALWAYS deletes the row. The two users are no
+    longer connected and need a fresh request to reconnect, so unblocking can
+    never manufacture a mutual connection nobody agreed to.
 
-    Does not commit — same convention as block_connection() above.
+    `restore_to_accepted` is accepted for backward compatibility with old
+    callers and is deliberately IGNORED.
 
-    Returns (success: bool, error_message: str | None).
+    Does not commit. Returns (success: bool, error_message: str | None).
     """
     connection = _find_connection_between(unblocker_id, other_id, status="blocked")
 
@@ -140,14 +171,167 @@ def unblock_connection(unblocker_id, other_id, restore_to_accepted=False):
     if connection.blocked_by_id != unblocker_id:
         return False, "Not authorized"
 
-    if restore_to_accepted:
-        connection.status = "accepted"
-        connection.blocked_by_id = None
-        connection.responded_at = datetime.datetime.utcnow()
-    else:
-        db.session.delete(connection)
+    # Conditional delete: no-op if someone else changed the row meanwhile.
+    deleted = Connection.query.filter(
+        Connection.id == connection.id,
+        Connection.status == "blocked",
+        Connection.blocked_by_id == unblocker_id,
+    ).delete(synchronize_session=False)
+    if not deleted:
+        return False, "User is not blocked"
 
+    db.session.expire_all()
     return True, None
+
+
+# ============================================================================
+# ATOMIC STATE TRANSITIONS  (audit CON-08)
+#
+# Every transition is ONE conditional UPDATE/DELETE whose WHERE clause carries
+# the expected current state, so concurrent requests (different workers) can
+# never both "win": the loser sees rowcount == 0. No locks / new infra needed.
+# All return the affected row count; none commit.
+# ============================================================================
+
+def accept_pending_connection(connection_id, receiver_id):
+    """pending -> accepted, only by the receiver. Returns rowcount (0 or 1)."""
+    return Connection.query.filter(
+        Connection.id == connection_id,
+        Connection.receiver_id == receiver_id,
+        Connection.status == "pending",
+    ).update(
+        {
+            "status": "accepted",
+            "responded_at": datetime.datetime.utcnow(),
+            "receiver_seen": True,
+            "requester_seen": False,  # requester has an unseen response
+        },
+        synchronize_session=False,
+    )
+
+
+def reject_pending_connection(connection_id, receiver_id):
+    """pending -> rejected, only by the receiver. Returns rowcount (0 or 1)."""
+    return Connection.query.filter(
+        Connection.id == connection_id,
+        Connection.receiver_id == receiver_id,
+        Connection.status == "pending",
+    ).update(
+        {
+            "status": "rejected",
+            "responded_at": datetime.datetime.utcnow(),
+            "receiver_seen": True,
+            "requester_seen": False,
+        },
+        synchronize_session=False,
+    )
+
+
+def cancel_pending_connection(connection_id, requester_id):
+    """Delete a still-pending request, only by its requester. Returns rowcount."""
+    return Connection.query.filter(
+        Connection.id == connection_id,
+        Connection.requester_id == requester_id,
+        Connection.status == "pending",
+    ).delete(synchronize_session=False)
+
+
+def remove_accepted_connection(user_a_id, user_b_id):
+    """Delete an ACCEPTED connection between the pair. Returns rowcount."""
+    return Connection.query.filter(
+        _pair_filter(user_a_id, user_b_id),
+        Connection.status == "accepted",
+    ).delete(synchronize_session=False)
+
+
+def reopen_rejected_connection(connection_id, new_requester_id, new_receiver_id, message):
+    """
+    rejected -> pending (audit CON-03).
+
+    Swaps direction when the re-requester was the original receiver so the
+    row always reads requester -> receiver for the NEW request, resets both
+    seen flags and never writes NULL into the NOT NULL responded_at column.
+    Returns rowcount (0 if the row is no longer 'rejected').
+    """
+    now = datetime.datetime.utcnow()
+    return Connection.query.filter(
+        Connection.id == connection_id,
+        Connection.status == "rejected",
+    ).update(
+        {
+            "requester_id": new_requester_id,
+            "receiver_id": new_receiver_id,
+            "status": "pending",
+            "requested_at": now,
+            "responded_at": now,
+            "request_message": message,
+            "receiver_seen": False,
+            "requester_seen": True,
+            "blocked_by_id": None,
+        },
+        synchronize_session=False,
+    )
+
+
+# ============================================================================
+# SHARED HELPERS
+# ============================================================================
+
+def notify_after_commit(fn, *args, **kwargs):
+    """
+    Run a notification-sending callable in its OWN transaction AFTER the
+    business transaction has committed (audit CON-09 / CON-17).
+
+    notification_service.notify() flushes a row, increments a Redis counter
+    and emits a WebSocket event: the latter two cannot be rolled back, so they
+    must never run before the business commit succeeds. A notification
+    failure never fails the (already committed) business operation.
+    """
+    try:
+        fn(*args, **kwargs)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.warning("Post-commit notification failed (non-critical)", exc_info=True)
+
+
+def clean_user_text(value, max_len, field="Message"):
+    """
+    Validate + sanitize free text (audit CON-04).
+
+    Strips every HTML tag with bleach, then unescapes the entities bleach adds
+    so the STORED value is plain text (the frontend escapes on render).
+    Returns None for None/blank. Raises ValueError for non-strings or
+    over-length input.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    cleaned = html.unescape(bleach.clean(value, tags=[], strip=True)).strip()
+    if len(cleaned) > max_len:
+        raise ValueError(f"{field} must be at most {max_len} characters")
+    return cleaned or None
+
+
+def get_accepted_partner_ids(user_id):
+    """Set of user ids with an ACCEPTED connection to `user_id` (1 query)."""
+    rows = db.session.query(Connection.requester_id, Connection.receiver_id).filter(
+        or_(Connection.requester_id == user_id, Connection.receiver_id == user_id),
+        Connection.status == "accepted",
+    ).all()
+    return {r if q == user_id else q for q, r in rows}
+
+
+def invalidate_pair_caches(user_a_id, user_b_id):
+    """Drop the per-pair mutual-count and health caches (audit CON-20)."""
+    low, high = min(user_a_id, user_b_id), max(user_a_id, user_b_id)
+    try:
+        cache_service.delete(f"sh:1:conn:mutual:{low}:{high}")
+        cache_service.delete(f"sh:1:conn:health:{user_a_id}:{user_b_id}")
+        cache_service.delete(f"sh:1:conn:health:{user_b_id}:{user_a_id}")
+    except Exception:
+        logger.warning("Pair cache invalidation failed (non-critical)", exc_info=True)
 
 
 def can_message(sender_id, receiver_id):

@@ -307,7 +307,8 @@ class TestBlockUnblock:
         check = client.get(f"/student/messages/can-message/{other.id}", headers=auth_headers(me))
         assert check.get_json()["data"]["can_message"] is False
 
-    def test_unblock_restores_messaging(self, client, make_user, auth_headers, csrf_headers):
+    def test_unblock_does_not_create_a_connection(self, client, make_user, auth_headers, csrf_headers):
+        """Audit CON-02: block a stranger then unblock must NOT yield an accepted connection."""
         me = make_user()
         other = make_user()
         headers = {**auth_headers(me), **csrf_headers(client)}
@@ -317,8 +318,9 @@ class TestBlockUnblock:
 
         assert resp.status_code == 200
         from models import Connection
-        conn = Connection.query.filter_by(requester_id=me.id, receiver_id=other.id).first()
-        assert conn.status == "accepted"
+        assert Connection.query.filter_by(requester_id=me.id, receiver_id=other.id).first() is None
+        check = client.get(f"/student/messages/can-message/{other.id}", headers=auth_headers(me))
+        assert check.get_json()["data"]["can_message"] is False
 
 
 # ============================================================================

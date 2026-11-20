@@ -1408,16 +1408,16 @@ def block_user_messaging(current_user, user_id):
 @token_required
 def unblock_user_messaging(current_user, user_id):
     """
-    C-3 fix: delegates to the shared helpers.unblock_connection(). Restores
-    status to "accepted" (restore_to_accepted=True) rather than deleting the
-    row — that is what can_message() checks for, and matches this
-    endpoint's original behaviour of restoring messaging immediately with
-    no new connection request needed.
+    C-3 fix: delegates to the shared helpers.unblock_connection().
+
+    Audit CON-02: unblocking now DELETES the row (identical to
+    /connections/unblock). It used to restore status="accepted", which
+    turned "block a stranger, then unblock" into a mutual connection that
+    neither user ever agreed to (and made can_message() true). To talk again
+    the two users must go through a normal connection request.
     """
     try:
-        success, error_message = unblock_connection(
-            current_user.id, user_id, restore_to_accepted=True
-        )
+        success, error_message = unblock_connection(current_user.id, user_id)
 
         if not success:
             status_code = 403 if error_message == "Not authorized" else 404
