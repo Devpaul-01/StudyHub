@@ -1,7 +1,7 @@
 # routes/student/helpers.py
 # Shared helper functions used across student routes
 
-from flask import request, jsonify, current_app, g
+from flask import request, jsonify, current_app, g, url_for
 from werkzeug.utils import secure_filename
 from functools import wraps
 import jwt                      # FIX: removed duplicate `import jwt` that appeared twice
@@ -117,6 +117,22 @@ def decode_token(token):
     """Decode and verify a JWT token. Raises jwt exceptions on failure."""
     secret = current_app.config["SECRET_KEY"]
     return jwt.decode(token, secret, algorithms=["HS256"])
+
+
+def public_url(endpoint: str, **values) -> str:
+    """
+    Absolute URL for links that are emailed to people (verification, reset).
+
+    The host comes from the PUBLIC_BASE_URL setting, never from request
+    headers: with a trusted proxy header a forged Host / X-Forwarded-Host
+    could otherwise make us email a victim a link to an attacker's domain
+    (password-reset poisoning, audit AUD-12). The request host is only used
+    as a fallback when PUBLIC_BASE_URL is unset (local development; the
+    production config refuses to start without it).
+    """
+    path = url_for(endpoint, _external=False, **values)
+    base = current_app.config.get("PUBLIC_BASE_URL") or request.host_url
+    return base.rstrip("/") + path
 
 
 # Account lifecycle states (User.status). Only "approved" accounts may use

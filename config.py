@@ -92,6 +92,11 @@ class Config:
 
     # Application Settings
     CURRENT_URL = os.environ.get('CURRENT_URL', 'http://127.0.0.1:5001/')
+    # Public origin used to build links that are emailed to users (email
+    # verification, password reset). Deliberately NOT derived from request
+    # headers (see routes/student/helpers.py::public_url). Falls back to
+    # CURRENT_URL only when it was set explicitly; production requires it.
+    PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL') or os.environ.get('CURRENT_URL')
     UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'static/upload')
 
     # Mailchimp (Optional)
