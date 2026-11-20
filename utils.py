@@ -59,6 +59,14 @@ def get_app_url():
 
 
 
+def mask_email(email):
+    """a***@example.com -- keep logs useful without storing full addresses."""
+    if not email or "@" not in str(email):
+        return "***"
+    local, _, domain = str(email).partition("@")
+    return f"{local[:1]}***@{domain}"
+
+
 def send_password_reset(email, link):
     """
     Send password reset email.
@@ -72,7 +80,7 @@ def send_password_reset(email, link):
         <h1 style="color: #667eea;">Reset Your Password</h1>
         <p>Click the button below to reset your password:</p>
         <a href="{link}" style="display: inline-block; margin: 20px 0; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px;">Reset Password</a>
-        <p style="color: #999; font-size: 12px;">This link expires in 5 hours.</p>
+        <p style="color: #999; font-size: 12px;">This link expires in 1 hour and can only be used once.</p>
     </body>
     </html>
     """
@@ -86,7 +94,7 @@ def send_password_reset(email, link):
         subject="🔐 Reset Your StudyHub Password",
         html_content=html,
     )
-    logger.info(f"[EMAIL_JOB_ENQUEUED] to={email} type=password_reset job_id={job.id}")
+    logger.info(f"[EMAIL_JOB_ENQUEUED] to={mask_email(email)} type=password_reset job_id={job.id}")
 
 def send_verification_email(email, link):
     """
@@ -113,7 +121,7 @@ def send_verification_email(email, link):
         subject="✅ Verify Your StudyHub Email",
         html_content=html,
     )
-    logger.info(f"[EMAIL_JOB_ENQUEUED] to={email} type=email_verification job_id={job.id}")
+    logger.info(f"[EMAIL_JOB_ENQUEUED] to={mask_email(email)} type=email_verification job_id={job.id}")
 
 
 def send_email_now(to_email, subject, html_content, async_send=True):
@@ -145,7 +153,7 @@ def send_email_now(to_email, subject, html_content, async_send=True):
                 subject=subject,
                 html_content=html_content,
             )
-            logger.info(f"[EMAIL_JOB_ENQUEUED] to={to_email} type=generic job_id={job.id}")
+            logger.info(f"[EMAIL_JOB_ENQUEUED] to={mask_email(to_email)} type=generic job_id={job.id}")
             print("✅ EMAIL JOB ENQUEUED")
             print("="*70 + "\n")
             return True
