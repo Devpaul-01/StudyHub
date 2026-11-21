@@ -430,20 +430,9 @@ Caps: 15 subjects, 10 strong/help subjects each, 300-char learning style, 10 pre
 ### `DELETE /student/profile/avatar`
 **Auth:** required.
 
-### `GET /student/profile/help/suggestions`
-Top 10 users who could help you, based on your `help_subjects` overlapping their strong subjects.
-**Auth:** required. **400** if you haven't filled in onboarding details yet.
-
-### `GET /student/profile/can-help/suggestions`
-Top 10 users you could help, based on your `strong_subjects` overlapping their help subjects.
-**Auth:** required. Same 400 condition.
-
-### `POST /student/profile/me`
-Full profile payload: user, stats, badges, active threads, activity heatmap, skills, learning
-goals. Note the verb — `GET` on this same path renders the HTML profile page; `POST` (no body
-needed) is the JSON API.
-
-**Auth:** required.
+### `GET /student/profile/me`
+Serves the HTML app shell opened on the profile tab (the JSON data comes from
+`GET /student/profile/me/data`). There is no JSON `POST` on this path.
 
 ### `GET /student/profile/visibility-settings` / `POST /student/profile/visibility-settings`
 Privacy toggles: `set_profile_private` (default `false`), `show_active_status` and
