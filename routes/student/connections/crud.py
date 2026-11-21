@@ -44,6 +44,7 @@ from services.connection_service import (
     get_recent_activity,
     get_mutual_connection_count,
     get_connection_health,
+    get_connection_health_batch,
     get_user_onboarding_preview,
     notify_after_commit,
     clean_user_text,
@@ -905,6 +906,35 @@ def find_help_with_subject(current_user):
         current_app.logger.error(f"Find help error: ", exc_info=True)
         return error_response("Failed to find help")
 
+MAX_PAGE_SIZE = 200
+
+
+def _page_params():
+    """
+    Audit CON-15: pagination for the list endpoints.
+    ?limit (1..200, default 200 = the old fixed cap, so existing clients keep
+    working) and ?cursor (opaque offset returned as next_cursor).
+    """
+    try:
+        limit = int(request.args.get("limit", MAX_PAGE_SIZE))
+    except (TypeError, ValueError):
+        limit = MAX_PAGE_SIZE
+    try:
+        offset = int(request.args.get("cursor", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return max(1, min(limit, MAX_PAGE_SIZE)), max(0, offset)
+
+
+def _page_meta(total, offset, returned):
+    has_more = offset + returned < total
+    return {
+        "total": total,
+        "has_more": has_more,
+        "next_cursor": str(offset + returned) if has_more else None,
+    }
+
+
 @connections_crud_bp.route("/connections/requests/received", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
@@ -912,13 +942,19 @@ def received_connection_requests(current_user):
     """Get ALL pending connection requests sent TO you (no pagination)"""
     try:
         # Get all received requests
-        requests = Connection.query.filter(
+        limit, offset = _page_params()
+        base = Connection.query.filter(
             Connection.receiver_id == current_user.id,
             Connection.status == "pending"
-        ).order_by(Connection.requested_at.desc()).limit(100).all()
+        )
+        total = base.count()
+        requests = base.order_by(
+            Connection.requested_at.desc(), Connection.id.desc()
+        ).offset(offset).limit(limit).all()
 
         if not requests:
-            return jsonify({"status": "success", "data": [], "total": 0})
+            return jsonify({"status": "success", "data": [], "total": total,
+                            "has_more": False, "next_cursor": None})
 
         # OPTIMIZED: Batch-load all requesters, profiles, and onboarding in 3 queries
         # instead of 3 queries * N requests.
@@ -1028,7 +1064,7 @@ def received_connection_requests(current_user):
                     "last_active":      online_status["last_active"],
                 },
                 "onboarding_details": onboarding_preview,
-                "message":            req.requester_notes,
+                "message":            req.request_message,
                 "requested_at":       req.requested_at.isoformat(),
                 "time_ago":           time_ago_text,
                 "mutuals_count":      mutual_count,
@@ -1037,7 +1073,7 @@ def received_connection_requests(current_user):
         return jsonify({
             "status": "success",
             "data": requests_data,
-            "total": len(requests_data),
+            **_page_meta(total, offset, len(requests)),
         })
 
     except Exception as e:
@@ -1056,13 +1092,19 @@ def sent_connection_requests(current_user):
     """Get ALL pending connection requests YOU sent (no pagination)"""
     try:
         # Get all sent requests
-        requests = Connection.query.filter(
+        limit, offset = _page_params()
+        base = Connection.query.filter(
             Connection.requester_id == current_user.id,
             Connection.status == "pending"
-        ).order_by(Connection.requested_at.desc()).limit(100).all()
+        )
+        total = base.count()
+        requests = base.order_by(
+            Connection.requested_at.desc(), Connection.id.desc()
+        ).offset(offset).limit(limit).all()
 
         if not requests:
-            return jsonify({"status": "success", "data": [], "total": 0})
+            return jsonify({"status": "success", "data": [], "total": total,
+                            "has_more": False, "next_cursor": None})
 
         # OPTIMIZED: Batch-load all receivers, profiles, and onboarding in 3 queries
         # instead of 3 queries * N requests.
@@ -1172,7 +1214,7 @@ def sent_connection_requests(current_user):
                     "last_active":      online_status["last_active"],
                 },
                 "onboarding_details": onboarding_preview,
-                "your_message":  req.requester_notes,
+                "your_message":  req.request_message,
                 "requested_at":  req.requested_at.isoformat(),
                 "time_ago":      time_ago_text,
                 "mutuals_count": mutual_count,
@@ -1181,7 +1223,7 @@ def sent_connection_requests(current_user):
         return jsonify({
             "status": "success",
             "data": requests_data,
-            "total": len(requests_data),
+            **_page_meta(total, offset, len(requests)),
         })
 
     except Exception as e:
@@ -1197,18 +1239,31 @@ def sent_connection_requests(current_user):
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def list_connections(current_user):
-    """List ALL connections (no pagination, max 200)"""
+    """
+    List accepted connections.
+
+    Audit CON-15: deterministic order (most recently connected first), real
+    ?limit/?cursor pagination and a true `total`. It used to LIMIT 200 with no
+    ORDER BY, so users with more connections silently got an arbitrary subset
+    and a `total` that equalled the truncated count.
+    """
     try:
-        all_connections = Connection.query.filter(
+        limit, offset = _page_params()
+        base = Connection.query.filter(
             or_(
                 Connection.requester_id == current_user.id,
                 Connection.receiver_id == current_user.id
             ),
             Connection.status == "accepted"
-        ).limit(200).all()
+        )
+        total = base.count()
+        all_connections = base.order_by(
+            Connection.responded_at.desc(), Connection.id.desc()
+        ).offset(offset).limit(limit).all()
 
         if not all_connections:
-            return jsonify({"status": "success", "data": [], "total": 0})
+            return jsonify({"status": "success", "data": [], "total": total,
+                            "has_more": False, "next_cursor": None})
 
         connected_ids  = []
         connection_map = {}
@@ -1237,20 +1292,9 @@ def list_connections(current_user):
             ).all()
         }
 
-        # OPTIMIZED: Pre-load current user's ThreadMembers once for health scoring.
-        my_thread_ids = {
-            t.thread_id
-            for t in ThreadMember.query.filter_by(student_id=current_user.id).all()
-        }
-
-        # Batch-load ThreadMembers for all connected users at once.
-        all_partner_thread_memberships = ThreadMember.query.filter(
-            ThreadMember.student_id.in_(connected_ids)
-        ).all()
-
-        partner_thread_ids_map = {}  # {user_id: set of thread_ids}
-        for tm in all_partner_thread_memberships:
-            partner_thread_ids_map.setdefault(tm.student_id, set()).add(tm.thread_id)
+        # Audit CON-23: one shared implementation (service layer) instead of
+        # an inline copy of the health formula that could drift.
+        health_map = get_connection_health_batch(current_user.id, connected_ids)
 
         now = datetime.datetime.utcnow()
         connections_data = []
@@ -1279,29 +1323,10 @@ def list_connections(current_user):
 
             online_status = get_user_online_status(other_id)
 
-            # OPTIMIZED: Inline health score using pre-loaded thread memberships.
-            their_thread_ids = partner_thread_ids_map.get(other_id, set())
-            shared_threads   = len(my_thread_ids & their_thread_ids)
-
-            last_interaction = connection.responded_at or connection.requested_at
-            days_since       = (now - last_interaction).days if last_interaction else 999
-
-            health_score = 100
-            if days_since > 30:
-                health_score -= 40
-            elif days_since > 14:
-                health_score -= 20
-            elif days_since > 7:
-                health_score -= 10
-            health_score += min(shared_threads * 10, 30)
-            health_score = max(0, min(100, health_score))
-
-            if health_score < 40:
-                suggestion = "💤 Haven't connected in a while. Send them a message!"
-            elif health_score < 70:
-                suggestion = "👍 Good connection. Schedule a study session?"
-            else:
-                suggestion = "🔥 Strong connection! Keep it up."
+            health = health_map.get(other_id) or {}
+            health_score   = health.get("health_score", 0)
+            suggestion     = health.get("suggestion", "")
+            shared_threads = health.get("shared_threads", 0)
 
             connections_data.append({
                 "id": connection.id,
@@ -1328,12 +1353,12 @@ def list_connections(current_user):
         return jsonify({
             "status": "success",
             "data": connections_data,
-            "total": len(connections_data),
+            **_page_meta(total, offset, len(all_connections)),
         })
 
-    except Exception as e:
-        current_app.logger.error(f"List connections error: ", exc_info=True)
-        return error_response("Failed to load connections")
+    except Exception:
+        current_app.logger.error("List connections error", exc_info=True)
+        return error_response("Failed to load connections", 500)
 
 
 # ============================================================================
