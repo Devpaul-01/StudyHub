@@ -780,3 +780,69 @@ class TestUpdateProfileValidation:
         resp = client.patch("/student/profile/update", json=["name"], headers=headers)
 
         assert resp.status_code == 400
+
+
+# ============================================================================
+# PUT /profile/academic-info — validation
+# ============================================================================
+
+class TestAcademicInfoValidation:
+    URL = "/student/profile/academic-info"
+
+    @pytest.fixture
+    def user(self, make_user, make_onboarding_details):
+        user = make_user()
+        make_onboarding_details(user, learning_style="Visual", subjects=["Math"])
+        return user
+
+    def _put(self, client, auth_headers, csrf_headers, user, payload):
+        return client.put(self.URL, json=payload, headers={**auth_headers(user), **csrf_headers(client)})
+
+    @pytest.mark.parametrize("field", ["subjects", "strong_subjects", "help_subjects", "study_preferences"])
+    @pytest.mark.parametrize("bad", [[{"a": 1}], [["nested"]], [5], [None], ["<img src=x onerror=1>"], ["x" * 51]])
+    def test_bad_list_items_are_rejected(self, client, auth_headers, csrf_headers, user, field, bad):
+        """Regression: a dict stored here broke other users' suggestion code."""
+        resp = self._put(client, auth_headers, csrf_headers, user, {field: bad})
+
+        assert resp.status_code == 400
+        stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
+        assert stored["subjects"] == ["Math"]
+
+    @pytest.mark.parametrize("not_a_list", ["Math", 5, {"a": 1}])
+    def test_non_list_values_are_rejected_not_ignored(self, client, auth_headers, csrf_headers, user, not_a_list):
+        assert self._put(client, auth_headers, csrf_headers, user, {"subjects": not_a_list}).status_code == 400
+
+    def test_items_are_trimmed_and_deduplicated(self, client, auth_headers, csrf_headers, user):
+        resp = self._put(client, auth_headers, csrf_headers, user,
+                         {"strong_subjects": [" Python ", "python", "Go"]})
+
+        assert resp.status_code == 200
+        stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
+        assert stored["strong_subjects"] == ["Python", "Go"]
+
+    def test_learning_style_can_be_cleared(self, client, auth_headers, csrf_headers, user):
+        """Regression: an empty value used to be ignored while reporting success."""
+        resp = self._put(client, auth_headers, csrf_headers, user, {"learning_style": ""})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["changes"] == ["learning_style"]
+        stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
+        assert stored["learning_style"] is None
+
+    def test_learning_style_is_plain_text(self, client, auth_headers, csrf_headers, user):
+        assert self._put(client, auth_headers, csrf_headers, user,
+                         {"learning_style": "<b>visual</b>"}).status_code == 400
+        assert self._put(client, auth_headers, csrf_headers, user,
+                         {"learning_style": "x" * 301}).status_code == 400
+
+    def test_nothing_changed_leaves_last_updated_alone(
+        self, client, db_session, auth_headers, csrf_headers, user
+    ):
+        from models import OnboardingDetails
+        before = OnboardingDetails.query.filter_by(user_id=user.id).first().last_updated
+
+        resp = self._put(client, auth_headers, csrf_headers, user, {"unknown_field": 1})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["changes"] == []
+        assert OnboardingDetails.query.filter_by(user_id=user.id).first().last_updated == before

@@ -390,51 +390,67 @@ def get_academic_info(current_user):
         return error_response("Failed to load academic info")
 
 
+# (field, max items kept, max characters per item). Lists longer than the
+# cap are cut to the cap, as the API has always documented.
+_ACADEMIC_LISTS = (
+    ("subjects",          15, 50),
+    ("strong_subjects",   10, 50),
+    ("help_subjects",     10, 50),
+    ("study_preferences", 10, 50),
+)
+
+
 @profile_bp.route("/profile/academic-info", methods=["PUT"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_academic_info(current_user):
-    """Update academic / onboarding details."""
-    try:
-        data = request.get_json(silent=True)
-        if not data:
-            return error_response("No data provided")
+    """Update academic / onboarding details.
 
+    Every list item must be a short plain-text string: these values are
+    read by other users' discovery and matching code, so one malformed
+    entry must never be storable.
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return error_response("No data provided")
+
+    try:
+        updates = {}
+        for field, cap, item_len in _ACADEMIC_LISTS:
+            if field in data:
+                value = data[field]
+                if not isinstance(value, list):
+                    raise ProfileValidationError(f"{field} must be a list")
+                updates[field] = clean_text_list(
+                    value[:cap], field, max_items=cap, max_item_len=item_len)
+
+        if "learning_style" in data:
+            style = data["learning_style"]
+            # An empty value (or null) clears the learning style.
+            updates["learning_style"] = (
+                None if style in (None, "")
+                else clean_plain_text(style, "Learning style", max_len=300)
+            )
+    except ProfileValidationError as e:
+        return error_response(str(e))
+
+    try:
         onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
         if not onboarding:
             return error_response("Academic profile not found")
 
-        changes = []
+        changes = list(updates)
+        for field, value in updates.items():
+            setattr(onboarding, field, value)
 
-        if "subjects" in data and isinstance(data["subjects"], list):
-            onboarding.subjects = data["subjects"][:15]
-            changes.append("subjects")
-
-        if "strong_subjects" in data and isinstance(data["strong_subjects"], list):
-            onboarding.strong_subjects = data["strong_subjects"][:10]
-            changes.append("strong_subjects")
-
-        if "help_subjects" in data and isinstance(data["help_subjects"], list):
-            onboarding.help_subjects = data["help_subjects"][:10]
-            changes.append("help_subjects")
-
-        if "learning_style" in data and data["learning_style"]:
-            onboarding.learning_style = str(data["learning_style"])[:300]
-            changes.append("learning_style")
-
-        if "study_preferences" in data and isinstance(data["study_preferences"], list):
-            onboarding.study_preferences = data["study_preferences"][:10]
-            changes.append("study_preferences")
-
-        onboarding.last_updated = datetime.datetime.utcnow()
-        db.session.commit()
+        if changes:
+            onboarding.last_updated = datetime.datetime.utcnow()
+            db.session.commit()
 
         return success_response("Academic info updated", data={"changes": changes})
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Update academic info error: {str(e)}")
-        return error_response("Failed to update academic info")
+    except Exception:
+        return _server_error("Update academic info error", "Failed to update academic info")
 
 
 # ============================================================================

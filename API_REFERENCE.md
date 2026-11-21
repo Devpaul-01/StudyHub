@@ -495,7 +495,11 @@ Your onboarding academic details. **Auth:** required.
   "study_preferences": ["Evening sessions"]
 }
 ```
-Caps: 15 subjects, 10 strong/help subjects each, 300-char learning style, 10 preferences.
+Only the keys you send are changed. Each list must be a list of plain-text strings (at most 50
+characters each, no `<` or `>`); items are trimmed and de-duplicated case-insensitively. Lists longer
+than the cap are cut to it: 15 subjects, 10 strong/help subjects each, 10 preferences. Anything
+that is not a list of strings returns `400`. `learning_style` is plain text up to 300 characters;
+send `""` or `null` to clear it.
 
 ### `POST /student/profile/avatar/upload`
 `multipart/form-data`, field `avatar`. Image is decoded and re-encoded server-side before upload
