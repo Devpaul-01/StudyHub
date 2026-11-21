@@ -126,3 +126,47 @@ class TestBlockedUsers:
         resp = _get(client, auth_headers, bystander, owner.username)
 
         assert resp.status_code == 200
+
+
+class TestActivityVisibility:
+    def _owner_active(self, db_session, owner, **privacy):
+        owner.last_active = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
+        owner.login_streak = 7
+        owner.privacy_settings = privacy
+        db_session.commit()
+
+    def test_activity_is_shown_by_default(self, client, db_session, auth_headers, owner, viewer):
+        self._owner_active(db_session, owner)
+
+        user = _get(client, auth_headers, viewer, owner.username).get_json()["data"]["user"]
+
+        assert user["last_active"] is not None
+        assert user["login_streak"] == 7
+        assert user["active_status"] is True
+
+    def test_activity_is_omitted_when_owner_opted_out(self, client, db_session, auth_headers, owner, viewer):
+        self._owner_active(db_session, owner, show_active_status=False)
+
+        user = _get(client, auth_headers, viewer, owner.username).get_json()["data"]["user"]
+
+        assert user["last_active"] is None
+        assert user["login_streak"] is None
+        assert user["active_status"] is False
+
+    def test_owner_still_sees_own_activity_when_opted_out(self, client, db_session, auth_headers, owner):
+        self._owner_active(db_session, owner, show_active_status=False)
+
+        user = _get(client, auth_headers, owner, owner.username).get_json()["data"]["user"]
+
+        assert user["last_active"] is not None
+        assert user["login_streak"] == 7
+
+    def test_private_view_hides_last_active_when_opted_out(
+        self, client, db_session, auth_headers, owner, viewer
+    ):
+        self._owner_active(db_session, owner, set_profile_private=True, show_active_status=False)
+
+        data = _get(client, auth_headers, viewer, owner.username).get_json()["data"]
+
+        assert data["type"] == "private"
+        assert data["last_active"] is None
