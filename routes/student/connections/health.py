@@ -31,6 +31,7 @@ from routes.student.helpers import (
 from services.online_status_service import get_user_online_status, get_online_status_batch
 from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
+    clean_user_text,
     calculate_compatibility_score,
     calculate_schedule_overlap,
     gather_user_data,
@@ -74,6 +75,14 @@ def get_connection_details(current_user, connection_id):
         if connection.requester_id != current_user.id and connection.receiver_id != current_user.id:
             return error_response("Not authorized to view this connection", 403)
 
+        # Audit CON-11: details expose the partner's profile, presence, shared
+        # threads and a last-message preview, so they are only available while
+        # the connection is ACCEPTED. A blocked / rejected / pending party must
+        # not keep a window into the other user (404, not 403, so the row's
+        # existence/state isn't revealed).
+        if connection.status != "accepted":
+            return error_response("Connection not found", 404)
+
         # Determine roles now that authorization is confirmed
         is_requester = connection.requester_id == current_user.id
         user_notes = (
@@ -99,7 +108,6 @@ def get_connection_details(current_user, connection_id):
         connection_info = {
             "id": connection.id,
             "status": connection.status,
-            "connection_type": connection.connection_type,
             "connected_at": connection.responded_at.isoformat() if connection.responded_at else None,
             "requested_at": connection.requested_at.isoformat(),
             "days_connected": (
@@ -276,27 +284,6 @@ def get_connection_details(current_user, connection_id):
         
        
         
-        thirty_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=30)
-        
-      
-        
-        # ============================================================================
-        # 11. STUDY SESSION HISTORY
-        # ============================================================================
-
-        # The study-sessions feature (and its StudySessionCalendar table)
-        # has been removed from main for now. This key is kept in the
-        # response — the frontend (connection.api.js / connection.templates.js)
-        # still reads study_history — but it's now always the empty shape
-        # rather than a DB query against a table that no longer exists.
-        study_history = {
-            "sessions": [],
-            "total_sessions": 0,
-            "completed_sessions": 0,
-            "upcoming_sessions": 0,
-            "last_session_date": None
-        }
-
         # ============================================================================
         # COMPILE FINAL RESPONSE
         # ============================================================================
@@ -316,13 +303,12 @@ def get_connection_details(current_user, connection_id):
                 },
                 "interaction_metrics": interaction_metrics,
                 "health": health_data,
-                "study_history": study_history
             }
         })
         
     except Exception as e:
-        current_app.logger.error(f"Get connection details error: ", exc_info=True)
-        return error_response("Failed to load connection details")
+        current_app.logger.error("Get connection details error", exc_info=True)
+        return error_response("Failed to load connection details", 500)
 
 
         
@@ -684,6 +670,10 @@ def get_connection_notes(current_user, connection_id):
         # Verify user is part of this connection
         if connection.requester_id != current_user.id and connection.receiver_id != current_user.id:
             return error_response("Not authorized to view this connection", 403)
+
+        # Audit CON-11: private notes belong to an established connection.
+        if connection.status != "accepted":
+            return error_response("Connection not found", 404)
         
         # Determine if current user is requester or receiver
         is_requester = connection.requester_id == current_user.id
@@ -741,12 +731,12 @@ def update_connection_notes(current_user, connection_id):
     }
     """
     try:
-        data = request.get_json()
-        notes = data.get("notes", "").strip()
-        
-        # Validate notes length (optional)
-        if len(notes) > 500:
-            return error_response("Notes too long (max 500 characters)", 400)
+        data = request.get_json(silent=True) or {}
+        try:
+            # Plain text, <= 500 chars (audit CON-04); "" clears the note.
+            notes = clean_user_text(data.get("notes", ""), 500, field="Notes") or ""
+        except ValueError as exc:
+            return error_response(str(exc), 400)
         
         # Get the connection
         connection = Connection.query.get(connection_id)
@@ -757,6 +747,12 @@ def update_connection_notes(current_user, connection_id):
         # Verify user is part of this connection
         if connection.requester_id != current_user.id and connection.receiver_id != current_user.id:
             return error_response("Not authorized to update this connection", 403)
+
+        # Audit CON-11 / CON-19: notes are private and only for accepted
+        # connections. They never touch request_message, so a requester can no
+        # longer rewrite what the receiver sees on a pending request.
+        if connection.status != "accepted":
+            return error_response("Connection not found", 404)
         
         # Determine if current user is requester or receiver and update appropriate notes
         is_requester = connection.requester_id == current_user.id

@@ -62,7 +62,7 @@ class TestGetConnectionDetails:
         assert data["mutual_connections"]["count"] == 0
         assert data["shared_threads"]["count"] == 0
         assert "health" in data
-        assert data["study_history"]["sessions"] == []
+        assert "study_history" not in data  # removed: always-empty, no consumers (CON-24)
 
     def test_includes_message_interaction_metrics(
         self, client, db_session, make_user, make_connection, make_message, auth_headers
