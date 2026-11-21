@@ -24,7 +24,7 @@ import random
 
 from models import (
     User, StudentProfile, Connection,
-    HelpRequest, Thread, ThreadMember,
+    HelpRequest, HelpRequestVolunteer, Thread, ThreadMember,
     OnboardingDetails, Message
 )
 from extensions import db
@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 connections_crud_bp = Blueprint("connections_crud", __name__)
 CONNECTION_MESSAGE_MAX_LEN = 300   # audit CON-04
+HELP_REQUEST_LINK = "/student/connections/help/{id}"   # real route (CON-17)
 ONBOARDING_CONNECT_MAX_IDS = 25
 _ONBOARDING_ACCOUNT_AGE = datetime.timedelta(hours=48)
 
@@ -630,120 +631,183 @@ def broadcast_help_request(current_user):
 
   
 
+def _help_request_visible_to(help_request, user_id):
+    """The requester and their ACCEPTED connections may see/volunteer for a request."""
+    if help_request.requester_id == user_id:
+        return True
+    row = _pair_row(user_id, help_request.requester_id)
+    return bool(row and row.status == "accepted")
+
+
+def _volunteer_payload(row, user):
+    return {
+        "user_id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "avatar": user.avatar,
+        "volunteered_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@connections_crud_bp.route("/connections/help/<int:request_id>", methods=["GET"])
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
+@token_required
+def get_help_request(current_user, request_id):
+    """
+    View a help request. This is the target of the help-request
+    notifications (they used to link to /help-request/<id>, a path nothing
+    served - CON-17). Visible to the requester and their accepted connections.
+    """
+    try:
+        help_request = HelpRequest.query.get(request_id)
+        if not help_request or not _help_request_visible_to(help_request, current_user.id):
+            return error_response("Help request not found", 404)
+
+        requester = User.query.get(help_request.requester_id)
+        effective_status = (
+            "expired" if help_request.status == "active" and help_request.is_expired()
+            else help_request.status
+        )
+        return jsonify({
+            "status": "success",
+            "data": {
+                "id": help_request.id,
+                "subject": help_request.subject,
+                "message": help_request.message,
+                "status": effective_status,
+                "expires_at": help_request.expires_at.isoformat() if help_request.expires_at else None,
+                "is_requester": help_request.requester_id == current_user.id,
+                "requester": {
+                    "id": requester.id, "name": requester.name,
+                    "username": requester.username, "avatar": requester.avatar,
+                } if requester else None,
+                "total_volunteers": HelpRequestVolunteer.query.filter_by(
+                    help_request_id=help_request.id).count(),
+                "has_volunteered": HelpRequestVolunteer.query.filter_by(
+                    help_request_id=help_request.id, user_id=current_user.id).first() is not None,
+            }
+        })
+    except Exception:
+        current_app.logger.error("Get help request error", exc_info=True)
+        return error_response("Failed to load help request", 500)
+
+
 @connections_crud_bp.route("/connections/help/<int:request_id>/volunteer", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def volunteer_for_help(current_user, request_id):
     """
-    A connection volunteers to help. Adds them to the volunteer list
-    and notifies the requester via push + in-app notification.
+    A connection volunteers to help; the requester is notified (push + in-app
+    + WebSocket) AFTER the volunteer row is committed.
+
+    Audit:
+      CON-06  only the requester's ACCEPTED connections may volunteer. A
+              stranger (or blocked user) gets the same 404 as a missing id, so
+              sequential ids can't be used to probe or spam other users.
+      CON-16  volunteers live in help_request_volunteers with a UNIQUE
+              (help_request_id, user_id): the insert is atomic and idempotent
+              across workers (no JSON read-modify-write lost updates).
+      CON-17  side effects run after the commit.
     """
     try:
         help_request = HelpRequest.query.get(request_id)
 
-        if not help_request:
+        if not help_request or not _help_request_visible_to(help_request, current_user.id):
             return error_response("Help request not found", 404)
+
+        if help_request.requester_id == current_user.id:
+            return error_response("Cannot volunteer for your own request", 400)
 
         if help_request.status != 'active':
             return error_response("This help request is no longer active", 400)
 
         if help_request.is_expired():
-            help_request.status = 'expired'
+            HelpRequest.query.filter(
+                HelpRequest.id == request_id, HelpRequest.status == 'active'
+            ).update({"status": "expired"}, synchronize_session=False)
             db.session.commit()
             return error_response("This help request has expired", 400)
 
-        if help_request.requester_id == current_user.id:
-            return error_response("Cannot volunteer for your own request", 400)
-
-        # Check they're already volunteered
-        volunteers = help_request.volunteers or []
-        already = any(v['user_id'] == current_user.id for v in volunteers)
-        if already:
+        # Atomic + idempotent: the UNIQUE constraint decides, not a prior read.
+        try:
+            with db.session.begin_nested():
+                db.session.add(HelpRequestVolunteer(
+                    help_request_id=request_id, user_id=current_user.id))
+                db.session.flush()
+        except IntegrityError:
+            db.session.rollback()
             return error_response("You have already volunteered", 400)
 
-        # Append volunteer
-        volunteers.append({
-            'user_id': current_user.id,
-            'name': current_user.name,
-            'username': current_user.username,
-            'avatar': current_user.avatar,
-            'volunteered_at': datetime.datetime.utcnow().isoformat()
-        })
-        help_request.volunteers = volunteers
+        db.session.commit()
 
-        requester = User.query.get(help_request.requester_id)
+        total = HelpRequestVolunteer.query.filter_by(help_request_id=request_id).count()
+        requester_id = help_request.requester_id
+        subject = help_request.subject
 
-        # Notify the requester
         notif_title = f"{current_user.name} can help!"
-        notif_body = f"They volunteered to help with {help_request.subject}"
+        notif_body = f"They volunteered to help with {subject}"
 
-        if requester and requester.fcm_token:
-            from services.push_notifications import PushNotificationService
-            PushNotificationService.send_notification(
-                requester.fcm_token,
-                notif_title,
-                notif_body,
-                data={
-                    'type': 'help_volunteer',
-                    'help_request_id': str(request_id),
-                    'volunteer_id': str(current_user.id),
-                    'volunteer_name': current_user.name
-                }
+        def _after_commit():
+            requester = User.query.get(requester_id)
+            if requester and requester.fcm_token:
+                try:
+                    from services.push_notifications import PushNotificationService
+                    PushNotificationService.send_notification(
+                        requester.fcm_token,
+                        notif_title,
+                        notif_body,
+                        data={
+                            'type': 'help_volunteer',
+                            'help_request_id': str(request_id),
+                            'volunteer_id': str(current_user.id),
+                            'volunteer_name': current_user.name
+                        }
+                    )
+                except Exception as push_err:
+                    current_app.logger.warning(f"Push failed (non-critical): {push_err}")
+
+            notification_service.notify(
+                user_id=requester_id,
+                title=notif_title,
+                body=notif_body,
+                notification_type='help_volunteer',
+                related_type='help_request',
+                related_id=request_id,
+                link=HELP_REQUEST_LINK.format(id=request_id),
             )
 
-        # In-app notification to requester
-        notification_service.notify(
-            user_id=requester.id,
-            title=notif_title,
-            body=notif_body,
-            notification_type='help_volunteer',
-            related_type='help_request',
-            related_id=request_id,
-            link=f'/help-request/{request_id}',
-        )
+            # Real-time delivery across instances goes through
+            # message_ws_manager (Socket.IO message_queue). Best effort.
+            try:
+                from services.websocket_messages import message_ws_manager
+                message_ws_manager.emit_to_user(requester_id, 'help_volunteer_joined', {
+                    'help_request_id': request_id,
+                    'volunteer': {
+                        'user_id': current_user.id,
+                        'name': current_user.name,
+                        'username': current_user.username,
+                        'avatar': current_user.avatar,
+                    },
+                    'total_volunteers': total
+                })
+            except Exception as ws_err:
+                current_app.logger.warning(f"WebSocket emit failed (non-critical): {ws_err}")
 
-        # Emit websocket event to requester if they're online
-        #
-        # AUDIT BUG-4 FIX: services.websocket_events.ws_manager is never
-        # initialized anywhere in the app (its init_app/register_handlers
-        # is never called), so ws_manager.online_users stays permanently
-        # empty and ws_manager.emit_to_user() silently iterated zero socket
-        # ids on every call — this notification never actually reached the
-        # requester in real time. Migrated to services.websocket_messages'
-        # message_ws_manager, the manager that's genuinely initialized (see
-        # app factory / init_message_websocket) and already correctly wired
-        # for cross-instance delivery via message_queue — same
-        # emit_to_user(user_id, event_name, data) signature, so this is a
-        # drop-in swap.
-        try:
-            from services.websocket_messages import message_ws_manager
-            message_ws_manager.emit_to_user(requester.id, 'help_volunteer_joined', {
-                'help_request_id': request_id,
-                'volunteer': {
-                    'user_id': current_user.id,
-                    'name': current_user.name,
-                    'username': current_user.username,
-                    'avatar': current_user.avatar,
-                },
-                'total_volunteers': len(volunteers)
-            })
-        except Exception as ws_err:
-            current_app.logger.warning(f"WebSocket emit failed (non-critical): {ws_err}")
-
-        db.session.commit()
+        notify_after_commit(_after_commit)
 
         return jsonify({
             "status": "success",
             "data": {
                 "message": "You have volunteered to help",
-                "total_volunteers": len(volunteers)
+                "total_volunteers": total
             }
         })
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Volunteer error: ", exc_info=True)
-        return error_response("Failed to volunteer")
+        current_app.logger.error("Volunteer error", exc_info=True)
+        return error_response("Failed to volunteer", 500)
+
 
 @connections_crud_bp.route("/connections/help/<int:request_id>/volunteers", methods=["GET"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
@@ -751,6 +815,8 @@ def volunteer_for_help(current_user, request_id):
 def get_help_volunteers(current_user, request_id):
     """
     Requester fetches the current volunteer list for their help request.
+    `status` reports "expired" for a request past its expiry even if the
+    sweep job hasn't flipped the row yet (CON-17).
     """
     try:
         help_request = HelpRequest.query.get(request_id)
@@ -761,21 +827,34 @@ def get_help_volunteers(current_user, request_id):
         if help_request.requester_id != current_user.id:
             return error_response("Not authorized", 403)
 
+        rows = HelpRequestVolunteer.query.filter_by(
+            help_request_id=request_id
+        ).order_by(HelpRequestVolunteer.id).all()
+        users = {
+            u.id: u for u in User.query.filter(User.id.in_([r.user_id for r in rows])).all()
+        } if rows else {}
+        volunteers = [_volunteer_payload(r, users[r.user_id]) for r in rows if r.user_id in users]
+
+        effective_status = (
+            "expired" if help_request.status == "active" and help_request.is_expired()
+            else help_request.status
+        )
+
         return jsonify({
             "status": "success",
             "data": {
                 "help_request_id": request_id,
                 "subject": help_request.subject,
-                "status": help_request.status,
-                "volunteers": help_request.volunteers or [],
-                "total_volunteers": len(help_request.volunteers or []),
+                "status": effective_status,
+                "volunteers": volunteers,
+                "total_volunteers": len(volunteers),
                 "expires_at": help_request.expires_at.isoformat() if help_request.expires_at else None
             }
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Get volunteers error: ", exc_info=True)
-        return error_response("Failed to get volunteers")
+    except Exception:
+        current_app.logger.error("Get volunteers error", exc_info=True)
+        return error_response("Failed to get volunteers", 500)
 
 
 @connections_crud_bp.route("/connections/help/find", methods=["POST"])
