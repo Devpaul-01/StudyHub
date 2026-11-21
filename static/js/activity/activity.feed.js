@@ -186,8 +186,8 @@ function renderActivityItem(activity) {
       <div class="activity-content">
         <div class="activity-header">
           <div class="activity-user-info">
-            <img src="${user.avatar || '/static/default-avatar.png'}"
-                 alt="${user.name}"
+            <img src="${escapeHtml(safeUrl(user.avatar) || '/static/default-avatar.png')}"
+                 alt="${escapeHtml(user.name)}"
                  class="activity-avatar" />
             ${onlineIndicator}
           </div>
@@ -223,6 +223,19 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/**
+ * Allow only http(s) or same-site absolute-path URLs in src/href attributes.
+ * Anything else (javascript:, data:, protocol-relative) becomes ''.
+ */
+function safeUrl(url) {
+  if (typeof url !== 'string') return '';
+  const t = url.trim();
+  if (/[\u0000-\u001f\u007f]/.test(t)) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^\/(?!\/)/.test(t)) return t;
+  return '';
+}
+
 function getActivityDisplay(type, user, data) {
   let icon, message, badge = '', actionButton = '';
   
@@ -240,16 +253,16 @@ function getActivityDisplay(type, user, data) {
       // help — the button is unconditional here, not gated on a field
       // that was never actually sent.
       icon = '🚀';
-      message = `<strong>${user.name}</strong> started <strong>${data.assignment_title}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> started <strong>${escapeHtml(data.assignment_title)}</strong>`;
 
       if (data.subject) {
-        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
 
       actionButton = `
         <button class="activity-btn"
                 data-action="offer-help-from-activity"
-                data-assignment-id="${data.assignment_id}">
+                data-assignment-id="${escapeHtml(data.assignment_id)}">
           🤝 Offer Help
         </button>
       `;
@@ -257,32 +270,32 @@ function getActivityDisplay(type, user, data) {
       
     case 'offered_help':
       icon = '🤝';
-      message = `<strong>${user.name}</strong> is helping <strong>${data.requester_name}</strong> with ${data.subject}`;
+      message = `<strong>${escapeHtml(user.name)}</strong> is helping <strong>${escapeHtml(data.requester_name)}</strong> with ${escapeHtml(data.subject)}`;
       
       if (data.subject) {
-        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
     case 'completed_homework':
       icon = '✅';
-      message = `<strong>${user.name}</strong> completed <strong>${data.assignment_title}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> completed <strong>${escapeHtml(data.assignment_title)}</strong>`;
       
       if (data.helper_count && data.helper_count > 1) {
-        badge = `<span class="activity-badge badge-helpers">👥 ${data.helper_count} helpers</span>`;
+        badge = `<span class="activity-badge badge-helpers">👥 ${escapeHtml(data.helper_count)} helpers</span>`;
       }
       
       if (data.subject) {
-        badge += `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge += `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
     case 'submitted_solution':
       icon = '📝';
-      message = `<strong>${user.name}</strong> submitted solution to <strong>${data.requester_name}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> submitted solution to <strong>${escapeHtml(data.requester_name)}</strong>`;
       
       if (data.subject) {
-        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
@@ -293,9 +306,9 @@ function getActivityDisplay(type, user, data) {
       // payload. The old data.streak_count reference rendered
       // "undefined-day helping streak!" on every real event.
       icon = '🔥';
-      message = `<strong>${user.name}</strong> reached a <strong>${data.current_streak}-day</strong> helping streak!`;
+      message = `<strong>${escapeHtml(user.name)}</strong> reached a <strong>${escapeHtml(data.current_streak)}-day</strong> helping streak!`;
       if (data.longest_streak && data.longest_streak > data.current_streak) {
-        badge = `<span class="activity-badge badge-achievement">Best: ${data.longest_streak}</span>`;
+        badge = `<span class="activity-badge badge-achievement">Best: ${escapeHtml(data.longest_streak)}</span>`;
       } else {
         badge = '<span class="activity-badge badge-achievement">Personal Best!</span>';
       }
@@ -319,7 +332,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="volunteer-from-activity"
-                data-help-request-id="${data.help_request_id}">
+                data-help-request-id="${escapeHtml(data.help_request_id)}">
           🙋 Volunteer
         </button>
       `;
@@ -353,7 +366,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="view-post-from-activity"
-                data-post-id="${data.post_id}">
+                data-post-id="${escapeHtml(data.post_id)}">
           View Post
         </button>
       `;
@@ -380,7 +393,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="view-thread-from-activity"
-                data-thread-id="${data.thread_id}">
+                data-thread-id="${escapeHtml(data.thread_id)}">
           View Thread
         </button>
       `;
@@ -403,7 +416,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="view-thread-from-activity"
-                data-thread-id="${data.thread_id}">
+                data-thread-id="${escapeHtml(data.thread_id)}">
           View Thread
         </button>
       `;
@@ -421,7 +434,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="view-thread-from-activity"
-                data-thread-id="${data.thread_id}">
+                data-thread-id="${escapeHtml(data.thread_id)}">
           View Thread
         </button>
       `;
@@ -443,7 +456,7 @@ function getActivityDisplay(type, user, data) {
       actionButton = `
         <button class="activity-btn"
                 data-action="view-post-from-activity"
-                data-post-id="${data.post_id}">
+                data-post-id="${escapeHtml(data.post_id)}">
           View Post
         </button>
       `;
@@ -451,7 +464,7 @@ function getActivityDisplay(type, user, data) {
 
     default:
       icon = '📚';
-      message = `<strong>${user.name}</strong> did something`;
+      message = `<strong>${escapeHtml(user.name)}</strong> did something`;
   }
   
   return { icon, message, badge, actionButton };

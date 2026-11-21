@@ -105,8 +105,8 @@ function renderActivityItem(activity) {
       <div class="activity-content">
         <div class="activity-header">
           <div class="activity-user-info">
-            <img src="${user.avatar || '/static/images/default-avatar.png'}" 
-                 alt="${user.name}" 
+            <img src="${escapeHtml(safeUrl(user.avatar) || '/static/images/default-avatar.png')}" 
+                 alt="${escapeHtml(user.name)}" 
                  class="activity-avatar" />
             ${onlineIndicator}
           </div>
@@ -125,16 +125,37 @@ function renderActivityItem(activity) {
 /**
  * Get display info for activity type
  */
+/**
+ * Allow only http(s) or same-site absolute-path URLs in src/href attributes.
+ * Anything else (javascript:, data:, protocol-relative) becomes ''.
+ */
+function safeUrl(url) {
+  if (typeof url !== 'string') return '';
+  const t = url.trim();
+  if (/[\u0000-\u001f\u007f]/.test(t)) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^\/(?!\/)/.test(t)) return t;
+  return '';
+}
+
+/** Minimal HTML escaper for untrusted text interpolated into innerHTML templates. */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function getActivityDisplay(type, user, data) {
   let icon, message, badge = '', actionButton = '';
   
   switch (type) {
     case 'started_homework':
       icon = data.difficulty === 'hard' ? '🔥' : '🚀';
-      message = `<strong>${user.name}</strong> started <strong>${data.title}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> started <strong>${escapeHtml(data.title)}</strong>`;
       
       if (data.difficulty) {
-        badge = `<span class="activity-badge badge-${data.difficulty}">${data.difficulty}</span>`;
+        badge = `<span class="activity-badge badge-${escapeHtml(data.difficulty)}">${escapeHtml(data.difficulty)}</span>`;
       }
       
       if (data.needs_help) {
@@ -143,7 +164,7 @@ function getActivityDisplay(type, user, data) {
           <button class="activity-btn" 
                   data-action="offer-help-from-activity" 
                   data-user-id="${user.id}"
-                  data-assignment-title="${data.title}">
+                  data-assignment-title="${escapeHtml(data.title)}">
             🤝 Offer Help
           </button>
         `;
@@ -152,44 +173,44 @@ function getActivityDisplay(type, user, data) {
       
     case 'offered_help':
       icon = '🤝';
-      message = `<strong>${user.name}</strong> is helping <strong>${data.requester_name}</strong> with ${data.subject}`;
+      message = `<strong>${escapeHtml(user.name)}</strong> is helping <strong>${escapeHtml(data.requester_name)}</strong> with ${escapeHtml(data.subject)}`;
       
       if (data.subject) {
-        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
     case 'completed_homework':
       icon = '✅';
-      message = `<strong>${user.name}</strong> completed <strong>${data.assignment_title}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> completed <strong>${escapeHtml(data.assignment_title)}</strong>`;
       
       if (data.helper_count && data.helper_count > 1) {
-        badge = `<span class="activity-badge badge-helpers">👥 ${data.helper_count} helpers</span>`;
+        badge = `<span class="activity-badge badge-helpers">👥 ${escapeHtml(data.helper_count)} helpers</span>`;
       }
       
       if (data.subject) {
-        badge += `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge += `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
     case 'submitted_solution':
       icon = '📝';
-      message = `<strong>${user.name}</strong> submitted solution to <strong>${data.requester_name}</strong>`;
+      message = `<strong>${escapeHtml(user.name)}</strong> submitted solution to <strong>${escapeHtml(data.requester_name)}</strong>`;
       
       if (data.subject) {
-        badge = `<span class="activity-badge badge-subject">${data.subject}</span>`;
+        badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
       }
       break;
       
     case 'achieved_streak':
       icon = '🔥';
-      message = `<strong>${user.name}</strong> reached a <strong>${data.streak_count}-day</strong> helping streak!`;
+      message = `<strong>${escapeHtml(user.name)}</strong> reached a <strong>${escapeHtml(data.streak_count)}-day</strong> helping streak!`;
       badge = '<span class="activity-badge badge-achievement">Achievement</span>';
       break;
       
     default:
       icon = '📚';
-      message = `<strong>${user.name}</strong> did something`;
+      message = `<strong>${escapeHtml(user.name)}</strong> did something`;
   }
   
   return { icon, message, badge, actionButton };
