@@ -588,3 +588,23 @@ class TestMyStats:
         assert resp.status_code == 200
         engagement = resp.get_json()["data"]["engagement"]
         assert engagement["helpful_received"] == 4
+
+
+# ============================================================================
+# /profile/me page route
+# ============================================================================
+
+class TestOwnProfilePage:
+    def test_get_serves_the_app_shell(self, client, make_user, auth_headers):
+        user = make_user()
+
+        resp = client.get("/student/profile/me", headers=auth_headers(user))
+
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/html")
+
+    def test_post_is_no_longer_a_json_api(self, client, make_user, auth_headers, csrf_headers):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        assert client.post("/student/profile/me", headers=headers).status_code == 405
