@@ -98,3 +98,31 @@ class TestProfileVisibility:
 
         assert data["type"] == "public"
         assert data["is_own_profile"] is True
+
+
+class TestBlockedUsers:
+    @pytest.mark.parametrize("blocker_is_owner", [True, False])
+    def test_blocked_pair_cannot_view_each_other(
+        self, client, db_session, auth_headers, make_connection, owner, viewer, blocker_is_owner
+    ):
+        blocker, blocked = (owner, viewer) if blocker_is_owner else (viewer, owner)
+        conn = make_connection(blocker, blocked, status="blocked")
+        conn.blocked_by_id = blocker.id
+        db_session.commit()
+
+        resp = _get(client, auth_headers, viewer, owner.username)
+
+        assert resp.status_code == 404
+        assert resp.get_json()["message"] == "User not found"
+
+    def test_unblocked_third_party_is_unaffected(
+        self, client, db_session, auth_headers, make_user, make_student_profile,
+        make_connection, owner, viewer
+    ):
+        bystander = make_user(username="bystander1")
+        make_student_profile(bystander)
+        make_connection(owner, viewer, status="blocked")
+
+        resp = _get(client, auth_headers, bystander, owner.username)
+
+        assert resp.status_code == 200

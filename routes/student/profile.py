@@ -1071,6 +1071,7 @@ def view_profile(current_user, username):
     * Your own profile and public profiles return the full payload.
     * A private profile returns a short payload unless the viewer is an
       accepted connection of the owner.
+    * If either user has blocked the other the profile is "not found".
     """
     try:
         user = User.query.filter_by(username=username).first()
@@ -1083,6 +1084,11 @@ def view_profile(current_user, username):
 
         is_own_profile    = current_user.id == user.id
         connection_status = _connection_status(current_user, user)
+
+        # A block hides the profile in both directions. Answer exactly as
+        # for a missing user so the response does not confirm the block.
+        if connection_status == "blocked":
+            return error_response("User not found", 404)
 
         privacy         = user.privacy_settings or {}
         profile_private = bool(privacy.get("set_profile_private", False))
