@@ -453,11 +453,16 @@ update: only the keys you send are changed. Unknown keys and non-boolean values 
 are ignored, not rejected.) **Auth:** required.
 
 ### `GET /student/profile/{username}`
-View someone else's profile. Response shape depends on their privacy setting:
+View a profile. Response shape depends on the owner's privacy setting and your relationship:
 `data.type: "private"` returns a minimal object (id/username/name/avatar/department/class/pinned
-posts); `data.type: "public"` returns the full stats/badges/posts/threads breakdown.
+posts) to viewers who are not connected to a private profile; `data.type: "public"` returns the
+full stats/badges/posts/threads breakdown. Owners and accepted connections always get `"public"`
+(`data.is_own_profile` tells you which). `last_active` and `login_streak` are `null` when the owner
+turned off "show when I'm active" (owners still see their own). `stats` contains `total_posts`,
+`total_comments`, `total_threads` and `total_helpful`.
 
-**Auth:** required. **400** if the user or profile doesn't exist.
+**Auth:** required. **404** if the user or profile doesn't exist, or if either user has blocked
+the other (the response is identical so a block is not revealed).
 
 ### `PATCH /student/profile/update`
 **Auth:** required.

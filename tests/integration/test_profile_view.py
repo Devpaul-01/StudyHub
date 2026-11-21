@@ -170,3 +170,13 @@ class TestActivityVisibility:
 
         assert data["type"] == "private"
         assert data["last_active"] is None
+
+
+class TestPublicPayloadShape:
+    def test_stats_only_contain_fields_the_page_uses(self, client, auth_headers, owner, viewer):
+        data = _get(client, auth_headers, viewer, owner.username).get_json()["data"]
+
+        assert set(data["stats"]) == {
+            "total_posts", "total_comments", "total_threads", "total_helpful",
+        }
+        assert "activity_heatmap" not in data

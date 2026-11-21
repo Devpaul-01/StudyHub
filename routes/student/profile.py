@@ -1131,17 +1131,6 @@ def view_profile(current_user, username):
         total_comments = Comment.query.filter_by(student_id=user.id).count()
         total_threads  = ThreadMember.query.filter_by(student_id=user.id).count()
 
-        # FIX: PostLike does not exist — replaced with PostReaction
-        posts_liked = db.session.query(func.count(PostReaction.id)).join(
-            Post, PostReaction.post_id == Post.id
-        ).filter(Post.student_id == user.id).scalar() or 0
-
-        # AUDIT §4.2 FIX: reaction_type="helpful" is never written by any
-        # live code path — see the identical fix/comment in get_my_stats
-        # above for the full explanation. Response shape
-        # (stats.helpful_count) is unchanged.
-        helpful_count = 0
-
         # ── Badges ───────────────────────────────────────────────────────────
         user_badges = (
             UserBadge.query
@@ -1185,8 +1174,6 @@ def view_profile(current_user, username):
             for p in recent_posts
         ]
 
-        total_created_threads = Thread.query.filter_by(creator_id=user.id).count()
-
         active_threads = (
             db.session.query(Thread)
             .join(ThreadMember, Thread.id == ThreadMember.thread_id)
@@ -1204,22 +1191,6 @@ def view_profile(current_user, username):
                 "last_activity": t.last_activity.isoformat(),
             }
             for t in active_threads
-        ]
-
-        thirty_days_ago = datetime.date.today() - datetime.timedelta(days=30)
-        activity_data   = UserActivity.query.filter(
-            UserActivity.user_id       == user.id,
-            UserActivity.activity_date >= thirty_days_ago,
-        ).order_by(UserActivity.activity_date.asc()).all()
-
-        heatmap = [
-            {
-                "date":     act.activity_date.isoformat(),
-                "score":    act.activity_score,
-                "posts":    act.posts_created,
-                "comments": act.comments_created,
-            }
-            for act in activity_data
         ]
 
         return jsonify({
@@ -1248,15 +1219,11 @@ def view_profile(current_user, username):
                     "total_posts":          total_posts,
                     "total_comments":       total_comments,
                     "total_threads":        total_threads,
-                    "total_created_threads": total_created_threads,
-                    "posts_liked":          posts_liked,
-                    "helpful_count":        helpful_count,
                     "total_helpful":        user.total_helpful,
                 },
                 "badges":           badges_data,
                 "recent_posts":     posts_data,
                 "active_threads":   threads_data,
-                "activity_heatmap": heatmap,
                 "skills":           user.skills or [],
                 "learning_goals":   user.learning_goals or [],
                 "connection_status": connection_status,
