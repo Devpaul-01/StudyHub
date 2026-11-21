@@ -38,6 +38,7 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key, allow_ac
 # goes through services/notification_service.py (Document 2 §3.9).
 from services import auth_service, notification_service, onboarding_service
 from services.activity_service import record_live_activity
+from services.profile_validation import is_reserved_username
 from errors import ValidationError
 
 auth_bp = Blueprint("student_auth", __name__)
@@ -1052,6 +1053,8 @@ def check_username():
             return error_response("Username required")
         if not re.match(r"^[a-z0-9]{3,20}$", username):
             return error_response("Invalid username format")
+        if is_reserved_username(username):
+            return error_response("Username taken")
 
         existing = User.query.filter_by(username=username).first()
         if existing:
@@ -1123,6 +1126,8 @@ def complete_registration():
             return error_response("Password must be at least 6 characters")
         if not re.match(r"^[a-z0-9]{3,20}$", username):
             return error_response("Username must be 3-20 lowercase letters and numbers only")
+        if is_reserved_username(username):
+            return error_response("Username already taken")
 
         if User.query.filter(User.username == username, User.id != user.id).first():
             return error_response("Username already taken")

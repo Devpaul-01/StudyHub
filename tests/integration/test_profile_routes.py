@@ -608,3 +608,27 @@ class TestOwnProfilePage:
         headers = {**auth_headers(user), **csrf_headers(client)}
 
         assert client.post("/student/profile/me", headers=headers).status_code == 405
+
+
+class TestPageRoutesWithoutSession:
+    """The shells carry no data; the SPA redirects to login on the first 401."""
+
+    @pytest.mark.parametrize("path", ["/student/profile/me", "/student/profile/view/someone"])
+    def test_shell_is_html_not_json_401(self, client, path):
+        resp = client.get(path)
+
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/html")
+
+    def test_data_api_still_requires_a_session(self, client):
+        assert client.get("/student/profile/someone").status_code == 401
+        assert client.get("/student/profile/me/data").status_code == 401
+
+
+class TestReservedUsernames:
+    @pytest.mark.parametrize("name", ["homepage", "update", "avatar", "skills", "view"])
+    def test_check_username_rejects_names_that_shadow_profile_routes(self, client, csrf_headers, name):
+        resp = client.post("/student/check-username", json={"username": name}, headers=csrf_headers(client))
+
+        assert resp.status_code == 400
+        assert resp.get_json()["message"] == "Username taken"

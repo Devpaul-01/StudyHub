@@ -28,6 +28,8 @@ __all__ = [
     "clean_class_level",
     "clean_study_schedule",
     "strip_markup_chars",
+    "RESERVED_USERNAMES",
+    "is_reserved_username",
 ]
 
 # Matches the class levels offered during onboarding plus the legacy
@@ -44,6 +46,11 @@ STUDY_DAYS = (
 # Matches onboarding and ``connection_service.calculate_schedule_overlap``:
 # stored day keys are capitalised ("Monday") and slots are these three values.
 STUDY_SLOTS = ("morning", "afternoon", "evening")
+
+# Usernames that would collide with fixed ``/profile/<segment>`` routes.
+RESERVED_USERNAMES = frozenset({
+    "homepage", "update", "avatar", "skills", "view",
+})
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TAG_START = re.compile(r"<\s*[a-zA-Z/!?]")
@@ -151,3 +158,8 @@ def clean_study_schedule(value):
         if cleaned:
             result[day.capitalize()] = cleaned
     return result
+
+
+def is_reserved_username(username):
+    """True if ``username`` clashes with a fixed profile URL segment."""
+    return isinstance(username, str) and username.strip().lower() in RESERVED_USERNAMES

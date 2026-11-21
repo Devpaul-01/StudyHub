@@ -581,8 +581,7 @@ def clear_fcm_token(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/me", methods=["GET"])
-@token_required
-def own_profile_page(current_user):
+def own_profile_page():
     """Serve the app shell opened on the profile tab.
 
     Batch 1 fix: "profile/profile.html" doesn't exist under templates/.
@@ -669,8 +668,7 @@ def get_visibility_settings(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/view/<username>", methods=["GET"])
-@token_required
-def view_profile_page(current_user, username):
+def view_profile_page(username):
     """
     Batch 4: standalone public-profile PAGE.
 
@@ -691,6 +689,10 @@ def view_profile_page(current_user, username):
     exactly as before. The page itself fetches that same JSON API via
     the browser's own request (see static/js/profile-view/
     profile-view.api.js), the same way search.html fetches search data.
+
+    The shell contains no user data, so it is served without a token: a
+    logged-out visitor gets the page, whose first API call returns 401 and
+    sends them to the login screen (core/api.js) instead of showing raw JSON.
     """
     return render_template("profile-view.html")
 
