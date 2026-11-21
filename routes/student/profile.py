@@ -1038,41 +1038,90 @@ def view_profile_page(current_user, username):
     return render_template("profile-view.html")
 
 
+def _connection_status(viewer, other):
+    """Relationship of ``viewer`` to ``other`` as a client-facing string."""
+    if viewer.id == other.id:
+        return "none"
+
+    connection = Connection.query.filter(
+        or_(
+            and_(Connection.requester_id == viewer.id, Connection.receiver_id == other.id),
+            and_(Connection.requester_id == other.id,  Connection.receiver_id == viewer.id),
+        )
+    ).first()
+    if not connection:
+        return "none"
+    if connection.status == "accepted":
+        return "connected"
+    if connection.status == "blocked":
+        return "blocked"
+    if connection.status == "pending":
+        if connection.requester_id == viewer.id:
+            return "pending_sent"
+        return "pending_received"
+    return "none"
+
+
 @profile_bp.route("/profile/<username>", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def view_profile(current_user, username):
-    """View any user's complete profile."""
+    """View any user's profile.
+
+    * Your own profile and public profiles return the full payload.
+    * A private profile returns a short payload unless the viewer is an
+      accepted connection of the owner.
+    """
     try:
         user = User.query.filter_by(username=username).first()
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
 
         profile = StudentProfile.query.filter_by(user_id=user.id).first()
         if not profile:
-            return error_response("Profile not found")
+            return error_response("Profile not found", 404)
 
-        # ── Connection status ────────────────────────────────────────────────
-        connection_status = "none"
+        is_own_profile    = current_user.id == user.id
+        connection_status = _connection_status(current_user, user)
 
-        if current_user.id != user.id:
-            connection = Connection.query.filter(
-                or_(
-                    and_(Connection.requester_id == current_user.id, Connection.receiver_id == user.id),
-                    and_(Connection.requester_id == user.id,         Connection.receiver_id == current_user.id),
-                )
-            ).first()
+        privacy         = user.privacy_settings or {}
+        profile_private = bool(privacy.get("set_profile_private", False))
+        show_active     = bool(privacy.get("show_active_status", True))
 
-            if connection:
-                if connection.status == "accepted":
-                    connection_status = "connected"
-                elif connection.status == "blocked":
-                    connection_status = "blocked"          # FIX: was incorrectly "accepted"
-                elif connection.status == "pending" and connection.requester_id == current_user.id:
-                    connection_status = "pending_sent"     # FIX: was "pending sent" (space)
-                elif connection.status == "pending" and connection.receiver_id == current_user.id:
-                    # FIX: was `connection.status = "peding_received"` — ORM mutation + typo
-                    connection_status = "pending_received"
+        # Decide visibility BEFORE running the expensive queries below.
+        if profile_private and not is_own_profile and connection_status != "connected":
+            pinned_posts = [
+                {
+                    "id":        p.id,
+                    "title":     p.title,
+                    "post_type": p.post_type,
+                    "posted_at": p.posted_at.isoformat(),
+                }
+                for p in Post.query.filter_by(student_id=user.id, is_pinned=True).all()
+            ]
+            return jsonify({
+                "status": "success",
+                "message": "This profile is private — only a few details are visible to you.",
+                "data": {
+                    "type": "private",
+                    "user": {
+                        "id":          user.id,
+                        "username":    user.username,
+                        "name":        user.name,
+                        "avatar":      user.avatar,
+                        "department":  profile.department,
+                        "class_level": profile.class_name,
+                        "pinned_posts": pinned_posts,
+                    },
+                    "privacy": {
+                        "is_private": True,
+                        "message":    "This profile is private. Connect to view details.",
+                    },
+                    "connection_status": connection_status,
+                    "last_active":       user.last_active.isoformat() if show_active and user.last_active else None,
+                    "is_own_profile":    False,
+                },
+            })
 
         # ── Stats ────────────────────────────────────────────────────────────
         total_posts    = Post.query.filter_by(student_id=user.id).count()
@@ -1110,18 +1159,6 @@ def view_profile(current_user, username):
                 "is_featured": ub.is_featured,
             }
             for ub in user_badges
-        ]
-
-        # FIX: serialize pinned_posts — was returning raw ORM objects (not JSON-serializable)
-        pinned_posts_raw = Post.query.filter_by(student_id=user.id, is_pinned=True).all()
-        pinned_posts = [
-            {
-                "id":        p.id,
-                "title":     p.title,
-                "post_type": p.post_type,
-                "posted_at": p.posted_at.isoformat(),
-            }
-            for p in pinned_posts_raw
         ]
 
         # ── Recent posts ─────────────────────────────────────────────────────
@@ -1182,40 +1219,6 @@ def view_profile(current_user, username):
             for act in activity_data
         ]
 
-        skills         = user.skills         or []
-        learning_goals = user.learning_goals or []
-
-        # ── Privacy ──────────────────────────────────────────────────────────
-        privacy = user.privacy_settings or {}
-        # FIX: key was "profile_private" but is saved as "set_profile_private"
-        profile_private = privacy.get("set_profile_private", False)
-        show_active     = privacy.get("show_active_status",  True)
-
-        if profile_private:
-            return jsonify({
-                "status": "success",
-                "message": "This profile is private — only a few details are visible to you.",
-                "data": {
-                    "type": "private",
-                    "user": {
-                        "id":         user.id,
-                        "username":   user.username,
-                        "name":       user.name,
-                        "avatar":     user.avatar,
-                        "department": profile.department,
-                        "class_level": profile.class_name,
-                        "pinned_posts": pinned_posts,   # FIX: now serialized dicts, not ORM objects
-                    },
-                    "privacy": {
-                        "is_private": True,
-                        "message":    "This profile is private. Connect to view details.",
-                    },
-                    "connection_status": connection_status,
-                    "last_active":       user.last_active.isoformat() if show_active and user.last_active else None,
-                    "is_own_profile":    False,
-                },
-            })
-
         return jsonify({
             "status": "success",
             "data": {
@@ -1248,16 +1251,15 @@ def view_profile(current_user, username):
                 "recent_posts":     posts_data,
                 "active_threads":   threads_data,
                 "activity_heatmap": heatmap,
-                "skills":           skills,
-                "learning_goals":   learning_goals,
+                "skills":           user.skills or [],
+                "learning_goals":   user.learning_goals or [],
                 "connection_status": connection_status,
-                "is_own_profile":   False,
+                "is_own_profile":   is_own_profile,
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"View profile error: {str(e)}")
-        return error_response("Failed to load profile")
+    except Exception:
+        return _server_error("View profile error", "Failed to load profile")
 
 
 # ============================================================================
