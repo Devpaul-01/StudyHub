@@ -522,9 +522,11 @@ needed) is the JSON API.
 **Auth:** required.
 
 ### `GET /student/profile/visibility-settings` / `POST /student/profile/visibility-settings`
-Privacy toggles: `set_profile_private`, `show_active_status`, `set_dark_mode`,
-`send_weekly_notification` (all boolean, all default `true` except `set_profile_private` and
-`set_dark_mode` which default `false`). **Auth:** required.
+Privacy toggles: `set_profile_private` (default `false`), `show_active_status` and
+`show_in_activity_feed` (default `true`). All values must be real booleans. `POST` is a partial
+update: only the keys you send are changed. Unknown keys and non-boolean values return `400`.
+(`set_dark_mode` and `send_weekly_notification` were removed; older clients that still send them
+are ignored, not rejected.) **Auth:** required.
 
 ### `GET /student/profile/{username}`
 View someone else's profile. Response shape depends on their privacy setting:

@@ -1536,8 +1536,7 @@ paths:
                     properties:
                       set_profile_private: { type: boolean }
                       show_active_status: { type: boolean }
-                      set_dark_mode: { type: boolean }
-                      send_weekly_notification: { type: boolean }
+                      show_in_activity_feed: { type: boolean }
     post:
       tags: [Profile]
       summary: Update privacy/visibility settings
@@ -1549,8 +1548,7 @@ paths:
               properties:
                 set_profile_private: { type: boolean, default: false }
                 show_active_status: { type: boolean, default: true }
-                set_dark_mode: { type: boolean, default: false }
-                send_weekly_notification: { type: boolean, default: true }
+                show_in_activity_feed: { type: boolean, default: true }
       responses:
         '200':
           description: Saved.
