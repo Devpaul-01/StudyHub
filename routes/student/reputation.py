@@ -64,7 +64,6 @@ from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 # since it previously relied on the internal commit.
 from services.reputation_service import (
     REPUTATION_ACTIONS,
-    ReputationAction,
     award_reputation,
     check_and_award_milestone,
 )

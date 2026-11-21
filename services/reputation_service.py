@@ -1,206 +1,327 @@
 """
 services/reputation_service.py
 
-Document 2 §3.1. Owns point-awarding logic and milestone-checking, moved
-out of routes/student/reputation.py.
+Owns point-awarding logic and milestone-checking (moved out of
+routes/student/reputation.py by Document 2 §3.1).
 
-Moved verbatim in behavior (with one deliberate change, see below) from
-reputation.py:
-    - REPUTATION_ACTIONS
-    - award_reputation
-    - check_and_award_milestone
+Transaction convention: functions here mutate the session but do NOT
+commit -- the calling route owns the (single) transaction so a user action
+and its reward succeed or fail together. Side effects that must not
+outlive a rolled-back transaction (cache invalidation, notifications'
+Redis/WebSocket delivery, badge-check job enqueue) are registered through
+services.after_commit and only run after a successful COMMIT.
 
-Deliberate behavior change during this move (flagged explicitly per
-Document 1 §1's principle of not silently bundling fixes into a pure
-move): award_reputation() used to call db.session.commit() internally.
-Per Document 2 §5's transaction-boundary convention, service functions
-mutate the session but do NOT commit — that's the calling route's job, so
-several operations in one request succeed or fail together as one
-transaction. The commit has been REMOVED here.
+Correctness properties of award_reputation():
 
-This is a real behavior change for two existing call sites that relied on
-the internal commit with nothing committing afterward:
-    - posts.py::mark_comment_helpful (committed its own changes BEFORE
-      calling award_reputation, with nothing after it — fixed alongside
-      this move to commit after the award_reputation call instead)
-    - reputation.py::award_reputation_endpoint (had no commit anywhere in
-      its try block — fixed alongside this move to commit after the
-      award_reputation call)
-Both fixes ship in the same pass as this move since leaving either
-uncommitted would silently stop persisting reputation changes — see the
-route-level comments at each fixed call site for the specific diff.
+  * Concurrency: the user's row is locked (SELECT ... FOR UPDATE) before
+    the balance is read, so two simultaneous awards to the same user
+    serialize instead of both reading N and both writing N + delta (the
+    classic lost update). On SQLite (tests) FOR UPDATE is a no-op, but
+    SQLite already serializes writers.
+  * Idempotency: one-shot awards pass an ``idempotency_key``. A key that
+    already exists in the ledger returns the existing row and changes
+    nothing; the UNIQUE index on reputation_history.idempotency_key is the
+    database-level backstop.
+  * Ledger integrity: ``points_change`` records the EFFECTIVE delta
+    (reputation_after - reputation_before), so SUM(points_change)
+    reproduces users.reputation even when the zero floor clamps a
+    deduction.
+  * Reversal: reverse_reputation() appends a compensating row (the ledger
+    stays append-only) for the newest not-yet-reversed award of an
+    action/related-object pair.
 
-check_and_award_milestone was already commit-free (it only ever calls
-award_reputation, never touches db.session directly), so no change there.
-
-Per Document 2 §2's layering rule: no Flask imports, no `request`/`session`/`g`.
-Level-up notifications are built via services.notification_service.notify_level_up(...)
-rather than constructed inline here, keeping the notification field-list in
-exactly one place (matching how badge_service.check_and_award_badge already
-calls notification_service.notify_badge_earned(...)).
-
-REMEDIATION NOTE (Phase 1 correction pass): this module previously imported
-get_reputation_level from routes.student.reputation_levels, which is a
-services -> routes import and violates the one dependency rule this whole
-migration depends on. reputation_levels.py has moved to
-services/reputation_levels.py (routes/student/reputation_levels.py is now
-just a re-export shim); this file imports from the new location.
+Per Document 2 §2's layering rule: no Flask imports, no request/session/g.
 """
 
-from enum import Enum
+import logging
+from types import SimpleNamespace
+
+from sqlalchemy.exc import IntegrityError
 
 from models import User, ReputationHistory, Post
 from extensions import db
 from services.reputation_levels import get_reputation_level
 from services import notification_service
 from services import cache_service
+from services.after_commit import run_after_commit
+
+logger = logging.getLogger(__name__)
 
 
-class ReputationAction(str, Enum):
-    """
-    Document 1 §3.3 B-5 fix: REPUTATION_ACTIONS' keys were previously
-    referenced elsewhere as raw strings (e.g.
-    posts.py::award_reputation(commenter.id, "comment_marked_solution", ...)),
-    so a typo would silently no-op inside award_reputation's
-    `if not action and not custom_points: return None` fallback instead of
-    failing loudly. This enum gives call sites an attribute to reference
-    instead (ReputationAction.COMMENT_MARKED_SOLUTION), so a typo now fails
-    at import/attribute-access time.
-
-    Kept in sync 1:1 with REPUTATION_ACTIONS below — the enum VALUE is the
-    dict key, so `ReputationAction.POST_10_LIKES.value == "post_10_likes"`
-    and `REPUTATION_ACTIONS[ReputationAction.POST_10_LIKES.value]` both work.
-    """
-    POST_10_LIKES = "post_10_likes"
-    POST_50_LIKES = "post_50_likes"
-    POST_100_LIKES = "post_100_likes"
-    COMMENT_MARKED_SOLUTION = "comment_marked_solution"
-    COMMENT_MARKED_HELPFUL = "comment_marked_helpful"
-    POST_MARKED_HELPFUL = "post_marked_helpful"
-    POST_DISLIKED = "post_disliked"
-    CONTENT_REPORTED = "content_reported"
-    HELPFUL_STREAK_7 = "helpful_streak_7"
-    THREAD_CREATED = "thread_created"
-    THREAD_COMPLETED = "thread_completed"
-
-
+# "active" marks actions that some code path in the application actually
+# awards today. Inactive entries are kept so the point values are defined
+# in one place when they are wired up, but they are NOT advertised to users
+# (see awardable_actions(), used by GET /reputation/levels).
 REPUTATION_ACTIONS = {
-    "post_10_likes": {"points": 5, "description": "Post reached 10 likes"},
-    "post_50_likes": {"points": 20, "description": "Post reached 50 likes"},
-    "post_100_likes": {"points": 50, "description": "Post reached 100 likes"},
-    "comment_marked_solution": {"points": 15, "description": "Comment marked as solution"},
-    "comment_marked_helpful": {"points": 3, "description": "Comment marked helpful"},
-    "post_marked_helpful": {"points": 5, "description": "Post marked helpful"},
-    "post_disliked": {"points": -2, "description": "Post received dislike"},
-    "content_reported": {"points": -10, "description": "Content reported"},
-    "helpful_streak_7": {"points": 10, "description": "7 helpful reactions in a week"},
-    "thread_created": {"points": 3, "description": "Created study thread"},
-    "thread_completed": {"points": 10, "description": "Thread reached 10+ members"},
+    "post_10_likes": {"points": 5, "description": "Post reached 10 likes", "active": True},
+    "post_50_likes": {"points": 20, "description": "Post reached 50 likes", "active": True},
+    "post_100_likes": {"points": 50, "description": "Post reached 100 likes", "active": True},
+    "comment_marked_solution": {"points": 15, "description": "Comment marked as solution", "active": True},
+    "comment_marked_helpful": {"points": 3, "description": "Comment marked helpful", "active": True},
+    "post_marked_helpful": {"points": 5, "description": "Post marked helpful", "active": False},
+    "post_disliked": {"points": -2, "description": "Post received dislike", "active": False},
+    "content_reported": {"points": -10, "description": "Content reported", "active": False},
+    "helpful_streak_7": {"points": 10, "description": "7 helpful reactions in a week", "active": False},
+    "thread_created": {"points": 3, "description": "Created study thread", "active": False},
+    "thread_completed": {"points": 10, "description": "Thread reached 10+ members", "active": False},
 }
 
+# (like-count threshold, action key) -- ascending.
+LIKE_MILESTONES = (
+    (10, "post_10_likes"),
+    (50, "post_50_likes"),
+    (100, "post_100_likes"),
+)
 
-def award_reputation(user_id, action_key, related_type=None, related_id=None, custom_points=None):
+
+def awardable_actions():
+    """REPUTATION_ACTIONS restricted to the ones that can really be earned."""
+    return {k: v for k, v in REPUTATION_ACTIONS.items() if v.get("active")}
+
+
+def action_points(action_key):
+    """Point value of an action (single source of truth for UI/notification text)."""
+    return REPUTATION_ACTIONS[action_key]["points"]
+
+
+# ----------------------------------------------------------------------------
+# Cache invalidation (runs after commit -- see module docstring)
+# ----------------------------------------------------------------------------
+
+def _invalidate_reputation_caches(user_id):
     """
-    Award (or deduct) reputation points for a user and record the change
-    in ReputationHistory. Creates a level-up Notification if this change
-    crosses a reputation-level threshold.
+    Invalidate the user's own point-total/rank/breakdown/analytics caches.
 
-    Does NOT commit — the caller's existing try/except/commit block stays
-    in charge of the transaction (Document 2 §5). Every existing caller
-    must ensure a db.session.commit() happens after this call (either
-    their own, or the route's shared one) — see the module docstring above
-    for the two call sites that needed a fix alongside this move.
+    Deliberately NOT invalidated: sh:1:lb:global:* (any period/department/
+    page combination). One user's change could in principle shift every
+    other user's relative rank on a global page; hard-invalidating every
+    cached leaderboard page on every reputation change would defeat the
+    cache. The 60 s TTL on lb:global:* is the deliberate trade-off (plan
+    §4.2/§5.1): leaderboard *position* pages can lag by up to 60 s.
 
-    Returns the ReputationHistory row (session-pending, not yet committed),
-    or None if the user doesn't exist or no valid action/points were given.
+    rank/nearby/breakdown entries are keyed by a per-user version, so a
+    single bump invalidates all of them in O(1) (no keyspace SCAN).
     """
-    user = User.query.get(user_id)
+    cache_service.delete(f"sh:1:rep:me:{user_id}")
+    cache_service.bump_user_version(user_id)
+    cache_service.delete(f"sh:1:an:overview:{user_id}")
+    cache_service.delete(f"sh:1:badge:progress:{user_id}")
+
+
+def _mark_duplicate(history):
+    """
+    Detached read-only view of an already-recorded award, flagged
+    ``duplicate=True``. A copy rather than the ORM row itself: the session's
+    identity map hands every caller the same instance, so flagging the real
+    row would also flip ``duplicate`` on the object the original call
+    returned.
+    """
+    return SimpleNamespace(
+        id=history.id,
+        user_id=history.user_id,
+        action=history.action,
+        points_change=history.points_change,
+        related_type=history.related_type,
+        related_id=history.related_id,
+        reputation_before=history.reputation_before,
+        reputation_after=history.reputation_after,
+        idempotency_key=history.idempotency_key,
+        duplicate=True,
+        leveled_up=False,
+        new_level_name=None,
+    )
+
+
+def _lock_user(user_id):
+    """Load the user with a row lock, refreshing any stale identity-map copy."""
+    return (
+        db.session.query(User)
+        .filter(User.id == user_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+
+
+def award_reputation(
+    user_id,
+    action_key,
+    related_type=None,
+    related_id=None,
+    custom_points=None,
+    idempotency_key=None,
+):
+    """
+    Award (or deduct) reputation points and record the change in
+    ReputationHistory. Creates a level-up notification if the change
+    crosses a level threshold.
+
+    Does NOT commit -- the caller's transaction owns that.
+
+    Returns the ReputationHistory row (session-pending), carrying the
+    plain attributes ``leveled_up``, ``new_level_name`` and ``duplicate``
+    (True when ``idempotency_key`` had already been used, in which case
+    nothing was changed). Returns None if the user does not exist or no
+    valid action/points were given.
+    """
+    action = REPUTATION_ACTIONS.get(action_key)
+    if action is None and custom_points is None:
+        logger.warning("award_reputation: unknown action %r (user_id=%s) -- ignored",
+                       action_key, user_id)
+        return None
+
+    requested = custom_points if custom_points is not None else action["points"]
+    if not requested:
+        return None
+
+    user = _lock_user(user_id)
     if not user:
         return None
 
-    action = REPUTATION_ACTIONS.get(action_key)
-    if not action and not custom_points:
-        return None
+    if idempotency_key:
+        existing = ReputationHistory.query.filter_by(idempotency_key=idempotency_key).first()
+        if existing:
+            return _mark_duplicate(existing)
 
-    points_change = custom_points if custom_points else action["points"]
-
-    reputation_before = user.reputation
-    user.reputation += points_change
-    user.reputation = max(0, user.reputation)
-    user.update_reputation_level()
+    reputation_before = user.reputation or 0
+    reputation_after = max(0, reputation_before + requested)
 
     history = ReputationHistory(
         user_id=user_id,
         action=action_key if action_key else "custom",
-        points_change=points_change,
+        # Effective delta -- see module docstring (ledger integrity).
+        points_change=reputation_after - reputation_before,
         related_type=related_type,
         related_id=related_id,
         reputation_before=reputation_before,
-        reputation_after=user.reputation
+        reputation_after=reputation_after,
+        idempotency_key=idempotency_key,
     )
-    db.session.add(history)
 
-    # ── Cache invalidation (plan §5.1) ──────────────────────────────────
-    # Hard-invalidate the acting user's own point-total/rank/breakdown/
-    # analytics caches immediately — these reflect this exact reputation
-    # change and must never serve stale-past-this-request data.
-    #
-    # Deliberately NOT invalidated here: sh:1:lb:global:* (any period/
-    # department/page combination). A single user's reputation change can,
-    # in principle, shift every other user's *relative rank* on a global
-    # leaderboard page — hard-invalidating every cached leaderboard page on
-    # every single reputation-changing action would mean the leaderboard
-    # cache is invalidated on nearly every write in the whole gamification
-    # system, defeating the purpose of caching it at all. The 60-second TTL
-    # on lb:global:* is the deliberate trade-off (plan §4.2/§5.1): this
-    # user's own point total is always fresh via the invalidation below;
-    # leaderboard *position* pages (their own and everyone else's) can lag
-    # by up to 60 seconds. Do not "fix" this into fan-out invalidation.
-    cache_service.delete(f"sh:1:rep:me:{user_id}")
-    cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")
-    cache_service.delete_pattern(f"sh:1:lb:breakdown:{user_id}:*")
-    cache_service.delete(f"sh:1:an:overview:{user_id}")
+    if idempotency_key:
+        # Insert inside a savepoint: if a concurrent request slipped the
+        # same key in, the UNIQUE index rejects it and only the savepoint
+        # is rolled back -- the outer transaction (and the user's balance,
+        # not yet touched) stay intact.
+        try:
+            with db.session.begin_nested():
+                db.session.add(history)
+        except IntegrityError:
+            existing = ReputationHistory.query.filter_by(idempotency_key=idempotency_key).first()
+            if existing:
+                return _mark_duplicate(existing)
+            raise
+    else:
+        db.session.add(history)
+
+    user.reputation = reputation_after
+    user.update_reputation_level()
+
+    run_after_commit(_invalidate_reputation_caches, user_id)
 
     old_level = get_reputation_level(reputation_before)
-    new_level = get_reputation_level(user.reputation)
+    new_level = get_reputation_level(reputation_after)
     leveled_up = old_level["name"] != new_level["name"]
 
     if leveled_up:
-        # notify_level_up() calls db.session.add() + flush() only — it does
-        # not commit, matching this function's own no-commit convention.
+        # notify_level_up() only adds + flushes; delivery is deferred.
         notification_service.notify_level_up(user_id, new_level)
 
-    # Live-Activity addition: expose the level-up this function was
-    # already computing (leveled_up, above) to callers, as plain
-    # attributes on the ReputationHistory row rather than changing the
-    # return type — every existing caller currently discards the return
-    # value entirely (confirmed by reading all four call sites), so this
-    # is additive and doesn't risk breaking anything that pattern-matches
-    # or type-checks the old shape. A caller that wants to fire a
-    # reputation_level_up activity only on an actual level-up checks
-    # history.leveled_up; new_level_name is there so it doesn't need a
-    # second get_reputation_level(user.reputation) call to get the name.
+    logger.info(
+        "reputation_award user_id=%s action=%s requested=%s applied=%s before=%s after=%s "
+        "related=%s:%s key=%s leveled_up=%s",
+        user_id, history.action, requested, history.points_change,
+        reputation_before, reputation_after, related_type, related_id,
+        idempotency_key, leveled_up,
+    )
+
+    # Plain attributes (not a return-type change): callers that want a
+    # reputation_level_up live activity check history.leveled_up.
+    history.duplicate = False
     history.leveled_up = leveled_up
     history.new_level_name = new_level["name"] if leveled_up else None
 
     return history
 
 
-def check_and_award_milestone(user_id, post_id=None, comment_id=None):
+def reverse_reputation(user_id, action_key, related_type, related_id):
     """
-    Check whether a post/comment interaction just crossed a reputation
-    milestone (post like-count thresholds today) and award reputation if so.
+    Take back the newest not-yet-reversed award of ``action_key`` for the
+    given related object by appending a compensating (negative) ledger row.
 
-    Does NOT commit — same convention as award_reputation() above (this
-    function only ever calls award_reputation, never touches db.session
-    directly, so it was already commit-free before this move).
+    Idempotent: each award can be reversed at most once (UNIQUE key
+    ``rev:<award row id>``). Returns the new ReputationHistory row, or None
+    if there was nothing to reverse. Does NOT commit.
     """
-    if post_id:
-        post = Post.query.get(post_id)
-        if post and post.student_id == user_id:
-            if post.positive_reactions_count == 10:
-                award_reputation(user_id, "post_10_likes", "post", post_id)
-            elif post.positive_reactions_count == 50:
-                award_reputation(user_id, "post_50_likes", "post", post_id)
-            elif post.positive_reactions_count == 100:
-                award_reputation(user_id, "post_100_likes", "post", post_id)
+    awards = (
+        ReputationHistory.query
+        .filter_by(user_id=user_id, action=action_key,
+                   related_type=related_type, related_id=related_id)
+        .filter(ReputationHistory.points_change > 0)
+        .order_by(ReputationHistory.id.desc())
+        .all()
+    )
+    for award in awards:
+        reversal_key = f"rev:{award.id}"
+        if ReputationHistory.query.filter_by(idempotency_key=reversal_key).first():
+            continue
+        return award_reputation(
+            user_id,
+            f"{action_key}_reversed",
+            related_type,
+            related_id,
+            custom_points=-award.points_change,
+            idempotency_key=reversal_key,
+        )
+    return None
+
+
+def check_and_award_milestone(user_id, post_id=None):
+    """
+    Award each like-count milestone the post has reached and not yet been
+    paid for -- exactly once per (post, milestone), ever.
+
+    The trigger is ``count >= threshold`` plus the ledger, not an equality
+    test on a mutable counter: toggling a like around a boundary can no
+    longer re-award, and a counter that jumped past a boundary (two
+    simultaneous likes) still pays the milestone it skipped.
+
+    Legacy rows written before idempotency keys existed (key IS NULL) are
+    matched on (action, post) so they are never paid a second time.
+
+    Does NOT commit. Returns the list of newly created history rows.
+    """
+    if not post_id:
+        return []
+    post = Post.query.get(post_id)
+    if not post or post.student_id != user_id:
+        return []
+
+    count = post.positive_reactions_count or 0
+    reached = [(t, a) for t, a in LIKE_MILESTONES if count >= t]
+    if not reached:
+        return []
+
+    already = {
+        row[0]
+        for row in db.session.query(ReputationHistory.action)
+        .filter(
+            ReputationHistory.user_id == user_id,
+            ReputationHistory.related_type == "post",
+            ReputationHistory.related_id == post_id,
+            ReputationHistory.action.in_([a for _, a in reached]),
+        )
+        .all()
+    }
+
+    awarded = []
+    for _, action_key in reached:
+        if action_key in already:
+            continue
+        history = award_reputation(
+            user_id, action_key, "post", post_id,
+            idempotency_key=f"{action_key}:post:{post_id}",
+        )
+        if history is not None and not history.duplicate:
+            awarded.append(history)
+    return awarded
