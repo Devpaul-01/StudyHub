@@ -414,88 +414,6 @@
     </div>
 
     <!-- ═══════════════════════════════════════════
-         STEP 6 — COMPLETE REGISTRATION
-         (username + password before finishing)
-    ═══════════════════════════════════════════ -->
-    <div id="step-6" class="section">
-      <div class="section-header">
-        <span class="section-emoji">🔐</span>
-        <h2 class="section-title">Secure your account</h2>
-        <p class="section-subtitle">Choose a username and password so you can log in directly next time.</p>
-        <div class="gradient-rule"></div>
-      </div>
-
-      <div class="form-group" style="margin-bottom:1.25rem;">
-        <label class="form-label" for="reg-username">
-          Username <span style="color:#ef4444">*</span>
-          <span style="font-weight:400;opacity:0.6;font-size:0.8rem;margin-left:0.4rem;">3–20 lowercase letters &amp; numbers only</span>
-        </label>
-        <input
-          type="text"
-          id="reg-username"
-          class="form-input"
-          placeholder="e.g. john23"
-          autocomplete="username"
-          maxlength="20"
-          style="font-size:1rem;"
-        >
-        <div id="reg-username-error" style="color:#ef4444;font-size:0.8rem;margin-top:0.35rem;display:none;"></div>
-      </div>
-
-      <div class="form-group" style="margin-bottom:1.25rem;">
-        <label class="form-label" for="reg-password">
-          Password <span style="color:#ef4444">*</span>
-          <span style="font-weight:400;opacity:0.6;font-size:0.8rem;margin-left:0.4rem;">at least 6 characters</span>
-        </label>
-        <div style="position:relative;">
-          <input
-            type="password"
-            id="reg-password"
-            class="form-input"
-            placeholder="Create a password"
-            autocomplete="new-password"
-            style="font-size:1rem;padding-right:2.8rem;"
-          >
-          <button
-            type="button"
-            onclick="toggleRegPassword('reg-password','eye-1')"
-            style="position:absolute;right:0.8rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1.1rem;opacity:0.6;"
-            id="eye-1">👁</button>
-        </div>
-        <div id="reg-password-error" style="color:#ef4444;font-size:0.8rem;margin-top:0.35rem;display:none;"></div>
-      </div>
-
-      <div class="form-group" style="margin-bottom:2rem;">
-        <label class="form-label" for="reg-confirm">
-          Confirm password <span style="color:#ef4444">*</span>
-        </label>
-        <div style="position:relative;">
-          <input
-            type="password"
-            id="reg-confirm"
-            class="form-input"
-            placeholder="Repeat your password"
-            autocomplete="new-password"
-            style="font-size:1rem;padding-right:2.8rem;"
-          >
-          <button
-            type="button"
-            onclick="toggleRegPassword('reg-confirm','eye-2')"
-            style="position:absolute;right:0.8rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1.1rem;opacity:0.6;"
-            id="eye-2">👁</button>
-        </div>
-        <div id="reg-confirm-error" style="color:#ef4444;font-size:0.8rem;margin-top:0.35rem;display:none;"></div>
-      </div>
-
-      <div class="navigation-buttons">
-        <button class="btn btn-ghost" onclick="goToStep(5)">← Back</button>
-        <button class="btn btn-primary" id="reg-submit-btn" onclick="submitCompleteRegistration()">
-          Finish &amp; Go to Dashboard →
-        </button>
-      </div>
-    </div>
-
-    <!-- ═══════════════════════════════════════════
          COMPLETION SCREEN
     ═══════════════════════════════════════════ -->
     <div id="step-complete" class="section">
@@ -592,9 +510,16 @@
       populateDepartments();
       populateSubjects();
       setupEventListeners();
-      const email = window.location.pathname.split('/').pop();
-      if (email && email.includes('@')) {
-        localStorage.setItem('onboarding_email', email);
+    }
+
+    // The address being onboarded comes from the URL only. (It used to be cached
+    // in localStorage, which could hold a previous person's address on a shared
+    // device.) The server independently checks that the session owns it.
+    function currentEmail() {
+      try {
+        return decodeURIComponent(window.location.pathname.split('/').pop() || '');
+      } catch (e) {
+        return '';
       }
     }
 
@@ -671,7 +596,7 @@
       const i = grid.children.length;
       const div = document.createElement('div');
       div.className = 'subject-checkbox';
-      div.innerHTML = `<input type="checkbox" id="sub-${i}" value="${val}" checked><label for="sub-${i}">${val}</label>`;
+      div.innerHTML = `<input type="checkbox" id="sub-${i}" value="${escapeHtml(val)}" checked><label for="sub-${i}">${escapeHtml(val)}</label>`;
       grid.appendChild(div);
       input.value = '';
       document.getElementById('custom-subject-group').classList.remove('active');
@@ -812,7 +737,7 @@
     if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Searching…'; }
 
     try {
-        const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
+        const email = currentEmail();
         if (!email) {
             showToast('Session email not found. Please try again.', 'error');
             if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Find Study Buddies →'; }
@@ -820,7 +745,7 @@
         }
 
         // ✅ Updated to use global API client
-        const result = await api.post(`/onboard/${email}`, onboardingData);
+        const result = await api.post(`/onboard/${encodeURIComponent(email)}`, onboardingData);
 
         if (result.status === 'success') {
             showToast('Profile saved!', 'success');
@@ -999,111 +924,11 @@
 }
 
     // =========================================================================
-    // COMPLETE ONBOARDING  →  go to step 6 (set username + password)
+    // COMPLETE ONBOARDING  →  choose username + password on its own page
     // =========================================================================
-    // In onboard.html - replace submitCompleteRegistration with redirect
     function completeOnboarding() {
-    const email = localStorage.getItem('onboarding_email') || window.location.pathname.split('/').pop();
-    
-    // ✅ Redirect to complete-registration page instead of showing step 6
-    window.location.href = `/student/complete-registration?email=${email}`;
-}
-
-    // ── Toggle password visibility ────────────────────────────────────────────
-    function toggleRegPassword(inputId, btnId) {
-      const input = document.getElementById(inputId);
-      const btn   = document.getElementById(btnId);
-      if (input.type === 'password') {
-        input.type = 'text';
-        btn.style.opacity = '1';
-      } else {
-        input.type = 'password';
-        btn.style.opacity = '0.6';
-      }
+      window.location.href = `/student/complete-registration?email=${encodeURIComponent(currentEmail())}`;
     }
-
-    // ── Submit complete-registration to backend ───────────────────────────────
-    async function submitCompleteRegistration() {
-    // Clear previous errors
-    ['reg-username-error','reg-password-error','reg-confirm-error'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) { el.style.display = 'none'; el.textContent = ''; }
-    });
-
-    const username        = document.getElementById('reg-username').value.trim().toLowerCase();
-    const password        = document.getElementById('reg-password').value;
-    const confirmPassword = document.getElementById('reg-confirm').value;
-    const email           = localStorage.getItem('onboarding_email')
-                            || window.location.pathname.split('/').pop();
-
-    // ── Client-side validation ───────────────────────────────────────────
-    let hasError = false;
-
-    if (!username || !/^[a-z0-9]{3,20}$/.test(username)) {
-        const el = document.getElementById('reg-username-error');
-        el.textContent = 'Username must be 3–20 lowercase letters and numbers only.';
-        el.style.display = 'block';
-        hasError = true;
-    }
-
-    if (!password || password.length < 6) {
-        const el = document.getElementById('reg-password-error');
-        el.textContent = 'Password must be at least 6 characters.';
-        el.style.display = 'block';
-        hasError = true;
-    }
-
-    if (password !== confirmPassword) {
-        const el = document.getElementById('reg-confirm-error');
-        el.textContent = 'Passwords do not match.';
-        el.style.display = 'block';
-        hasError = true;
-    }
-
-    if (hasError) return;
-
-    // ── Submit to /student/complete-registration ─────────────────────────
-    const btn = document.getElementById('reg-submit-btn');
-    btn.disabled = true;
-    btn.textContent = 'Saving…';
-
-    try {
-        // ✅ Updated to use global API client
-        const result = await api.post('/complete-registration', {
-            email,
-            username,
-            password,
-            confirm_password: confirmPassword
-        });
-
-        if (result.status === 'success') {
-            showToast(`Welcome, @${username}! 🎉`, 'success');
-            document.getElementById('step-6').classList.remove('active');
-            document.getElementById('step-complete').classList.add('active');
-            setTimeout(() => { window.location.href = '/student/profile/homepage'; }, 3500);
-        } else {
-            const msg = result.message || 'Registration failed. Please try again.';
-            if (msg.toLowerCase().includes('username')) {
-                const el = document.getElementById('reg-username-error');
-                el.textContent = msg;
-                el.style.display = 'block';
-            } else if (msg.toLowerCase().includes('password')) {
-                const el = document.getElementById('reg-password-error');
-                el.textContent = msg;
-                el.style.display = 'block';
-            } else {
-                showToast(msg, 'error');
-            }
-            btn.disabled = false;
-            btn.textContent = 'Finish & Go to Dashboard →';
-        }
-    } catch (err) {
-        console.error('Complete registration error:', err);
-        showToast('Network error — please try again.', 'error');
-        btn.disabled = false;
-        btn.textContent = 'Finish & Go to Dashboard →';
-    }
-}
 
     // =========================================================================
     // TOAST NOTIFICATIONS
