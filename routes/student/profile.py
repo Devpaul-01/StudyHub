@@ -297,13 +297,10 @@ def get_my_stats(current_user):
             Post, PostReaction.post_id == Post.id
         ).filter(Post.student_id == current_user.id).scalar() or 0
 
-        # AUDIT §4.2 FIX: reaction_type="helpful" is never written by any
-        # live code path (react_to_post hardcodes reaction_type="like" —
-        # the multi-reaction system was intentionally replaced by a single
-        # like-toggle; see that route's own docstring). This always
-        # evaluated to 0; replaced with the literal value. Response shape
-        # (engagement.helpful_received) is unchanged.
-        helpful_received = 0
+        # "Marked helpful" = how many of this user's comments other users
+        # marked helpful; maintained on User.total_helpful by
+        # posts/comments.py::mark_comment_helpful.
+        helpful_received = current_user.total_helpful or 0
 
         return jsonify({
             "status": "success",
