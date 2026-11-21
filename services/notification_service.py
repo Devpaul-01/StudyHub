@@ -49,6 +49,7 @@ import logging
 from extensions import db
 from models import Notification, Badge
 from services import counter_cache_service
+from services.after_commit import run_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ logger = logging.getLogger(__name__)
 # WEBSOCKET BROADCAST (best-effort — never blocks or fails the caller)
 # ============================================================================
 
-def _broadcast(user_id: int, notification: Notification) -> None:
+def _broadcast(user_id: int, payload: dict) -> None:
     """
     Best-effort real-time push of a newly created notification.
 
@@ -69,28 +70,25 @@ def _broadcast(user_id: int, notification: Notification) -> None:
     a notification that fails to push in real time still exists as a row
     and will show up next time the client polls/fetches
     /profile/notifications/all, so this must never raise and break the
-    caller's actual (already-committed-elsewhere) business operation.
+    caller's actual business operation.
+
+    ``payload`` is a plain dict captured while the notification row was
+    still attached to the session: this runs from an after-commit hook,
+    where ORM attributes are expired and the session cannot emit SQL.
     """
     try:
         from services.websocket_messages import message_ws_manager
-
-        payload = {
-            "id": notification.id,
-            "title": notification.title,
-            "body": notification.body,
-            "type": notification.notification_type,
-            "link": notification.link,
-            "related_type": notification.related_type,
-            "related_id": notification.related_id,
-            "created_at": (
-                notification.created_at.isoformat() if notification.created_at else None
-            ),
-        }
 
         message_ws_manager.emit_to_user(user_id, "new_notification", payload)
 
     except Exception as exc:
         logger.warning(f"Notification broadcast failed (non-critical): {exc}")
+
+
+def _deliver_live(user_id: int, payload: dict) -> None:
+    """Post-commit side effects: unread-counter INCR + WebSocket push."""
+    counter_cache_service.increment_unread_notification_count(user_id)
+    _broadcast(user_id, payload)
 
 
 # ============================================================================
@@ -120,12 +118,11 @@ def notify(
     increments the Redis counter at sh:1:notif:unread:{user_id} via a
     native atomic INCR (counter_cache_service.increment_unread_notification_count),
     never a read-modify-write — see plan §7.1 for why that distinction
-    matters under concurrent notify() calls for the same user. This call
-    is deliberately placed alongside db.session.flush()/_broadcast(),
-    which are also both best-effort/non-transactional — like _broadcast(),
-    a Redis hiccup here must never surface as an error to notify()'s
-    caller (counter_cache_service already fails open internally, per its
-    own module docstring, so no try/except is needed at this call site).
+    matters under concurrent notify() calls for the same user. The INCR
+    and the WebSocket push run AFTER the surrounding transaction commits
+    (services.after_commit), so a rolled-back transaction produces
+    neither. counter_cache_service fails open internally, so a Redis
+    hiccup never surfaces as an error to the caller.
 
     This function being the single funnel point for the increment is only
     correct once every direct `Notification(...)` construction elsewhere
@@ -144,9 +141,23 @@ def notify(
     db.session.add(notification)
     db.session.flush()  # populate notification.id/created_at for the broadcast payload
 
-    counter_cache_service.increment_unread_notification_count(user_id)
-
-    _broadcast(user_id, notification)
+    # Side effects (unread-counter INCR, WebSocket push) are deferred until
+    # the surrounding transaction commits. Previously they ran here, so a
+    # rollback after this point left the user with a live push and a +1
+    # unread count for a notification row that never existed.
+    payload = {
+        "id": notification.id,
+        "title": notification.title,
+        "body": notification.body,
+        "type": notification.notification_type,
+        "link": notification.link,
+        "related_type": notification.related_type,
+        "related_id": notification.related_id,
+        "created_at": (
+            notification.created_at.isoformat() if notification.created_at else None
+        ),
+    }
+    run_after_commit(_deliver_live, user_id, payload)
 
     return notification
 
