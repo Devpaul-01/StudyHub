@@ -287,7 +287,7 @@ class TestUpdateProfile:
 
 
 # ============================================================================
-# POST /profile/skills, DELETE /profile/skills/<skill_name>
+# POST /profile/skills, DELETE /profile/skills
 # ============================================================================
 
 class TestSkills:
@@ -332,7 +332,7 @@ class TestSkills:
         user = make_user(skills=["Python", "SQL"])
         headers = {**auth_headers(user), **csrf_headers(client)}
 
-        resp = client.delete("/student/profile/skills/python", headers=headers)
+        resp = client.delete("/student/profile/skills", json={"skill": "python"}, headers=headers)
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["skills"] == ["SQL"]
@@ -341,14 +341,14 @@ class TestSkills:
         user = make_user(skills=["SQL"])
         headers = {**auth_headers(user), **csrf_headers(client)}
 
-        resp = client.delete("/student/profile/skills/does-not-exist", headers=headers)
+        resp = client.delete("/student/profile/skills", json={"skill": "does-not-exist"}, headers=headers)
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["skills"] == ["SQL"]
 
 
 # ============================================================================
-# POST /profile/learning-goals, DELETE /profile/learning-goals/<index>
+# POST /profile/learning-goals, DELETE /profile/learning-goals
 # ============================================================================
 
 class TestLearningGoals:
@@ -384,22 +384,79 @@ class TestLearningGoals:
         assert resp.status_code == 400
         assert "Maximum 5" in resp.get_json()["message"]
 
-    def test_remove_goal_by_valid_index(self, client, make_user, auth_headers, csrf_headers):
+    def test_remove_goal_by_text(self, client, make_user, auth_headers, csrf_headers):
         user = make_user(learning_goals=["Goal A", "Goal B"])
         headers = {**auth_headers(user), **csrf_headers(client)}
 
-        resp = client.delete("/student/profile/learning-goals/0", headers=headers)
+        resp = client.delete("/student/profile/learning-goals", json={"goal": "goal a"}, headers=headers)
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["learning_goals"] == ["Goal B"]
 
-    def test_remove_goal_invalid_index_returns_error(self, client, make_user, auth_headers, csrf_headers):
+    def test_remove_goal_is_not_position_based(self, client, make_user, auth_headers, csrf_headers):
+        """A stale page that thinks "Goal B" is first must not delete "Goal A"."""
+        user = make_user(learning_goals=["Goal A", "Goal B"])
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        client.delete("/student/profile/learning-goals", json={"goal": "Goal A"}, headers=headers)
+        resp = client.delete("/student/profile/learning-goals", json={"goal": "Goal B"}, headers=headers)
+
+        assert resp.get_json()["data"]["learning_goals"] == []
+
+    def test_remove_goal_without_text_returns_error(self, client, make_user, auth_headers, csrf_headers):
         user = make_user(learning_goals=["Goal A"])
         headers = {**auth_headers(user), **csrf_headers(client)}
 
-        resp = client.delete("/student/profile/learning-goals/99", headers=headers)
+        assert client.delete("/student/profile/learning-goals", json={}, headers=headers).status_code == 400
+        assert client.delete("/student/profile/learning-goals/0", headers=headers).status_code in (404, 405)
+
+    def test_goal_duplicates_are_case_insensitive(self, client, make_user, auth_headers, csrf_headers):
+        user = make_user(learning_goals=["Learn ML"])
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/learning-goals", json={"goal": "learn ml"}, headers=headers)
 
         assert resp.status_code == 400
+
+
+class TestSkillAndGoalInputValidation:
+    @pytest.mark.parametrize("bad", ["<img src=x onerror=1>", "a<b", 123, None, ["x"], {"a": 1}, "x" * 51])
+    def test_bad_skill_is_rejected(self, client, make_user, auth_headers, csrf_headers, bad):
+        user = make_user(skills=[])
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/skills", json={"skill": bad}, headers=headers)
+
+        assert resp.status_code == 400
+        assert user.skills == []
+
+    @pytest.mark.parametrize("bad", ["<b>goal</b>", 5, "g" * 101])
+    def test_bad_goal_is_rejected(self, client, make_user, auth_headers, csrf_headers, bad):
+        user = make_user(learning_goals=[])
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/learning-goals", json={"goal": bad}, headers=headers)
+
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("name", ["C/C++", "C#", ".NET", "Node.js", "What?", "100%", "Café"])
+    def test_awkward_skill_names_round_trip(self, client, make_user, auth_headers, csrf_headers, name):
+        """Regression: names containing "/" could be added but never removed."""
+        user = make_user(skills=[])
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        assert client.post("/student/profile/skills", json={"skill": name}, headers=headers).status_code == 201
+        resp = client.delete("/student/profile/skills", json={"skill": name}, headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["skills"] == []
+
+    def test_non_object_bodies_are_rejected(self, client, make_user, auth_headers, csrf_headers):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        assert client.post("/student/profile/skills", json=["Python"], headers=headers).status_code == 400
+        assert client.post("/student/profile/learning-goals", data="x", headers=headers).status_code == 400
 
 
 # ============================================================================

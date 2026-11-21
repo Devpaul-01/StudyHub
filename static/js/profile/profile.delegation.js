@@ -515,9 +515,9 @@ export const ProfileHandlers = {
   },
 
   'profile-remove-goal': async (target) => {
-    const index = parseInt(target.dataset.index, 10);
-    if (isNaN(index)) return;
-    const res = await profileApi.removeLearningGoal(index);
+    const goal = target.dataset.goal;
+    if (!goal) return;
+    const res = await profileApi.removeLearningGoal(goal);
     if (res?.status === 'success') {
       const newGoals = res.data?.learning_goals || [];
       if (profileState.profileData) profileState.profileData.learning_goals = newGoals;

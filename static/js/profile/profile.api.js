@@ -126,9 +126,9 @@ export async function addLearningGoal(goal) {
   }
 }
 
-export async function removeLearningGoal(index) {
+export async function removeLearningGoal(goal) {
   try {
-    return await api.delete(`/profile/learning-goals/${index}`);
+    return await api.delete('/profile/learning-goals', { goal });
   } catch (e) {
     console.error('[profile.api] removeLearningGoal:', e);
     return null;
@@ -173,7 +173,7 @@ export async function addSkill(skill) {
 
 export async function removeSkill(skillName) {
   try {
-    return await api.delete(`/profile/skills/${encodeURIComponent(skillName)}`);
+    return await api.delete('/profile/skills', { skill: skillName });
   } catch (e) {
     console.error('[profile.api] removeSkill:', e);
     return null;

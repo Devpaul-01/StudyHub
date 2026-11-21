@@ -712,10 +712,10 @@ export function buildGoalsList(goals) {
   if (!goals || !goals.length) {
     return `<div style="font-size:0.78rem;color:var(--text-secondary);padding:0.25rem 0;">No goals yet</div>`;
   }
-  return goals.map((g, i) => `
+  return goals.map(g => `
     <div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid var(--border);">
       <span style="flex:1;font-size:0.82rem;color:var(--text-primary);">${escapeHtml(g)}</span>
-      <button data-action="profile-remove-goal" data-index="${i}"
+      <button data-action="profile-remove-goal" data-goal="${escapeHtml(g)}"
         style="padding:0.15rem 0.45rem;background:rgba(239,68,68,0.1);border:none;
                border-radius:6px;cursor:pointer;font-size:0.72rem;color:#ef4444;flex-shrink:0;">✕</button>
     </div>`

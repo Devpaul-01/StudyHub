@@ -543,16 +543,19 @@ anything that looks like an HTML tag. `class_level` must be one of `100 Level`..
 written to the onboarding record so `GET /profile/academic-info` agrees. Returns "No changes made"
 if nothing differed from the stored values.
 
-### `POST /student/profile/skills` / `DELETE /student/profile/skills/{skill_name}`
-Add/remove a skill tag. Max 10 skills, 50 chars each, no duplicates. Removal matches
-case-insensitively and is idempotent (no error if it wasn't there).
+### `POST /student/profile/skills` / `DELETE /student/profile/skills`
+Add/remove a skill tag. Body: `{"skill": "Python"}` for both verbs (the name is in the body, not
+the URL, so `C/C++`, `C#` or `.NET` work). Max 10 skills, 50 characters each, plain text (no `<`
+or `>`), no case-insensitive duplicates. Removal matches case-insensitively and is idempotent.
 
-**Auth:** required.
+**Auth:** required. **400** on invalid/duplicate/over-cap input (POST) or a missing name (DELETE).
 
-### `POST /student/profile/learning-goals` / `DELETE /student/profile/learning-goals/{index}`
-Add/remove a learning goal by list index. Max 5 goals, 100 chars each, no duplicates.
+### `POST /student/profile/learning-goals` / `DELETE /student/profile/learning-goals`
+Add/remove a learning goal. Body: `{"goal": "Learn Machine Learning"}` for both verbs. Removal is
+by text (case-insensitive), not list position, so a stale page cannot delete a different goal.
+Max 5 goals, 100 characters each, plain text, no case-insensitive duplicates.
 
-**Auth:** required. **400** on cap/duplicate (POST) or out-of-range index (DELETE).
+**Auth:** required. **400** on invalid/duplicate/over-cap input (POST) or a missing goal (DELETE).
 
 ### `POST /student/profile/pin-post/{post_id}` / `POST /student/profile/unpin-post/{post_id}`
 Pin/unpin a post to your profile. Max 5 pinned. **Auth:** required. **400** if not yours, not

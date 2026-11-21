@@ -992,54 +992,84 @@ def update_profile(current_user):
 # SKILLS & LEARNING GOALS
 # ============================================================================
 
+MAX_SKILLS         = 10
+MAX_LEARNING_GOALS = 5
+MAX_PINNED_POSTS   = 5
+
+
+def _locked_user(user_id):
+    """Load the user row with a row lock for read-modify-write updates.
+
+    Skills, goals and pins are rewritten as a whole value, so two
+    concurrent requests (two tabs, retries, two app instances) could
+    otherwise overwrite each other or exceed a limit. SQLite ignores the
+    lock, which is fine for tests.
+    """
+    return User.query.filter_by(id=user_id).with_for_update().first()
+
+
+def _json_object():
+    """Parsed JSON body, or None if it is not a JSON object."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
+
 @profile_bp.route("/profile/skills", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def add_skill(current_user):
     """Add a skill to profile. Body: {"skill": "Python"}"""
+    data = _json_object()
+    if data is None:
+        return error_response("Request body must be a JSON object")
+
     try:
-        data  = request.get_json()
-        skill = data.get("skill", "").strip()
+        skill = clean_plain_text(data.get("skill", ""), "Skill", max_len=50)
+    except ProfileValidationError as e:
+        return error_response(str(e))
 
-        if not skill:
-            return error_response("Skill name required")
-        if len(skill) > 50:
-            return error_response("Skill name too long (max 50 chars)")
-
-        skills = current_user.skills or []
+    try:
+        user   = _locked_user(current_user.id)
+        skills = list(user.skills or [])
 
         if any(s.lower() == skill.lower() for s in skills):
             return error_response("Skill already added")
-        if len(skills) >= 10:
-            return error_response("Maximum 10 skills allowed")
+        if len(skills) >= MAX_SKILLS:
+            return error_response(f"Maximum {MAX_SKILLS} skills allowed")
 
         skills.append(skill)
-        current_user.skills = skills
+        user.skills = skills
         db.session.commit()
 
         return success_response("Skill added", data={"skills": skills}), 201
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Add skill error: {str(e)}")
-        return error_response("Failed to add skill")
+    except Exception:
+        return _server_error("Add skill error", "Failed to add skill")
 
 
-@profile_bp.route("/profile/skills/<skill_name>", methods=["DELETE"])
+@profile_bp.route("/profile/skills", methods=["DELETE"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
-def remove_skill(current_user, skill_name):
-    """Remove a skill from profile."""
+def remove_skill(current_user):
+    """Remove a skill. Body: {"skill": "C/C++"}
+
+    The name travels in the body, not the URL, so names containing
+    "/", "#", "?" or "." can be removed like any other.
+    """
+    data = _json_object()
+    if data is None or not isinstance(data.get("skill"), str) or not data["skill"].strip():
+        return error_response("Skill name required")
+    wanted = data["skill"].strip().lower()
+
     try:
-        skills = [s for s in (current_user.skills or []) if s.lower() != skill_name.lower()]
-        current_user.skills = skills
+        user   = _locked_user(current_user.id)
+        skills = [s for s in (user.skills or []) if s.lower() != wanted]
+        user.skills = skills
         db.session.commit()
         return success_response("Skill removed", data={"skills": skills})
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Remove skill error: {str(e)}")
-        return error_response("Failed to remove skill")
+    except Exception:
+        return _server_error("Remove skill error", "Failed to remove skill")
 
 
 @profile_bp.route("/profile/learning-goals", methods=["POST"])
@@ -1047,55 +1077,58 @@ def remove_skill(current_user, skill_name):
 @token_required
 def add_learning_goal(current_user):
     """Add learning goal. Body: {"goal": "Learn Machine Learning"}"""
+    data = _json_object()
+    if data is None:
+        return error_response("Request body must be a JSON object")
+
     try:
-        data = request.get_json()
-        goal = data.get("goal", "").strip()
+        goal = clean_plain_text(data.get("goal", ""), "Goal", max_len=100)
+    except ProfileValidationError as e:
+        return error_response(str(e))
 
-        if not goal:
-            return error_response("Goal required")
-        if len(goal) > 100:
-            return error_response("Goal too long (max 100 chars)")
+    try:
+        user  = _locked_user(current_user.id)
+        goals = list(user.learning_goals or [])
 
-        goals = current_user.learning_goals or []
-
-        if goal in goals:
+        if any(g.lower() == goal.lower() for g in goals):
             return error_response("Goal already added")
-        if len(goals) >= 5:
-            return error_response("Maximum 5 learning goals allowed")
+        if len(goals) >= MAX_LEARNING_GOALS:
+            return error_response(f"Maximum {MAX_LEARNING_GOALS} learning goals allowed")
 
         goals.append(goal)
-        current_user.learning_goals = goals
+        user.learning_goals = goals
         db.session.commit()
 
         return success_response("Learning goal added", data={"learning_goals": goals}), 201
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Add goal error: {str(e)}")
-        return error_response("Failed to add goal")
+    except Exception:
+        return _server_error("Add goal error", "Failed to add goal")
 
 
-@profile_bp.route("/profile/learning-goals/<int:index>", methods=["DELETE"])
+@profile_bp.route("/profile/learning-goals", methods=["DELETE"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
-def remove_learning_goal(current_user, index):
-    """Remove learning goal by index."""
+def remove_learning_goal(current_user):
+    """Remove a learning goal by its text. Body: {"goal": "Learn Machine Learning"}
+
+    Removing by value (not list position) means a stale page cannot delete
+    a different goal than the one the user clicked.
+    """
+    data = _json_object()
+    if data is None or not isinstance(data.get("goal"), str) or not data["goal"].strip():
+        return error_response("Goal required")
+    wanted = data["goal"].strip().lower()
+
     try:
-        goals = current_user.learning_goals or []
-
-        if index < 0 or index >= len(goals):
-            return error_response("Invalid goal index")
-
-        goals.pop(index)
-        current_user.learning_goals = goals
+        user  = _locked_user(current_user.id)
+        goals = [g for g in (user.learning_goals or []) if g.lower() != wanted]
+        user.learning_goals = goals
         db.session.commit()
 
         return success_response("Learning goal removed", data={"learning_goals": goals})
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Remove goal error: {str(e)}")
-        return error_response("Failed to remove goal")
+    except Exception:
+        return _server_error("Remove goal error", "Failed to remove goal")
 
 
 # ============================================================================
@@ -1106,26 +1139,28 @@ def remove_learning_goal(current_user, index):
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def pin_post(current_user, post_id):
-    """Pin a post to profile."""
+    """Pin a post to profile (at most MAX_PINNED_POSTS)."""
     try:
-        post         = Post.query.filter_by(id=post_id, student_id=current_user.id).first()
-        total_pinned = Post.query.filter_by(student_id=current_user.id, is_pinned=True).count()
+        # Serialise pin/unpin per user so the limit below cannot be raced.
+        _locked_user(current_user.id)
 
+        post = Post.query.filter_by(id=post_id, student_id=current_user.id).first()
         if not post:
             return error_response("Post not found or not yours")
         if post.is_pinned:
             return success_response("Post has already been pinned")
-        if total_pinned >= 5:
-            return error_response("You can't pin more than 5 posts — unpin one first")
+
+        total_pinned = Post.query.filter_by(student_id=current_user.id, is_pinned=True).count()
+        if total_pinned >= MAX_PINNED_POSTS:
+            return error_response(
+                f"You can't pin more than {MAX_PINNED_POSTS} posts — unpin one first")
 
         post.is_pinned = True
         db.session.commit()
         return success_response("Post pinned successfully")
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Pin post error: {str(e)}")
-        return error_response("Failed to pin post")
+    except Exception:
+        return _server_error("Pin post error", "Failed to pin post")
 
 
 @profile_bp.route("/profile/unpin-post/<int:post_id>", methods=["POST"])
