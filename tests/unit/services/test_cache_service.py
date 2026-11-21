@@ -149,3 +149,41 @@ def test_cached_decorator_no_placeholders_fixed_key(fakeredis_client):
     compute()
     compute()
     assert call_count["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# incr() and versioned keys
+# ---------------------------------------------------------------------------
+
+def test_incr_creates_and_increments_counter(fakeredis_client):
+    assert cache_service.incr("sh:1:ver:7") == 1
+    assert cache_service.incr("sh:1:ver:7") == 2
+    assert cache_service.get("sh:1:ver:7") == 2
+
+
+def test_incr_applies_ttl(fakeredis_client):
+    cache_service.incr("sh:1:ver:8", ttl_seconds=100)
+    assert 0 < fakeredis_client.ttl("sh:1:ver:8") <= 100
+
+
+def test_incr_returns_none_when_redis_fails():
+    from unittest.mock import patch
+    with patch.object(cache_service, "redis_client") as rc:
+        rc.incr.side_effect = ConnectionError("down")
+        assert cache_service.incr("sh:1:ver:9") is None
+
+
+def test_versioned_cache_is_invalidated_by_bumping_the_version(fakeredis_client):
+    calls = []
+
+    @cache_service.cached("sh:1:t:{uid}", ttl_seconds=60, version_key="sh:1:ver:{uid}")
+    def compute(uid):
+        calls.append(uid)
+        return {"n": len(calls)}
+
+    assert compute(5) == {"n": 1}
+    assert compute(5) == {"n": 1}          # hit
+    cache_service.incr("sh:1:ver:5")       # invalidate user 5 only
+    assert compute(5) == {"n": 2}          # recomputed under the new version
+    assert compute(6) == {"n": 3}          # other users keep their own versions
+    assert compute(6) == {"n": 3}

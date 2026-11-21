@@ -220,6 +220,29 @@ def delete_pattern(prefix):
         )
 
 
+def incr(key, ttl_seconds=None):
+    """Atomically increment an integer counter and return the new value.
+
+    Used for cache *versions*: bumping a per-user version makes every key
+    that embeds it unreachable at once, without scanning the keyspace. The
+    abandoned keys simply age out through their own TTLs. Never raises;
+    returns None if Redis is unreachable (callers treat that like any other
+    failed invalidation: stale until TTL expiry).
+    """
+    log = _get_logger()
+    try:
+        value = redis_client.incr(key)
+        if ttl_seconds:
+            redis_client.expire(key, ttl_seconds)
+        return value
+    except Exception as e:
+        log.warning(
+            f"[CACHE] Redis INCR failed for key={key!r}. Error: {e}",
+            exc_info=True
+        )
+        return None
+
+
 def clear():
     """Drop every cached entry belonging to this application's namespace
     (not the whole Redis DB, in case Redis is ever shared with another
@@ -234,7 +257,7 @@ def clear():
 # DECORATOR
 # ============================================================================
 
-def cached(key_template, ttl_seconds):
+def cached(key_template, ttl_seconds, version_key=None):
     """
     Decorator for service-layer functions. Unchanged in behavior from the
     original in-memory version — it only ever calls the get()/set()
@@ -263,6 +286,11 @@ def cached(key_template, ttl_seconds):
     A key_template with no `{}` placeholders is valid and just becomes a
     fixed key — e.g. @cached("popular_tags", ttl_seconds=300) for a
     function with no arguments that vary the result.
+
+    version_key (optional) is a second template, e.g. "sh:1:ver:{user_id}",
+    naming an integer counter. Its current value is appended to the cache key
+    as ":v<n>", so bumping the counter with incr() invalidates every entry
+    that embeds it in O(1). A missing counter is version 0.
     """
     def decorator(func):
         # Map positional args to parameter names so key_template can
@@ -277,11 +305,14 @@ def cached(key_template, ttl_seconds):
             bound = dict(zip(param_names, args))
             bound.update(kwargs)
             
-            log.debug(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
+            log.debug("[CACHE] WRAPPER: %s called with args: %s", func.__name__, bound)
             
             try:
                 key = key_template.format(**bound)
-                log.debug(f"[CACHE] WRAPPER: generated key: {key}")
+                if version_key:
+                    version = get(version_key.format(**bound))
+                    key = f"{key}:v{version if isinstance(version, int) else 0}"
+                log.debug("[CACHE] WRAPPER: generated key: %s", key)
             except (KeyError, IndexError) as e:
                 # A referenced placeholder wasn't supplied (e.g. called
                 # with fewer args than the template expects). Fail open —
