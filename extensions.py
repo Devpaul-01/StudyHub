@@ -62,8 +62,13 @@ def _create_redis_client():
         client = redis.Redis.from_url(
             redis_url,
             decode_responses=True,
-            socket_connect_timeout=10,
-            socket_timeout=10,
+            # Tunable per deployment. The default stays 10s because this one
+            # client is shared with the RQ worker, whose blocking dequeue
+            # needs a socket timeout longer than its own poll interval;
+            # deployments that run the API separately can lower it so a
+            # hung Redis fails fast (cache/counter calls all fail open).
+            socket_connect_timeout=float(os.environ.get("REDIS_SOCKET_CONNECT_TIMEOUT", "10")),
+            socket_timeout=float(os.environ.get("REDIS_SOCKET_TIMEOUT", "10")),
             retry_on_timeout=False,
             **extra_kwargs,
         )
