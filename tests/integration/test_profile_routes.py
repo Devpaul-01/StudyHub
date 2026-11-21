@@ -632,3 +632,94 @@ class TestReservedUsernames:
 
         assert resp.status_code == 400
         assert resp.get_json()["message"] == "Username taken"
+
+
+# ============================================================================
+# PATCH /profile/update — validation and consistency
+# ============================================================================
+
+class TestUpdateProfileValidation:
+    @pytest.fixture
+    def user(self, make_user, make_student_profile):
+        user = make_user(name="Original Name")
+        make_student_profile(user)
+        return user
+
+    def _patch(self, client, auth_headers, csrf_headers, user, payload):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        return client.patch("/student/profile/update", json=payload, headers=headers)
+
+    @pytest.mark.parametrize("name", [
+        '"><img src=x onerror=alert(1)>', "<script>alert(1)</script>", "a<b", "x>y",
+    ])
+    def test_name_with_markup_is_rejected(self, client, auth_headers, csrf_headers, user, name):
+        resp = self._patch(client, auth_headers, csrf_headers, user, {"name": name})
+
+        assert resp.status_code == 400
+        assert "<" in name or ">" in name
+        assert user.name == "Original Name"
+
+    @pytest.mark.parametrize("bad", [12345, None, ["x"], {"a": 1}])
+    def test_non_string_name_gets_a_validation_error_not_a_server_error(
+        self, client, auth_headers, csrf_headers, user, bad
+    ):
+        resp = self._patch(client, auth_headers, csrf_headers, user, {"name": bad})
+
+        assert resp.status_code == 400
+        assert resp.get_json()["message"] == "Name must be text"
+
+    def test_name_longer_than_the_column_is_rejected(self, client, auth_headers, csrf_headers, user):
+        resp = self._patch(client, auth_headers, csrf_headers, user, {"name": "x" * 81})
+
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("bio", ["<script>alert(1)</script>", 'hi <img src=x onerror=1>'])
+    def test_bio_with_tags_is_rejected(self, client, auth_headers, csrf_headers, user, bio):
+        resp = self._patch(client, auth_headers, csrf_headers, user, {"bio": bio})
+
+        assert resp.status_code == 400
+
+    def test_bio_may_contain_plain_symbols_and_can_be_cleared(
+        self, client, db_session, auth_headers, csrf_headers, user
+    ):
+        assert self._patch(client, auth_headers, csrf_headers, user, {"bio": "I <3 maths"}).status_code == 200
+        assert user.bio == "I <3 maths"
+
+        assert self._patch(client, auth_headers, csrf_headers, user, {"bio": ""}).status_code == 200
+        assert user.bio == ""
+
+    def test_class_level_must_be_a_known_level(self, client, auth_headers, csrf_headers, user):
+        bad = self._patch(client, auth_headers, csrf_headers, user, {"class_level": "Year 3"})
+        good = self._patch(client, auth_headers, csrf_headers, user, {"class_level": "300 level"})
+
+        assert bad.status_code == 400
+        assert good.status_code == 200
+        assert good.get_json()["data"]["user"]["class_level"] == "300 Level"
+
+    def test_department_is_length_limited_plain_text(self, client, auth_headers, csrf_headers, user):
+        assert self._patch(client, auth_headers, csrf_headers, user, {"department": "d" * 51}).status_code == 400
+        assert self._patch(client, auth_headers, csrf_headers, user, {"department": "<b>CS</b>"}).status_code == 400
+
+    def test_department_and_class_are_mirrored_to_onboarding(
+        self, client, auth_headers, csrf_headers, make_onboarding_details, user
+    ):
+        """Regression: /academic-info kept returning the old department."""
+        make_onboarding_details(user, department="Physics", class_level="100 Level")
+
+        resp = self._patch(client, auth_headers, csrf_headers, user,
+                           {"department": "Biology", "class_level": "200 Level"})
+        assert resp.status_code == 200
+
+        academic = client.get("/student/profile/academic-info",
+                              headers=auth_headers(user)).get_json()["data"]
+        mine = client.get("/student/profile/me/data",
+                          headers=auth_headers(user)).get_json()["data"]
+        assert academic["department"] == mine["department"] == "Biology"
+        assert academic["class_level"] == mine["class_level"] == "200 Level"
+
+    def test_non_object_body_is_rejected(self, client, auth_headers, csrf_headers, user):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.patch("/student/profile/update", json=["name"], headers=headers)
+
+        assert resp.status_code == 400

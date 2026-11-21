@@ -18,6 +18,10 @@ from models import (
 )
 from extensions import db
 from errors import ValidationError
+from services.profile_validation import (
+    ProfileValidationError, clean_bio, clean_class_level, clean_plain_text,
+    clean_study_schedule, clean_text_list,
+)
 from routes.student.helpers import (
     token_required, success_response, error_response,
     save_file, ALLOWED_IMAGE_EXT,
@@ -905,44 +909,63 @@ def view_profile(current_user, username):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_profile(current_user):
-    """Update profile info: name, bio, department, class."""
-    try:
-        data    = request.get_json(silent=True) or request.form.to_dict()
-        profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
+    """Update profile info: name, bio, department, class level.
 
+    Only keys present in the body are changed. Text is validated as plain
+    text (see services/profile_validation.py); department and class level
+    are also mirrored onto the onboarding record so both copies agree.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        data = request.form.to_dict()
+    if not isinstance(data, dict):
+        return error_response("Request body must be a JSON object")
+
+    try:
+        profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
         if not profile:
             return error_response("Profile not found", 404)
 
         changes = []
 
-        if "name" in data and data["name"].strip():
-            new_name = data["name"].strip()
-            if len(new_name) < 3:
-                return error_response("Name must be at least 3 characters")
-            if new_name != current_user.name:
-                current_user.name  = new_name
-                profile.full_name  = new_name
-                changes.append("name")
+        try:
+            new_name = new_bio = new_dept = new_class = None
+            if "name" in data:
+                new_name = clean_plain_text(data["name"], "Name", min_len=3, max_len=80)
+            if "bio" in data:
+                new_bio = clean_bio(data["bio"], max_len=500)
+            if "department" in data:
+                new_dept = clean_plain_text(data["department"], "Department", max_len=50)
+            if "class_level" in data:
+                new_class = clean_class_level(data["class_level"])
+        except ProfileValidationError as e:
+            return error_response(str(e))
 
-        if "bio" in data:
-            new_bio = data["bio"].strip()
-            if len(new_bio) > 500:
-                return error_response("Bio must be less than 500 characters")
-            if new_bio != current_user.bio:
-                current_user.bio = new_bio
-                changes.append("bio")
+        if new_name is not None and new_name != current_user.name:
+            current_user.name = new_name
+            profile.full_name = new_name
+            changes.append("name")
 
-        if "department" in data and data["department"].strip():
-            new_dept = data["department"].strip()
-            if new_dept != profile.department:
-                profile.department = new_dept
-                changes.append("department")
+        if new_bio is not None and new_bio != (current_user.bio or ""):
+            current_user.bio = new_bio
+            changes.append("bio")
 
-        if "class_level" in data and data["class_level"].strip():
-            new_class = data["class_level"].strip()
-            if new_class != profile.class_name:
-                profile.class_name = new_class
-                changes.append("class_level")
+        onboarding = None
+        if new_dept is not None or new_class is not None:
+            onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
+
+        if new_dept is not None and new_dept != profile.department:
+            profile.department = new_dept
+            changes.append("department")
+        if new_class is not None and new_class != profile.class_name:
+            profile.class_name = new_class
+            changes.append("class_level")
+
+        if onboarding is not None:
+            if new_dept is not None:
+                onboarding.department = new_dept
+            if new_class is not None:
+                onboarding.class_level = new_class
 
         if changes:
             db.session.commit()
@@ -961,10 +984,8 @@ def update_profile(current_user):
 
         return success_response("No changes made")
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Profile update error: {str(e)}")
-        return error_response("Failed to update profile")
+    except Exception:
+        return _server_error("Profile update error", "Failed to update profile")
 
 
 # ============================================================================

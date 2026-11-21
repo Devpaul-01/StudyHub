@@ -536,8 +536,12 @@ the other (the response is identical so a block is not revealed).
 ```json
 { "name": "Jane A. Doe", "bio": "CS junior, TA for Data Structures", "department": "Computer Science", "class_level": "Junior" }
 ```
-`name` needs at least 3 characters, `bio` capped at 500. Returns "No changes made" if nothing
-differed from the stored values.
+Only the keys you send are changed. `name` is 3-80 characters, `department` at most 50, `bio` at
+most 500. `name` and `department` are plain text and cannot contain `<` or `>`; `bio` cannot contain
+anything that looks like an HTML tag. `class_level` must be one of `100 Level`..`500 Level`,
+`Freshman`, `Sophomore`, `Junior`, `Senior` (case-insensitive). Department and class level are also
+written to the onboarding record so `GET /profile/academic-info` agrees. Returns "No changes made"
+if nothing differed from the stored values.
 
 ### `POST /student/profile/skills` / `DELETE /student/profile/skills/{skill_name}`
 Add/remove a skill tag. Max 10 skills, 50 chars each, no duplicates. Removal matches
