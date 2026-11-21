@@ -49,6 +49,7 @@ just a re-export shim); this file imports from the new location.
 
 from enum import Enum
 
+from sqlalchemy import select
 from models import User, ReputationHistory, Post
 from extensions import db
 from services.reputation_levels import get_reputation_level
@@ -114,20 +115,34 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     Returns the ReputationHistory row (session-pending, not yet committed),
     or None if the user doesn't exist or no valid action/points were given.
     """
-    user = User.query.get(user_id)
-    if not user:
-        return None
-
     action = REPUTATION_ACTIONS.get(action_key)
     if not action and not custom_points:
         return None
 
-    points_change = custom_points if custom_points else action["points"]
+    # Lock the user row for the rest of the transaction. The update below is
+    # a read-modify-write on an absolute value, so without the lock two
+    # concurrent awards both read the same starting total and one is lost,
+    # leaving users.reputation permanently out of step with the ledger.
+    # populate_existing forces a fresh read even if the row is already in
+    # this session's identity map. SQLite ignores FOR UPDATE.
+    user = db.session.execute(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if not user:
+        return None
 
-    reputation_before = user.reputation
-    user.reputation += points_change
-    user.reputation = max(0, user.reputation)
+    requested_points = custom_points if custom_points else action["points"]
+
+    reputation_before = user.reputation or 0
+    user.reputation = max(0, reputation_before + requested_points)
     user.update_reputation_level()
+    # Record what actually happened. When the floor at 0 engages the
+    # requested delta (-10 on a 3-point user) is larger than the applied one
+    # (-3); the ledger must sum to the total, so store the applied delta.
+    points_change = user.reputation - reputation_before
 
     history = ReputationHistory(
         user_id=user_id,

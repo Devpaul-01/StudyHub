@@ -81,6 +81,21 @@ def test_award_reputation_clamps_to_zero_floor(db_session, make_user):
     assert user.reputation == 0
 
 
+def test_award_reputation_ledger_records_the_applied_delta_when_floor_engages(db_session, make_user):
+    """-10 on a 3-point user applies -3. The ledger must say -3 so that
+    sum(points_change) always reconciles with users.reputation."""
+    user = make_user(reputation=3)
+    with patch("services.reputation_service.notification_service.notify_level_up"), \
+         patch("services.reputation_service.cache_service.delete"), \
+         patch("services.reputation_service.cache_service.delete_pattern"):
+        history = reputation_service.award_reputation(user.id, "content_reported")
+
+    assert user.reputation == 0
+    assert history.points_change == -3
+    assert history.reputation_before == 3
+    assert history.reputation_after == 0
+
+
 def test_award_reputation_level_up_crossing_notifies(db_session, make_user):
     """49 -> 51 crosses Newbie -> Learner (boundary at 50/51)."""
     user = make_user(reputation=49)
