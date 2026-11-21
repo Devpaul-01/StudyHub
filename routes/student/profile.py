@@ -31,6 +31,29 @@ from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, 
 profile_bp = Blueprint("student_profile", __name__)
 
 
+# Privacy settings a user may change, with the value used when a key has
+# never been stored. Only keys listed here are accepted by the API.
+PRIVACY_SETTING_DEFAULTS = {
+    "set_profile_private":   False,
+    "show_active_status":    True,
+    "show_in_activity_feed": True,
+}
+# Keys older clients may still send. They no longer do anything and are
+# ignored rather than rejected so a stale browser tab keeps working.
+_LEGACY_PRIVACY_KEYS = frozenset({"set_dark_mode", "send_weekly_notification"})
+
+
+def _server_error(log_label, message="Something went wrong. Please try again."):
+    """Roll back, log the full traceback and return a 500 response.
+
+    Unexpected exceptions are server faults, not client mistakes, so they
+    must be visible to 5xx monitoring and carry a stack trace in Sentry.
+    """
+    db.session.rollback()
+    current_app.logger.exception(log_label)
+    return error_response(message, 500)
+
+
 # ============================================================================
 # PROFILE DATA — own profile
 # ============================================================================
@@ -922,34 +945,47 @@ def get_own_profile(current_user):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def visibility_settings(current_user):
+    """Update privacy settings.
+
+    Partial updates are supported: only the keys present in the body are
+    changed, everything else keeps its stored value. Values must be real
+    booleans.
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("Request body must be a JSON object")
+
+    unknown = [k for k in data if k not in PRIVACY_SETTING_DEFAULTS
+               and k not in _LEGACY_PRIVACY_KEYS]
+    if unknown:
+        return error_response(f"Unknown setting: {str(unknown[0])[:50]}")
+
+    updates = {}
+    for key in PRIVACY_SETTING_DEFAULTS:
+        if key in data:
+            if not isinstance(data[key], bool):
+                return error_response(f"{key} must be true or false")
+            updates[key] = data[key]
+    if not updates:
+        return error_response("No settings provided")
+
     try:
-        user = User.query.get(current_user.id)
+        # Lock the row so two concurrent partial updates cannot overwrite
+        # each other's keys (the whole JSON value is rewritten on save).
+        user = (User.query.filter_by(id=current_user.id)
+                .with_for_update().first())
         if not user:
             return error_response("User not found")
 
-        privacy = user.privacy_settings or {}
-        data    = request.get_json() or {}
-
-        profile_private          = data.get("set_profile_private",     False)
-        show_active_status       = data.get("show_active_status",       True)
-        dark_mode                = data.get("set_dark_mode",            False)
-        send_weekly_notification = data.get("send_weekly_notification", True)
-        show_in_activity_feed    = data.get("show_in_activity_feed",    True)
-
-        privacy["set_profile_private"]     = profile_private
-        privacy["show_active_status"]      = show_active_status
-        privacy["set_dark_mode"]           = dark_mode
-        privacy["send_weekly_notification"] = send_weekly_notification
-        privacy["show_in_activity_feed"]   = show_in_activity_feed
-
+        privacy = dict(user.privacy_settings or {})
+        privacy.update(updates)
         user.privacy_settings = privacy
         db.session.commit()
         return success_response("Visibility settings saved successfully")
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Privacy settings error: {str(e)}")
-        return error_response("Failed to set profile visibility settings")
+    except Exception:
+        return _server_error("Privacy settings error",
+                             "Failed to set profile visibility settings")
 
 
 @profile_bp.route("/profile/visibility-settings", methods=["GET"])
@@ -957,36 +993,18 @@ def visibility_settings(current_user):
 @token_required
 def get_visibility_settings(current_user):
     try:
-        user = User.query.get(current_user.id)
-        if not user:
-            return error_response("User not found")
-
-        privacy = user.privacy_settings or {}
-
-        profile_private          = privacy.get("set_profile_private",     False)
-        show_active_status       = privacy.get("show_active_status",       True)
-        dark_mode                = privacy.get("set_dark_mode",            False)
-        # FIX: variable was named weekly_notifications but used as weekly_summary → unified
-        send_weekly_notification = privacy.get("send_weekly_notification", True)
-        # Opt-out for the Live Activity feed (services/activity_service.py).
-        # Defaults True (opt-out, not opt-in) to match existing users whose
-        # stored privacy_settings predate this key.
-        show_in_activity_feed    = privacy.get("show_in_activity_feed",    True)
-
+        privacy = current_user.privacy_settings or {}
         return jsonify({
             "status": "success",
             "data": {
-                "set_profile_private":     profile_private,
-                "show_active_status":      show_active_status,
-                "set_dark_mode":           dark_mode,
-                "send_weekly_notification": send_weekly_notification,  # FIX: was weekly_summary (NameError)
-                "show_in_activity_feed":   show_in_activity_feed,
+                key: bool(privacy.get(key, default))
+                for key, default in PRIVACY_SETTING_DEFAULTS.items()
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Profile visibility error: {str(e)}")
-        return error_response("Failed to load profile visibility settings")
+    except Exception:
+        return _server_error("Profile visibility error",
+                             "Failed to load profile visibility settings")
 
 
 # ============================================================================
