@@ -351,6 +351,12 @@ def create_app(config_class=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+        # Conservative CSP: does not restrict scripts/styles (the app relies on
+        # inline handlers) but blocks plugin content and <base> hijacking, which
+        # removes two common follow-on techniques after a markup injection.
+        response.headers.setdefault(
+            'Content-Security-Policy', "object-src 'none'; base-uri 'self'"
+        )
         
         # Only set HSTS in production with HTTPS
         if not app.debug and app.config.get('SESSION_COOKIE_SECURE'):
