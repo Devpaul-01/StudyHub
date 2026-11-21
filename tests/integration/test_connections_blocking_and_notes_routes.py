@@ -34,7 +34,7 @@ class TestBlockUnblock:
 
         resp = client.post("/student/connections/block/999999", headers=headers)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 404  # CON-22
 
     def test_block_creates_a_blocked_connection(self, client, make_user, auth_headers, csrf_headers):
         me = make_user()
@@ -83,14 +83,14 @@ class TestBlockUnblock:
 
 
 # ============================================================================
-# GET /connections/blocked and /connections/blocked/list
+# GET /connections/blocked/list
 # ============================================================================
 
 class TestListBlockedUsers:
     def test_blocked_list_empty_initially(self, client, make_user, auth_headers):
         user = make_user()
 
-        resp = client.get("/student/connections/blocked", headers=auth_headers(user))
+        resp = client.get("/student/connections/blocked/list", headers=auth_headers(user))
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["blocked_users"] == []
@@ -101,13 +101,13 @@ class TestListBlockedUsers:
         headers = {**auth_headers(me), **csrf_headers(client)}
         client.post(f"/student/connections/block/{other.id}", headers=headers)
 
-        resp = client.get("/student/connections/blocked", headers=auth_headers(me))
+        resp = client.get("/student/connections/blocked/list", headers=auth_headers(me))
 
         data = resp.get_json()["data"]
         assert data["total"] == 1
         assert data["blocked_users"][0]["id"] == other.id
 
-    def test_blocked_list_detailed_matches_blocked_list(
+    def test_blocked_list_includes_card_fields(
         self, client, make_user, auth_headers, csrf_headers
     ):
         me = make_user()
@@ -130,7 +130,7 @@ class TestListBlockedUsers:
         headers = {**auth_headers(me), **csrf_headers(client)}
         client.post(f"/student/connections/block/{other.id}", headers=headers)
 
-        resp = client.get("/student/connections/blocked", headers=auth_headers(other))
+        resp = client.get("/student/connections/blocked/list", headers=auth_headers(other))
 
         assert resp.get_json()["data"]["blocked_users"] == []
 
@@ -254,3 +254,42 @@ class TestConnectionNotes:
         )
 
         assert resp.status_code == 403
+
+
+# ============================================================================
+# Audit CON-10: block ownership
+# ============================================================================
+
+class TestBlockOwnership:
+    @staticmethod
+    def _h(client, auth_headers, csrf_headers, user):
+        # A fresh CSRF token per request: issuing a second token invalidates the first.
+        return {**auth_headers(user), **csrf_headers(client)}
+
+    def test_blocked_user_cannot_take_over_the_block(self, client, make_user, auth_headers, csrf_headers):
+        a, b = make_user(), make_user()
+        h = lambda u: self._h(client, auth_headers, csrf_headers, u)
+        assert client.post(f"/student/connections/block/{b.id}", headers=h(a)).status_code == 200
+
+        again = client.post(f"/student/connections/block/{a.id}", headers=h(b))
+        assert again.status_code == 200  # idempotent, no error
+
+        # The ORIGINAL blocker can still unblock; the blocked user cannot.
+        assert client.post(f"/student/connections/unblock/{a.id}", headers=h(b)).status_code == 403
+        assert client.post(f"/student/connections/unblock/{b.id}", headers=h(a)).status_code == 200
+
+    def test_double_block_is_idempotent(self, client, make_user, auth_headers, csrf_headers):
+        a, b = make_user(), make_user()
+        h = lambda u: self._h(client, auth_headers, csrf_headers, u)
+        assert client.post(f"/student/connections/block/{b.id}", headers=h(a)).status_code == 200
+        assert client.post(f"/student/connections/block/{b.id}", headers=h(a)).status_code == 200
+        from models import Connection
+        assert Connection.query.count() == 1
+
+    def test_unblock_via_either_endpoint_never_leaves_a_connection(self, client, make_user, auth_headers, csrf_headers):
+        a, b = make_user(), make_user()
+        h = lambda u: self._h(client, auth_headers, csrf_headers, u)
+        client.post(f"/student/connections/block/{b.id}", headers=h(a))
+        client.post(f"/student/connections/unblock/{b.id}", headers=h(a))
+        from models import Connection
+        assert Connection.query.count() == 0
