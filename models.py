@@ -16,6 +16,7 @@ from enum import Enum
 from flask_login import UserMixin
 from sqlalchemy.ext.mutable import MutableDict, MutableList 
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import validates
 from extensions import db
 
 # ============================================================================
@@ -526,6 +527,34 @@ class StudentProfile(db.Model):
         return f"<Student @{self.user.username if self.user else 'Unknown'} - {self.department}>"
 
 
+def _clean_string_list(value, max_items=30, max_len=100):
+    """Normalise a JSON column that must hold a short list of plain strings.
+
+    The matching, discovery and suggestion code reads these lists for every
+    user and calls string/set operations on each item, so one malformed
+    entry (a dict, a number, a huge string) would break it for everyone
+    matched against that user. This is the last line of defence for every
+    writer (profile API, onboarding, scripts); the API validators return an
+    error before it ever gets here. The limits (30 items of 100 characters)
+    are the most the onboarding questionnaire allows, so legitimate data is
+    never cut.
+    """
+    if not isinstance(value, list):
+        return []
+    cleaned, seen = [], set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.replace("<", "").replace(">", "").split())[:max_len]
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        cleaned.append(text)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
 class OnboardingDetails(db.Model):
     __tablename__ = "onboarding_details"
 
@@ -544,6 +573,10 @@ class OnboardingDetails(db.Model):
 
     session_length = db.Column(db.String(100))
     last_updated   = db.Column(db.DateTime)
+
+    @validates("subjects", "study_preferences", "help_subjects", "strong_subjects")
+    def _validate_string_lists(self, key, value):
+        return _clean_string_list(value)
 
 
 class WaitlistSignup(db.Model):
