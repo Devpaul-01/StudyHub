@@ -21,13 +21,14 @@ Business logic (point-awarding, REPUTATION_ACTIONS, milestone-checking)
 lives in services/reputation_service.py (Document 2 §3.1) — this file is
 the thin HTTP layer: request parsing, auth, response envelope.
 
-Reputation Points:
-+5  → Post gets 10 likes
-+10 → Comment marked as solution
-+15 → Post marked helpful (reaction)
-+20 → Post gets 50 likes
--2  → Post gets disliked
--10 → Content reported and confirmed
+Reputation Points (the live set -- the authoritative values and the
+"active" flag for each action are in services/reputation_service.py's
+REPUTATION_ACTIONS; GET /reputation/levels only lists active actions):
++5  → Post gets 10 likes (once per post)
++20 → Post gets 50 likes (once per post)
++50 → Post gets 100 likes (once per post)
++15 → Comment marked as solution (reversed if the solution is unmarked/switched)
++3  → Comment marked helpful (once per marker per comment)
 
 Reputation Levels:
 0-50:    🌱 Newbie
@@ -65,6 +66,7 @@ from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 from services.reputation_service import (
     REPUTATION_ACTIONS,
     award_reputation,
+    awardable_actions,
     check_and_award_milestone,
 )
 
@@ -73,7 +75,7 @@ from services.reputation_service import (
 from services import leaderboard_service
 # Phase 5b (Document 4 §1): PUBLIC_READ-tier limiting on reputation reads —
 # same reasoning as leaderboard.py (checked frequently, cheap to abuse).
-from services.rate_limit_service import limiter, RateLimitTier, ip_key
+from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
 
 reputation_bp = Blueprint("student_reputation", __name__)
 
@@ -95,8 +97,8 @@ def next_level(points: int) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/rising-stars", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_rising_stars(current_user):
     """
     Users with the highest reputation gain in the last 7 days.
@@ -229,8 +231,8 @@ def _compute_my_reputation(user_id, reputation):
 
 
 @reputation_bp.route("/reputation/me", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_my_reputation(current_user):
     try:
         data = _compute_my_reputation(current_user.id, current_user.reputation)
@@ -246,8 +248,8 @@ def get_my_reputation(current_user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reputation_bp.route("/reputation/history", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_reputation_history(current_user):
     try:
         page = request.args.get("page", 1, type=int)
@@ -359,8 +361,8 @@ def _compute_reputation_stats():
 
 
 @reputation_bp.route("/reputation/stats", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def reputation_stats(current_user):
     try:
         data = _compute_reputation_stats()
@@ -396,7 +398,7 @@ def get_reputation_levels():
             "levels": REPUTATION_LEVELS,
             "actions": [
                 {"key": key, "points": value["points"], "description": value["description"]}
-                for key, value in REPUTATION_ACTIONS.items()
+                for key, value in awardable_actions().items()
             ],
         },
     })
