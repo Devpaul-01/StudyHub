@@ -568,3 +568,23 @@ class TestPopularSkills:
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["skills"] == []
+
+
+# ============================================================================
+# GET /profile/my-stats
+# ============================================================================
+
+class TestMyStats:
+    def test_marked_helpful_reflects_the_users_counter(
+        self, client, db_session, make_user, auth_headers
+    ):
+        """Regression: this value was hard-coded to 0."""
+        user = make_user()
+        user.total_helpful = 4
+        db_session.commit()
+
+        resp = client.get("/student/profile/my-stats", headers=auth_headers(user))
+
+        assert resp.status_code == 200
+        engagement = resp.get_json()["data"]["engagement"]
+        assert engagement["helpful_received"] == 4
