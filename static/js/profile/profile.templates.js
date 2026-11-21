@@ -7,6 +7,7 @@
  */
 
 import { formatTime } from '../feed/feed.utils.js';
+import { escapeHtml } from '../core/escape.js';
 import { buildPostResourcesContainer, buildResourceLinks, buildBookmarkButton } from '../feed/feed.templates.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,13 +30,13 @@ function buildAvatar(url, name, size = 60) {
   const initials = (name || '?')
     .split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   if (url) {
-    return `<img src="${url}" alt="${name || ''}"
+    return `<img src="${escapeHtml(url)}" alt="${escapeHtml(name || '')}"
               style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;display:block;">`;
   }
   const fs = Math.round(size * 0.36);
   return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:var(--primary);
                       color:#fff;display:flex;align-items:center;justify-content:center;
-                      font-weight:700;font-size:${fs}px;flex-shrink:0;">${initials}</div>`;
+                      font-weight:700;font-size:${fs}px;flex-shrink:0;">${escapeHtml(initials)}</div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,17 +89,17 @@ export function buildProfileHeader(data) {
         <!-- Name / username / bio -->
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.1rem;">
-            <span style="font-size:1.05rem;font-weight:700;color:var(--text-primary);">${data.name || ''}</span>
+            <span style="font-size:1.05rem;font-weight:700;color:var(--text-primary);">${escapeHtml(data.name || '')}</span>
             ${streak >= 3 ? `<span style="font-size:0.8rem;" title="${streak}-day streak">🔥${streak}</span>` : ''}
           </div>
-          <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.35rem;">@${data.username || ''}</div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.35rem;">@${escapeHtml(data.username || '')}</div>
           ${data.bio
-            ? `<p style="margin:0 0 0.4rem;font-size:0.82rem;color:var(--text-primary);line-height:1.5;word-break:break-word;">${data.bio}</p>`
+            ? `<p style="margin:0 0 0.4rem;font-size:0.82rem;color:var(--text-primary);line-height:1.5;word-break:break-word;">${escapeHtml(data.bio)}</p>`
             : ''}
           <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
-            ${data.department ? `<span class="p-chip">🏫 ${data.department}</span>` : ''}
-            ${data.class_level ? `<span class="p-chip">📖 ${data.class_level}</span>` : ''}
-            <span class="p-chip">⭐ ${data.reputation_level || 'Newbie'}</span>
+            ${data.department ? `<span class="p-chip">🏫 ${escapeHtml(data.department)}</span>` : ''}
+            ${data.class_level ? `<span class="p-chip">📖 ${escapeHtml(data.class_level)}</span>` : ''}
+            <span class="p-chip">⭐ ${escapeHtml(data.reputation_level || 'Newbie')}</span>
           </div>
         </div>
 
@@ -123,7 +124,7 @@ export function buildProfileHeader(data) {
       ${goals.length ? `
         <div style="display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;margin-top:0.75rem;">
           <span style="font-size:0.68rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.04em;">Goals:</span>
-          ${goals.map(g => `<span class="p-chip p-chip--accent">${g}</span>`).join('')}
+          ${goals.map(g => `<span class="p-chip p-chip--accent">${escapeHtml(g)}</span>`).join('')}
         </div>` : ''}
     </div>`;
 }
@@ -153,13 +154,13 @@ export function buildProfilePostCard(post) {
   // ── Tags ──
   const tagsHTML = tags.length
     ? `<div class="post-tags" style="margin-top:1rem;">
-         ${tags.map(t => `<span class="tag p-chip" data-action="view-tag-posts" data-tag="${t}" style="cursor:pointer;">#${t}</span>`).join('')}
+         ${tags.map(t => `<span class="tag p-chip" data-action="view-tag-posts" data-tag="${escapeHtml(t)}" style="cursor:pointer;">#${escapeHtml(t)}</span>`).join('')}
        </div>`
     : '';
 
   return `
     <div data-resource-length="${length}"
-         data-resources='${JSON.stringify(resources).replace(/'/g, "&apos;").replace(/"/g, "&quot;")}'
+         data-resources='${escapeHtml(JSON.stringify(resources))}'
          id="post-${post.id}"
          data-post-id="${post.id}"
          class="profile-post-card post-card"
@@ -169,8 +170,8 @@ export function buildProfilePostCard(post) {
       <!-- ── Post header: avatar + author info + pin button (mirrors feed layout) ── -->
       <div class="post-header" style="display:flex;align-items:flex-start;gap:1rem;">
         <img data-action="view-avatar"
-             data-username="${post.author?.username || ''}"
-             src="${post.author?.avatar || '/static/default-avatar.png'}"
+             data-username="${escapeHtml(post.author?.username || '')}"
+             src="${escapeHtml(post.author?.avatar || '/static/default-avatar.png')}"
              class="avatar"
              onerror="this.src='/static/default-avatar.png'"
              style="width:48px;height:48px;border-radius:50%;cursor:pointer;">
@@ -178,10 +179,10 @@ export function buildProfilePostCard(post) {
         <div class="post-author" style="flex:1;">
           <div class="post-author-info" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
             <div data-action="view-profile"
-                 data-username="${post.author?.username || ''}"
+                 data-username="${escapeHtml(post.author?.username || '')}"
                  class="post-author-name"
                  style="font-weight:600;cursor:pointer;">
-              ${post.author?.name || 'Anonymous'}
+              ${escapeHtml(post.author?.name || 'Anonymous')}
             </div>
           </div>
           <div class="post-time" style="font-size:0.875rem;color:var(--text-secondary);">${formatTime(post.posted_at)}</div>
@@ -511,13 +512,13 @@ export function buildConnectionsTab(connections) {
         </div>
         <div style="flex:1;min-width:0;overflow:hidden;">
           <div style="font-weight:600;font-size:0.84rem;color:var(--text-primary);
-                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${u.name || ''}</div>
-          <div style="font-size:0.71rem;color:var(--text-secondary);">@${u.username || ''}</div>
-          ${u.department ? `<div style="font-size:0.68rem;color:var(--text-secondary);">🏫 ${u.department}</div>` : ''}
+                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(u.name || '')}</div>
+          <div style="font-size:0.71rem;color:var(--text-secondary);">@${escapeHtml(u.username || '')}</div>
+          ${u.department ? `<div style="font-size:0.68rem;color:var(--text-secondary);">🏫 ${escapeHtml(u.department)}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.35rem;flex-shrink:0;">
           <div style="font-size:0.75rem;font-weight:700;color:var(--primary);">⭐ ${u.reputation || 0}</div>
-          <div style="font-size:0.65rem;color:var(--text-secondary);">${u.reputation_level || ''}</div>
+          <div style="font-size:0.65rem;color:var(--text-secondary);">${escapeHtml(u.reputation_level || '')}</div>
           <button
             data-action="message-author"
             data-user-id="${u.id}"
@@ -581,7 +582,7 @@ export function buildReputationTab(repData, historyData, rankHistoryData) {
                      min-width:38px;text-align:right;">${isPos ? '+' : ''}${r.points_change}</span>
         <div style="flex:1;min-width:0;">
           <div style="font-size:0.78rem;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-            ${ACTION_LABELS[r.action] || r.action}
+            ${escapeHtml(ACTION_LABELS[r.action] || r.action)}
           </div>
           <div style="font-size:0.68rem;color:var(--text-secondary);">
             ${new Date(r.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
@@ -599,7 +600,7 @@ export function buildReputationTab(repData, historyData, rankHistoryData) {
         <div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.9rem;">
           <div style="font-size:2rem;">${level.icon || '⭐'}</div>
           <div style="flex:1;">
-            <div style="font-size:0.98rem;font-weight:700;color:var(--text-primary);">${level.name}</div>
+            <div style="font-size:0.98rem;font-weight:700;color:var(--text-primary);">${escapeHtml(level.name)}</div>
             <div style="font-size:0.75rem;color:var(--text-secondary);">${rep.points} pts</div>
           </div>
           <div style="text-align:right;">
@@ -619,7 +620,7 @@ export function buildReputationTab(repData, historyData, rankHistoryData) {
         </button>
         ${next ? `
           <div style="font-size:0.72rem;color:var(--text-secondary);display:flex;justify-content:space-between;margin-bottom:0.3rem;">
-            <span>Progress to ${next.icon || ''} ${next.name}</span>
+            <span>Progress to ${next.icon || ''} ${escapeHtml(next.name)}</span>
             <span>${next.points_needed} pts to go</span>
           </div>
           <div style="background:var(--bg-tertiary);border-radius:99px;height:6px;overflow:hidden;">
@@ -670,7 +671,7 @@ export function buildReputationLevelsModal(data) {
     <div style="display:flex;align-items:center;gap:0.7rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
       <div style="font-size:1.4rem;">${l.icon || '⭐'}</div>
       <div style="flex:1;">
-        <div style="font-size:0.85rem;font-weight:700;color:${l.color || 'var(--text-primary)'};">${l.name}</div>
+        <div style="font-size:0.85rem;font-weight:700;color:${l.color || 'var(--text-primary)'};">${escapeHtml(l.name)}</div>
         <div style="font-size:0.7rem;color:var(--text-secondary);">
           ${l.min}${l.max >= 999999 ? '+' : ` – ${l.max}`} points
         </div>
@@ -686,7 +687,7 @@ export function buildReputationLevelsModal(data) {
       <div style="display:flex;align-items:center;gap:0.65rem;padding:0.5rem 0;border-bottom:1px solid var(--border);">
         <span style="font-size:0.78rem;font-weight:700;color:${isPos ? 'var(--success)' : 'var(--danger)'};
                      min-width:38px;text-align:right;">${isPos ? '+' : ''}${a.points}</span>
-        <div style="flex:1;font-size:0.78rem;color:var(--text-primary);">${a.description}</div>
+        <div style="flex:1;font-size:0.78rem;color:var(--text-primary);">${escapeHtml(a.description)}</div>
       </div>`;
     }).join('');
 
@@ -713,7 +714,7 @@ export function buildGoalsList(goals) {
   }
   return goals.map((g, i) => `
     <div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid var(--border);">
-      <span style="flex:1;font-size:0.82rem;color:var(--text-primary);">${g}</span>
+      <span style="flex:1;font-size:0.82rem;color:var(--text-primary);">${escapeHtml(g)}</span>
       <button data-action="profile-remove-goal" data-index="${i}"
         style="padding:0.15rem 0.45rem;background:rgba(239,68,68,0.1);border:none;
                border-radius:6px;cursor:pointer;font-size:0.72rem;color:#ef4444;flex-shrink:0;">✕</button>
@@ -733,8 +734,8 @@ export function buildSkillsList(skills) {
       <span style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.25rem 0.5rem;
                    background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;
                    font-size:0.78rem;color:var(--text-primary);">
-        ${s}
-        <button data-action="profile-remove-skill" data-skill="${s.replace(/"/g, '&quot;')}"
+        ${escapeHtml(s)}
+        <button data-action="profile-remove-skill" data-skill="${escapeHtml(s)}"
           style="padding:0;background:none;border:none;cursor:pointer;font-size:0.7rem;
                  color:var(--text-secondary);line-height:1;">✕</button>
       </span>`
@@ -811,7 +812,7 @@ export function buildBadgesTab(myBadges, progress) {
                        border-radius:10px;cursor:pointer;font-family:inherit;">
           <div style="font-size:1.6rem;">${b.icon || '🏅'}</div>
           <div style="font-size:0.68rem;font-weight:600;color:var(--text-primary);text-align:center;
-                      line-height:1.2;">${b.name}</div>
+                      line-height:1.2;">${escapeHtml(b.name)}</div>
           ${b.is_featured ? `<div style="font-size:0.6rem;color:${_rarityColor(b.rarity)};">★ Featured</div>` : ''}
         </button>
       `).join('')}
@@ -822,7 +823,7 @@ export function buildBadgesTab(myBadges, progress) {
          style="padding:0.5rem 0;border-bottom:1px solid var(--border);cursor:pointer;">
       <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.3rem;">
         <span style="font-size:1.1rem;opacity:0.5;">${p.badge.icon || '🏅'}</span>
-        <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text-primary);">${p.badge.name}</span>
+        <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text-primary);">${escapeHtml(p.badge.name)}</span>
         <span style="font-size:0.72rem;color:var(--text-secondary);">
           ${p.progress.message || `${p.progress.current}/${p.progress.required} ${p.progress.type}`}
         </span>
@@ -865,9 +866,9 @@ export function buildBadgeDetailsModal(data) {
     <div style="display:flex;flex-direction:column;gap:0.9rem;">
       <div style="text-align:center;">
         <div style="font-size:3rem;">${b.icon || '🏅'}</div>
-        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:0.3rem;">${b.name}</div>
-        <div style="font-size:0.78rem;color:${color};text-transform:capitalize;font-weight:600;">${b.rarity}</div>
-        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.4rem;">${b.description}</div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:0.3rem;">${escapeHtml(b.name)}</div>
+        <div style="font-size:0.78rem;color:${color};text-transform:capitalize;font-weight:600;">${escapeHtml(b.rarity)}</div>
+        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.4rem;">${escapeHtml(b.description)}</div>
       </div>
 
       ${data.has_earned ? `
@@ -897,7 +898,7 @@ export function buildBadgeDetailsModal(data) {
           <div style="font-size:0.78rem;font-weight:700;margin-bottom:0.4rem;">Recently earned by</div>
           <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
             ${data.recent_earners.map(e => `
-              <img src="${e.avatar || '/static/default-avatar.png'}" alt="${e.name}" title="${e.name}"
+              <img src="${escapeHtml(e.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(e.name)}" title="${escapeHtml(e.name)}"
                    style="width:28px;height:28px;border-radius:50%;object-fit:cover;">
             `).join('')}
           </div>
@@ -922,8 +923,8 @@ export function buildAllBadgesModal(data) {
                        opacity:${b.has_earned ? '1' : '0.5'};">
           <span style="font-size:1.4rem;">${b.icon || '🏅'}</span>
           <div style="flex:1;">
-            <div style="font-size:0.84rem;font-weight:600;color:var(--text-primary);">${b.name}</div>
-            <div style="font-size:0.72rem;color:var(--text-secondary);">${b.description}</div>
+            <div style="font-size:0.84rem;font-weight:600;color:var(--text-primary);">${escapeHtml(b.name)}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary);">${escapeHtml(b.description)}</div>
           </div>
           ${b.has_earned ? '<span style="font-size:0.9rem;">✅</span>' : ''}
         </button>
