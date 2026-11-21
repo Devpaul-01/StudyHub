@@ -19,8 +19,8 @@ from models import (
 from extensions import db
 from errors import ValidationError
 from services.profile_validation import (
-    ProfileValidationError, clean_bio, clean_class_level, clean_plain_text,
-    clean_study_schedule, clean_text_list,
+    ProfileValidationError, STUDY_DAYS, STUDY_SLOTS, clean_bio, clean_class_level,
+    clean_plain_text, clean_study_schedule, clean_text_list,
 )
 from routes.student.helpers import (
     token_required, success_response, error_response,
@@ -1203,21 +1203,33 @@ def unpin_post(current_user, post_id):
 # STUDY SCHEDULE
 # ============================================================================
 
+def _schedule_for_client(stored):
+    """Onboarding-format schedule ({"Monday": [...]}) -> all 7 lowercase days."""
+    schedule = {day.lower(): [] for day in STUDY_DAYS}
+    if isinstance(stored, dict):
+        for day, slots in stored.items():
+            key = str(day).lower()
+            if key in schedule and isinstance(slots, list):
+                schedule[key] = [s for s in slots
+                                 if isinstance(s, str) and s.lower() in STUDY_SLOTS]
+    return schedule
+
+
 @profile_bp.route("/profile/study-schedule", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_study_schedule(current_user):
-    """Get user's study schedule."""
-    schedule = current_user.study_schedule or {}
+    """Get the user's study schedule.
 
-    default_schedule = {
-        "monday": [], "tuesday": [], "wednesday": [],
-        "thursday": [], "friday": [], "saturday": [], "sunday": [],
-    }
-
+    The schedule lives on the onboarding record, the same copy the
+    compatibility and discovery code score, so what is shown here is what
+    matching actually uses.
+    """
+    onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
+    stored = onboarding.study_schedule if onboarding else {}
     return jsonify({
         "status": "success",
-        "data": {"study_schedule": {**default_schedule, **schedule}},
+        "data": {"study_schedule": _schedule_for_client(stored)},
     })
 
 
@@ -1225,36 +1237,33 @@ def get_study_schedule(current_user):
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_study_schedule(current_user):
-    """Update study schedule."""
+    """Replace the study schedule.
+
+    Body: {"monday": ["morning", "evening"], ...}. Days and slots are
+    case-insensitive; days with no slots may be omitted.
+    """
+    data = request.get_json(silent=True)
     try:
-        data = request.get_json()
-        if not isinstance(data, dict):
-            return error_response("Schedule must be an object")
+        schedule = clean_study_schedule(data)
+    except ProfileValidationError as e:
+        return error_response(str(e))
 
-        valid_days  = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
-        valid_times = {"morning", "afternoon", "evening", "night"}
+    try:
+        onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
+        if not onboarding:
+            return error_response("Academic profile not found", 404)
 
-        schedule = {}
-        for day, times in data.items():
-            day_lower = day.lower()
-            if day_lower not in valid_days:
-                return error_response(f"Invalid day: {day}")
-            if not isinstance(times, list):
-                return error_response(f"Times for {day} must be a list")
-            for t in times:
-                if t not in valid_times:
-                    return error_response(f"Invalid time slot: {t}")
-            schedule[day_lower] = times
-
-        current_user.study_schedule = schedule
+        onboarding.study_schedule = schedule
+        onboarding.last_updated = datetime.datetime.utcnow()
         db.session.commit()
 
-        return success_response("Study schedule updated", data={"study_schedule": schedule})
+        return success_response(
+            "Study schedule updated",
+            data={"study_schedule": _schedule_for_client(schedule)},
+        )
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Update study schedule error: {str(e)}")
-        return error_response("Failed to update study schedule")
+    except Exception:
+        return _server_error("Update study schedule error", "Failed to update study schedule")
 
 
 # ============================================================================

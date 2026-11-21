@@ -1703,7 +1703,7 @@ paths:
                     properties:
                       study_schedule:
                         type: object
-                        additionalProperties: { type: array, items: { type: string, enum: [morning, afternoon, evening, night] } }
+                        additionalProperties: { type: array, items: { type: string, enum: [morning, afternoon, evening] } }
     post:
       tags: [Profile]
       summary: Update study schedule
@@ -1713,7 +1713,7 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: { type: array, items: { type: string, enum: [morning, afternoon, evening, night] } }
+              additionalProperties: { type: array, items: { type: string, enum: [morning, afternoon, evening] } }
               description: "Keys must be lowercase day names: monday..sunday"
       responses:
         '200':

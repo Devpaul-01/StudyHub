@@ -566,10 +566,14 @@ Pin/unpin a post to your profile. Max 5 pinned. **Auth:** required. **400** if n
 found, or (pin) already at the cap.
 
 ### `GET /student/profile/study-schedule` / `POST /student/profile/study-schedule`
-A weekly availability grid. GET always returns all 7 days (empty arrays where unset). POST body
-is a map of lowercase day name → array of `morning`/`afternoon`/`evening`/`night`.
+A weekly availability grid, stored on the onboarding record - the same copy the compatibility and
+discovery scoring reads, so editing it changes your matches. GET always returns all 7 lowercase
+days (empty arrays where unset). POST replaces the whole schedule with a map of day name (any case)
+to an array of `morning`/`afternoon`/`evening`; days with no slots may be omitted and repeated
+slots are collapsed.
 
-**Auth:** required. **400** on an unrecognized day name or time slot.
+**Auth:** required. **400** on an unrecognized day name or time slot. **404** if you have no
+onboarding record.
 
 ### `GET /student/skills/popular`
 Top 50 skills across all users, with counts. **Auth:** none.

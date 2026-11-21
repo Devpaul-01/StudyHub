@@ -543,9 +543,10 @@ class TestStudySchedule:
         assert schedule["monday"] == []
 
     def test_post_updates_schedule_and_get_reflects_it(
-        self, client, make_user, auth_headers, csrf_headers
+        self, client, make_user, make_onboarding_details, auth_headers, csrf_headers
     ):
         user = make_user()
+        make_onboarding_details(user, study_schedule={})
         headers = {**auth_headers(user), **csrf_headers(client)}
 
         post_resp = client.post(
@@ -587,6 +588,77 @@ class TestStudySchedule:
         )
 
         assert resp.status_code == 400
+
+
+class TestStudyScheduleIsTheMatchingSchedule:
+    """Regression: the profile editor used to write a column matching never read."""
+
+    @pytest.fixture
+    def user(self, make_user, make_onboarding_details):
+        user = make_user()
+        make_onboarding_details(user, study_schedule={"Monday": ["morning"]})
+        return user
+
+    def test_get_shows_the_schedule_captured_during_onboarding(self, client, auth_headers, user):
+        schedule = client.get("/student/profile/study-schedule",
+                              headers=auth_headers(user)).get_json()["data"]["study_schedule"]
+
+        assert schedule["monday"] == ["morning"]
+        assert schedule["tuesday"] == []
+
+    def test_post_writes_the_onboarding_format_that_scoring_reads(
+        self, client, db_session, auth_headers, csrf_headers, user
+    ):
+        from models import OnboardingDetails
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/study-schedule",
+                           json={"friday": ["Evening", "evening"], "SATURDAY": ["afternoon"], "sunday": []},
+                           headers=headers)
+
+        assert resp.status_code == 200
+        stored = OnboardingDetails.query.filter_by(user_id=user.id).first().study_schedule
+        assert stored == {"Friday": ["evening"], "Saturday": ["afternoon"]}
+
+    def test_scoring_sees_the_edited_schedule(self, client, auth_headers, csrf_headers, user):
+        from models import OnboardingDetails
+        from services.connection_service import calculate_schedule_overlap
+        friend_schedule = {"Friday": ["evening"]}
+        assert calculate_schedule_overlap({"Monday": ["morning"]}, friend_schedule) == 0
+
+        client.post("/student/profile/study-schedule", json={"friday": ["evening"]},
+                    headers={**auth_headers(user), **csrf_headers(client)})
+
+        mine = OnboardingDetails.query.filter_by(user_id=user.id).first().study_schedule
+        assert calculate_schedule_overlap(mine, friend_schedule) > 0
+
+    @pytest.mark.parametrize("payload", [
+        {"monday": ["night"]},
+        {"funday": ["morning"]},
+        {"monday": "morning"},
+        {"monday": [1]},
+    ])
+    def test_unknown_days_and_slots_are_rejected(self, client, auth_headers, csrf_headers, user, payload):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        assert client.post("/student/profile/study-schedule", json=payload, headers=headers).status_code == 400
+
+    def test_oversized_slot_lists_are_collapsed(self, client, auth_headers, csrf_headers, user):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/study-schedule",
+                           json={"monday": ["morning"] * 50000}, headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["study_schedule"]["monday"] == ["morning"]
+
+    def test_user_without_onboarding_gets_a_clear_error(self, client, make_user, auth_headers, csrf_headers):
+        other = make_user()
+        headers = {**auth_headers(other), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/study-schedule", json={"monday": ["morning"]}, headers=headers)
+
+        assert resp.status_code == 404
 
 
 # ============================================================================

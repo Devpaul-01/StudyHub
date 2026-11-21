@@ -748,7 +748,8 @@ export function buildSkillsList(skills) {
 // way templates/onboard.html does it) — see populateScheduleModal() in
 // profile.delegation.js for how selections are read back out of this.
 const SCHEDULE_DAYS  = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-const SCHEDULE_SLOTS = ['morning', 'afternoon', 'evening', 'night'];
+// Matches what onboarding stores and the schedule-overlap scoring understands.
+const SCHEDULE_SLOTS = ['morning', 'afternoon', 'evening'];
 
 export function buildScheduleGrid(schedule) {
   schedule = schedule || {};
