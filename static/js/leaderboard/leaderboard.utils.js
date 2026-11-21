@@ -51,7 +51,7 @@ function _resolveAvatarUrl(avatar) {
  * Render user avatar — falls back to initials block if no avatar or on error.
  */
 export function getAvatarHTML(user, size = 40) {
-  const initials  = ((user.name || user.username || '?').charAt(0)).toUpperCase();
+  const initials  = escapeHtml(((user.name || user.username || '?').charAt(0)).toUpperCase());
   const style     = `width:${size}px;height:${size}px;min-width:${size}px;`;
   const avatarUrl = _resolveAvatarUrl(user.avatar);
 
@@ -94,10 +94,15 @@ export function getLevelColor(levelName) {
  * Escape HTML special chars in any user-generated string.
  */
 export function escapeHtml(text) {
-  if (!text) return '';
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  if (text === null || text === undefined || text === '') return '';
+  // String-based on purpose: a textContent -> innerHTML round trip does NOT
+  // escape quotes, which makes the result unsafe inside quoted attributes.
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
