@@ -22,12 +22,18 @@ the multi-tab race window work. Routes are marked **Auth: required** or **Auth: 
 almost everything under `/student/*` requires it except the handful of pre-auth onboarding/auth
 routes noted explicitly.
 
+**Account status** — a valid token is not enough: every route except a few onboarding-related ones
+rejects accounts that are not `approved` with **403** `{"code": "registration_incomplete"}`.
+Routes marked "pending users allowed" (`/auth/me`, `/users/me`, the onboarding suggestion/connect
+routes) also accept verified users who are still registering.
+
 **CSRF** — when `ACCESS_TOKEN_HTTPONLY` is on (the default in production), mutating requests
 (POST/PUT/PATCH/DELETE) need an `X-CSRF-Token` header matching the `csrf_token` cookie, enforced
-by `student_bp.before_request`. Pre-auth routes (login, register, password reset, refresh, etc.)
-are exempt since there's no session to forge yet. If you're calling from a browser with cookies,
-read `csrf_token` and echo it back; if you're using the Bearer header instead of cookies, CSRF
-doesn't apply to you.
+by `student_bp.before_request`. A short list of pre-auth routes (login, register, resend,
+password reset, email verification, etc.) is exempt since there's no session to forge yet; the
+registration steps (`onboard`, `complete-registration`) are exempt only when no `access_token`
+cookie is sent. The check applies whether the access token travels in the cookie or the Bearer
+header. If you're calling from a browser with cookies, read `csrf_token` and echo it back.
 
 **Response envelope** — success responses are `{"status": "success", "message": "...", "data": {...}}`
 (message is often omitted on GETs). Error responses are `{"status": "error", "message": "..."}`,
@@ -43,7 +49,7 @@ data changes too fast for stable page numbers. A handful of endpoints return eve
 pagination at all — noted per-endpoint.
 
 **Rate limiting** — enforced by Flask-Limiter with a Redis (or in-memory fallback) backend.
-Tiers referenced below: `SENSITIVE_AUTH` (5/min per IP — login, register, password reset, etc.),
+Tiers referenced below: `SENSITIVE_AUTH` (5/min per IP — password reset, email verification, resend), `AUTH_ATTEMPT` (20/min per IP — login), `REGISTRATION` (10/min per IP — sign-up and the registration steps), `USERNAME_CHECK` (30/min per IP),
 `WRITE_HEAVY` (moderate per-minute limit on creates), `AI_EXPENSIVE` (tighter limit on anything
 that calls an LLM), `ADMIN` (admin-only routes), `BURST_OK` (cheap, frequently-polled routes like
 auth checks). Exceeding a limit returns `429` with a `Retry-After` header.
@@ -142,13 +148,15 @@ account state, redirects to:
 - the app homepage, with auth cookies set (existing, approved account)
 - `/student/onboard/<email>` (new account, needs onboarding)
 - `/student/complete-registration?email=<email>` (needs to pick username/password)
-- back to login with `?error=...` on failure
+- back to login with `?error=...` on failure: `oauth_failed`, `email_not_verified` (Google has not
+  verified the address), `account_exists_use_password` (a password-created account exists for that
+  email), `account_inactive` (suspended or otherwise not allowed to sign in)
 
 **Auth:** none. **Response:** always a `302`, never JSON.
 
 ### `GET /student/google_temp_info`
 Reads back the email/name captured in the server-side session mid-OAuth-flow, before any JWT
-exists. Used by the frontend to pre-fill the onboarding form.
+exists. Returns `null` values once the Google proof is older than 30 minutes.
 
 **Auth:** none.
 
@@ -172,7 +180,7 @@ Returns the current user with a larger field set than `/student/auth/me` — inc
 role, status, verification flag, streaks, post/helpful counts. Note: this route is registered in
 the source as `users/me` without a leading slash; it resolves to `/student/users/me` in practice.
 
-**Auth:** required.
+**Auth:** required. Also open to verified users who are still registering (pending status).
 
 **200 response:**
 ```json
@@ -198,13 +206,18 @@ elements that just need to render an avatar/name.
 **Auth:** required.
 
 ### `POST /student/register`
-Creates a `pending_verification` account and emails a verification link — unless
-`google_verified: true` was sent *and* it matches the server-side OAuth session for that email,
-in which case the account is verified immediately and the response points straight at
-onboarding. A client-supplied `google_verified: true` with no matching session is ignored; you
-can't self-declare verification.
+Starts a registration with a name and an email address and emails a verification link (valid 5
+hours).
 
-**Auth:** none. **Rate limit:** `SENSITIVE_AUTH` (5/min per IP). **CSRF:** exempt.
+The answer is **identical** for a new address, an address whose registration was never finished,
+and an address that already has an active account (no account enumeration). Signing up again with
+an unfinished registration sends a **fresh link** and the earlier ones stop working; an active
+account receives nothing. If the email cannot be queued the request fails with **503** and the
+account is not stranded — signing up again sends a new link. The client-supplied
+`google_verified` flag no longer exists (Google sign-up goes through `/google/start`).
+
+**Auth:** none. **Rate limit:** `REGISTRATION` (10/min per IP) plus 5 per hour per email.
+**CSRF:** exempt.
 
 **Request:**
 ```json
@@ -215,15 +228,26 @@ can't self-declare verification.
 ```json
 {
   "status": "success",
-  "message": "Verification email sent",
-  "data": { "google_verified": false, "redirect_url": "/student/login" }
+  "message": "Check your email for the next step. If you already have an account, sign in or reset your password instead."
 }
 ```
 
-**400** — missing fields, invalid email format, or email already registered.
+**400** — missing/non-string fields, invalid email, name over 100 or email over 120 characters.
+**429** — too many attempts for this email. **503** — the email could not be queued.
+
+### `POST /student/resend-verification`
+Sends a new verification/resume link to a registration that was started but not finished (pending
+status). Same answer whether or not the address is known.
+
+**Auth:** none. **Rate limit:** `SENSITIVE_AUTH` (5/min per IP) plus 3 per hour per email.
+**CSRF:** exempt.
+
+**Request:** `{ "email": "jane.doe@example.edu" }` — **200** `"If that email is waiting to be
+verified, we've sent a new link."`; **400** invalid email; **429** per-email limit.
 
 ### `POST /student/login`
-**Auth:** none. **Rate limit:** `SENSITIVE_AUTH`. **CSRF:** exempt.
+**Auth:** none. **Rate limit:** `AUTH_ATTEMPT` (20/min per IP) plus a per-account counter (10
+failed attempts per 15 minutes, reset on success). **CSRF:** exempt.
 
 **Request:**
 ```json
@@ -231,20 +255,28 @@ can't self-declare verification.
 ```
 
 **200 response:** sets `access_token`/`refresh_token` cookies, returns user summary + `redirect`
-+ `login_streak`.
++ `login_streak`. For a verified user who is still registering (for example someone who reset
+their password before choosing a username) the response signs them in and `redirect` is
+`/student/complete-registration?email=...`.
 
-**400** — bad credentials, unverified email, incomplete registration (no username/password set
-yet), or account pending approval.
+**400** — `Invalid credentials` for an unknown account, a wrong password **and** an account that
+has no password yet (indistinguishable on purpose). Only after the password was proven can the
+answer be `Please verify your email before logging in.` or `Your account is not active.`
+**429** — too many sign-in attempts for this account.
 
 ### `POST /student/validate-user`
-Requests a password reset. Looks up by email or username; if found, issues a single-use token and
-emails a reset link.
+Requests a password reset. If the account exists and its email is verified, a single-use reset
+link (valid **1 hour**) is emailed; a registration whose email was never verified gets a
+verification link instead. Earlier unused reset links stop working.
 
-**Auth:** none. **Rate limit:** `SENSITIVE_AUTH`. **CSRF:** exempt.
+The answer is the same for known and unknown accounts.
+
+**Auth:** none. **Rate limit:** `SENSITIVE_AUTH` plus 3 per hour per account. **CSRF:** exempt.
 
 **Request:** `{ "data": "janedoe" }` (email or username)
 
-**400** — value missing or user not found.
+**200** — `"If an account exists for that email or username, a password reset link has been sent."`
+**400** — value missing or not text. **429** — too many requests for this account.
 
 ### `POST /student/verify-reset/{token}`
 Checks whether a reset token is still valid, without consuming it — a read-only peek so the
@@ -256,39 +288,51 @@ frontend can show "invalid link" before the user starts typing a new password (s
 **400** — token invalid, expired, or already used.
 
 ### `POST /student/set-password`
-Consumes the reset token and sets a new password.
+Consumes the reset token, sets a new password and **revokes every refresh token of the user** — all
+in one transaction. If anything fails (for example an unverified account) the token stays usable;
+two simultaneous requests cannot both succeed. Earlier/other reset links of the user stop working.
 
 **Auth:** none. **Rate limit:** `SENSITIVE_AUTH`. **CSRF:** exempt.
 
 **Request:**
 ```json
-{ "token": "eyJ...", "password": "newpassword123", "confirm_password": "newpassword123" }
+{ "token": "<token from the emailed link>", "password": "newpassword123", "confirm_password": "newpassword123" }
 ```
 
 **400** — token invalid/expired/used, passwords don't match, or password under 6 characters.
 
 ### `POST /student/verify-email/{token}`
-Consumes an email-verification token. Auto-logs the user in on success (sets auth cookies) and
-points them at onboarding. Replaying an already-used token for an already-verified account
-returns a friendly "already verified" 200 rather than erroring — useful if the user double-clicks
-the email link.
+Consumes an email-verification token atomically, marks the email verified, auto-logs the user in
+(sets auth cookies) and points them at onboarding. Works for a new registration and as the
+"resume" link for a verified-but-unfinished one.
+
+A link that was already used gets a friendly "already verified" 200 only in the browser that is
+signed in as that user; anyone else gets **400** with `data.already_verified = true` and
+`data.login_url`, telling them to sign in or request a new link.
 
 **Auth:** none. **Rate limit:** `SENSITIVE_AUTH`. **CSRF:** exempt.
 
-**400** — token invalid/expired and the account isn't already verified.
+**400** — token invalid/expired, or already used (see above).
 
 ### `POST /student/check-username`
-**Auth:** none.
+**Auth:** none. **Rate limit:** `USERNAME_CHECK` (30/min per IP).
 
 **Request:** `{ "username": "janedoe2" }` — must match `^[a-z0-9]{3,20}$`.
 
-**400** — missing, wrong format, or already taken.
+**400** — missing, not text, wrong format, or already taken (`Username taken`). **429** — rate limited.
 
 ### `POST /student/complete-registration`
-Final step: set username + password. Needs either a `token` (JWT proving email ownership, from
-the verification email) or an `email` that matches the caller's own OAuth session/existing JWT.
+Final step: choose a username + password. Only for users who are still registering (verified
+email, pending status) — **approved accounts get 409**, so this route can never overwrite an
+existing account's credentials. Onboarding is optional; it is not required first. On success the
+account becomes `approved` and fresh auth cookies are issued.
 
-**Auth:** none. **Rate limit:** `SENSITIVE_AUTH`. **CSRF:** exempt.
+The caller must prove ownership of `email`: an `access_token` cookie belonging to that user (then
+the normal CSRF header is required), or a Google session for that email created in the last 30
+minutes (no CSRF cookie exists yet in that case). Bodies must be `application/json`.
+
+**Auth:** proof of email ownership (above). **Rate limit:** `REGISTRATION`.
+**CSRF:** required when an `access_token` cookie is present; exempt only for the cookie-less Google case.
 
 **Request:**
 ```json
@@ -299,8 +343,10 @@ the verification email) or an `email` that matches the caller's own OAuth sessio
 }
 ```
 
-**401** — caller doesn't own this email. **400** — missing fields, password issues, invalid/taken
-username, user not found.
+**401** — caller doesn't own this email. **403** — email not verified or account not allowed.
+**409** — registration already complete. **400** — missing/non-string fields, password issues
+(min 6), invalid or taken username (a lost race on the unique constraint is also reported as taken).
+**404** — user not found.
 
 ### `POST /student/refresh-token`
 Reads the `refresh_token` cookie, validates and rotates it, sets a fresh `access_token` cookie
@@ -309,7 +355,7 @@ grace window where the old refresh token is still honored once). If reuse of an 
 token is detected, the *entire token family* is revoked and all auth cookies are cleared — this
 is the tell for a stolen refresh token being replayed.
 
-**Auth:** none (uses the refresh cookie, not the access token). **Rate limit:** `SENSITIVE_AUTH`.
+**Auth:** none (uses the refresh cookie, not the access token). **Rate limit:** `BURST_OK` (60/min per IP).
 **CSRF:** *(audit correction — this was previously, incorrectly, marked exempt)* **required.**
 `/student/refresh-token` is deliberately **not** in `CSRF_EXEMPT_PATHS`
 (`routes/student/__init__.py`): the `csrf_token` cookie is reissued alongside `access_token` on
@@ -317,7 +363,12 @@ the same lifetime, so it's expected to still be valid whenever a refresh is need
 this endpoint too is strictly safer with no real downside once that's true. Send the current
 `X-CSRF-Token` header (read from the `csrf_token` cookie) the same as any other mutating request.
 
-**400** — no refresh cookie, expired/invalid token, reuse detected, or account not approved.
+Rotation is atomic: two requests with the same token cannot both rotate it. The account is checked
+before rotating, so a rejected account does not lose its token. Approved accounts and users who
+are still registering with a verified email may refresh.
+
+**400** — no refresh cookie, expired/invalid token, reuse detected, or account not allowed (the
+auth cookies are cleared in these cases).
 
 ### `GET /student/verify-auth`
 Cheap check of whether the current access token is still valid. Doesn't require a valid token to
@@ -340,51 +391,76 @@ expired session still clears the cookies.
 
 ## Onboarding
 
-These run before a full session exists — auth is proven a different way for each (owning the
-email via an active Google OAuth session, or an existing JWT for that email).
+Optional questionnaire plus suggested people to connect with. The two steps are authenticated
+differently because the user may not hold a JWT yet when they start.
 
-### `GET /student/onboard/suggestions-by-email/{email}`
-Match suggestions for someone about to onboard, keyed by raw email in the path. Falls back to a
-generic top-reputation list if nothing scores highly. **Auth:** none. **Rate limit:**
-`SENSITIVE_AUTH` per IP.
+### `POST /student/onboard/{email}` (page: `GET /student/onboard/{email}`)
+Saves department/class/subjects/study-schedule/etc.
 
-### `POST /student/onboard/request-all/{identifier}`
-Sends pending connection requests to a batch of user IDs during onboarding. Existing connections
-in either direction are silently skipped. `{identifier}` is either the user's email or the
-onboarding verification token; a single route dispatches on its shape (an email always contains
-`@`, a token never does).
+**Auth:** proof of email ownership — an `access_token` cookie for that user or a Google session
+for the email from the last 30 minutes (emails compared case-insensitively). **Rate limit:**
+`REGISTRATION`. **CSRF:** required when an `access_token` cookie is present.
 
-**Auth:** with an email, the caller must own it (matching Google session or JWT; **401**
-otherwise). With a token, the signed token is itself the proof. **Rate limit:** `SENSITIVE_AUTH`.
+Behaviour depends on the account:
+* still registering (`pending_onboarding` / `pending_verification`, verified email): saves the
+  answers, moves `pending_onboarding` → `pending_verification`, issues session cookies, clears the
+  Google proof. `data.redirect` is `/student/complete-registration?email=<email>`.
+* `approved`: updates the preferences only — **no status change, no new tokens**.
+* unverified email: **403**. Suspended or otherwise inactive: **403**.
 
-**Request:** `{ "ids": [12, 45, 88] }`
-
-**401** if the email isn't yours.
-
-### `POST /student/onboard/{email}`
-Saves department/class/subjects/study-schedule/etc, flips the account to `pending_verification`,
-and logs the user in (sets fresh cookies).
-
-**Auth:** email-ownership check, same as above. **Rate limit:** `SENSITIVE_AUTH`.
-
-**Request (all optional, but at least department/class recommended):**
+**Request** (everything optional; values are validated):
 ```json
 {
-  "department": "Computer Science", "class_level": "Junior",
+  "name": "Jane Doe", "department": "Computer Science", "class_level": "200 Level",
   "subjects": ["Data Structures", "Linear Algebra"],
-  "learning_style": "Visual learner, prefer worked examples",
-  "study_preferences": ["Evening sessions", "Small groups"],
+  "learning_style": "visual",
+  "study_preferences": ["group-study", "morning-study"],
   "help_subjects": ["Python", "Statistics"],
   "strong_subjects": ["Algorithms"],
-  "study_schedule": { "monday": ["evening"], "wednesday": ["afternoon", "evening"] },
-  "session_length": "60"
+  "study_schedule": { "Monday": ["evening"], "Wednesday": ["afternoon", "evening"] },
+  "session_length": "1-hour"
 }
 ```
 
-### `GET /student/onboard/suggestions/{token}`
-Same as the by-email suggestions endpoint, but resolves the user from a signed JWT in the path
-instead of a raw email. **Auth:** none (token proves identity). **400** if the token is
-invalid/expired.
+Validation: `class_level` ∈ `100 Level … 500 Level`; `learning_style` ∈ `visual | auditory |
+kinesthetic | reading`; `study_preferences` ⊆ `group-study | morning-study |
+explaining-concepts | practical-projects`; `session_length` ∈ `30-minutes | 1-hour | 1.5-hours |
+2-hours`; schedule keys are weekday names with slots from `morning | afternoon | evening`;
+subject lists hold at most 30 text items of at most 100 characters (duplicates removed);
+`name`/`department` are text of at most 100 characters (`department` stays free text).
+
+**400** — invalid values: `{ "status": "error", "message": "<first problem>", "errors": { "<field>": "<problem>" } }`.
+**401** — caller doesn't own this email. **404** — user not found.
+
+### `GET /student/connections/onboarding/suggestions`
+Suggested people for the signed-in user (verified, still-registering users included), scored from
+their onboarding answers against a candidate pool bounded to 300 approved users that the user has
+no connection row with. Returns up to 10 matches, each `{ user, match_score, reasons }`. When
+nothing scores, up to 6 active members are returned with `match_score: null` (no invented score).
+
+**Auth:** required (pending users with a verified email allowed). **Rate limit:** `WRITE_HEAVY` per user.
+
+### `POST /student/connections/onboarding/connect/{target_user_id}`
+Sends **one pending connection request** (the other person must accept). If that person already
+asked you, their request is accepted instead. Existing rows — blocked, rejected, pending, accepted
+— are never changed.
+
+**Auth:** required (as above). **Rate limit:** `WRITE_HEAVY`. **201** — request sent / accepted.
+**200** — already connected or already requested. **403** — not available (blocked/rejected).
+**404** — user not found or not approved. **400** — yourself.
+
+### `POST /student/connections/onboarding/connect-all`
+**Request:** `{ "ids": [12, 45, 88] }` — at most 25 positive integers (duplicates and your own id
+are dropped). Returns `{ sent: [...], accepted: [...], skipped: [{ id, reason }], requested_count }`
+with reasons `not_found`, `already_connected`, `already_requested`, `unavailable`.
+
+**Auth:** required (as above). **Rate limit:** `WRITE_HEAVY`. **400** — not a list of positive
+integers, more than 25, or a non-object body.
+
+> The earlier unauthenticated routes (`/student/onboard/suggestions-by-email/{email}`,
+> `/student/onboard/suggestions/{token}`, `/student/onboard/request-all/{identifier}`,
+> `/student/connections/suggestions-by-email/{email}`, `/student/connections/onboard-connect/...`,
+> `/student/connections/onboard-connect-all/{email}`) were **removed**.
 
 ---
 
@@ -499,10 +575,11 @@ Connections are StudyHub's mutual "friend" relationship. Status flows are `pendi
 `accepted`/`rejected`, or straight to `accepted` (see auto-accept below), and separately
 `blocked`.
 
-### `GET /student/connections/suggestions-by-email/{email}` / `POST /student/connections/onboard-connect/{email}/{target_user_id}` / `POST /student/connections/onboard-connect-all/{email}`
-Pre-auth onboarding variants — connect instantly (idempotent) with one or many users while
-setting up an account, before full login exists. **Auth:** none. **Rate limit:**
-`SENSITIVE_AUTH` per IP.
+### Onboarding suggestions and requests
+Moved to the [Onboarding](#onboarding) section: `GET /student/connections/onboarding/suggestions`,
+`POST /student/connections/onboarding/connect/{target_user_id}` and
+`POST /student/connections/onboarding/connect-all` (authenticated; connecting sends a pending
+request).
 
 ### `POST /student/connections/help/broadcast`
 Broadcasts "I need help with X" to your most relevant connections (scored by subject match,
