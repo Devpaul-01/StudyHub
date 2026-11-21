@@ -500,7 +500,7 @@ def get_department_leaderboard(
 # 2. NEARBY USERS
 # ─────────────────────────────────────────────────────────────────────────────
 @cache_service.cached(
-    "sh:1:lb:rank:{user_id}:nearby-core:{period}:{department_key}:{n_range}:{my_score}:{my_rank}",
+    "sh:1:lb:rank:{user_id}:v{uver}:nearby-core:{period}:{department_key}:{n_range}:{my_score}:{my_rank}",
     ttl_seconds=60,
 )
 def _get_nearby_for_user(
@@ -617,7 +617,7 @@ def _get_nearby_for_user(
 
 
 @cache_service.cached(
-    "sh:1:lb:rank:{user_id}:nearby:{period}:{department_key}:{n_range}", ttl_seconds=60
+    "sh:1:lb:rank:{user_id}:v{uver}:nearby:{period}:{department_key}:{n_range}", ttl_seconds=60
 )
 def _get_nearby_users_cached(
     user_id: int, period: str, department_key: str, n_range: int
@@ -635,12 +635,10 @@ def _get_nearby_users_cached(
 
     Cache-aside per plan §4.2's `/leaderboard/nearby` row: 60s TTL fallback
     + hard invalidation on the viewing user's own reputation change. The
-    key is deliberately placed under the `sh:1:lb:rank:{user_id}:` prefix
-    (rather than a separate `lb:nearby:` prefix) specifically so it's
-    covered by reputation_service.py::award_reputation's existing
-    `cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")` call
-    (plan §5.1) with no separate invalidation hook needed here — the
-    pattern-delete wildcard already reaches this key.
+    key embeds the per-user cache version (`v{uver}`), so
+    reputation_service.py::award_reputation invalidates it -- along with
+    every other `{uver}`-keyed entry for the user -- with a single O(1)
+    cache_service.bump_user_version() call instead of a keyspace SCAN.
 
     Unlike the global leaderboard, this is entirely scoped to `user_id` —
     every entry is built with current_user_id=user_id (real, not a
@@ -692,7 +690,7 @@ def get_nearby_users(
 
 
 @cache_service.cached(
-    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
+    "sh:1:lb:rank:{user_id}:v{uver}:{period}:{department_key}", ttl_seconds=60
 )
 def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
     """
@@ -1392,7 +1390,7 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 # 10. SCORE BREAKDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:breakdown:{user_id}:{period}", ttl_seconds=120)
+@cache_service.cached("sh:1:lb:breakdown:{user_id}:v{uver}:{period}", ttl_seconds=120)
 def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
     """Transparent breakdown of how a user's score is composed.
 
