@@ -464,3 +464,70 @@ Milestones M1–M2 should ship together as the release blocker.
 | Not verified | Live Google OAuth, SMTP delivery, behaviour on Postgres under concurrency, production proxy/host-header behaviour, production data, browser execution of the frontend (read statically), global default rate limits on GET pages |
 
 Scratch test map: V1/V2/V2b/V3 → AUD-01 · V4/V15 → AUD-02 · V5 → AUD-05 · V6 → AUD-04 · V7/V7b → AUD-03 · V8 → AUD-06 · V9 → AUD-07 · V10 → AUD-09 · V11 → AUD-13 · V12 → AUD-11 · V13 → AUD-18 · V14 → AUD-17. (The scratch file is not part of the repository; I can supply it if you want it as the basis for the regression tests in M1–M7.)
+
+---
+
+## Appendix B — Resolution status (branch `fix/auth-onboarding-audit`)
+
+This appendix was added after the findings above were implemented. Sections 1–10 are kept as the
+original audit record; the table shows what was done for each finding.
+
+### Decisions taken on the open questions
+
+| # | Decision |
+|---|---|
+| Q1 | Onboarding is **optional**: `complete-registration` works for `pending_onboarding` users and does not redirect to onboarding. |
+| Q2 | Strict allow-list: only `/auth/me`, `/users/me` and the onboarding suggestion/connect routes accept still-registering users. |
+| Q3 | Approved users may re-submit onboarding to update preferences (no status change, no new tokens). |
+| Q4 | No other clients: legacy routes, the JWT verification-token paths, the `google_verified` branch and `onboarding.html` were deleted. |
+| Q5 | Onboarding connecting sends **pending requests** (consent); a reciprocal request is accepted; existing rows are never overwritten. |
+| Q6 | Resume path = fresh verification link (`/register` again or `/resend-verification`) plus "forgot password → login → complete-registration". |
+| Q7 | Unverified sign-ups purged after **7 days**; expired tokens after **30 days**. |
+| Q8 | `verified_email` is enforced; Google may explicitly claim an unfinished password sign-up (marks email verified); password accounts are never taken over; no domain restriction. |
+| Q9 | `User` is the source of truth for credentials/name; department/class stay mirrored on `StudentProfile` (profile pages) and `OnboardingDetails` (matching). |
+| Q10 | Dropped as confirmed empty/unneeded. |
+| Q11 | Not deployed, so production now **fails fast** on unsafe settings (`ProductionConfig.validate()`). |
+| Q12 | Login 20/min/IP + 10 failures/15 min/account; register 10/min/IP + 5/h/email; `check-username` 30/min; refresh 60/min; reset/verify/resend stay 5/min plus per-email/account caps. |
+| Q13 | Alembic migration added (idempotent). A full baseline of the rest of the schema is **not** included. |
+| Q14 | Reset links live **1 hour**; the email text was corrected. |
+
+### Findings
+
+| ID | Status | Commit(s) | Notes |
+|---|---|---|---|
+| AUD-01 | Fixed | fd76d2a, acdf6a0 | Authenticated routes under `/connections/onboarding/`; pending requests; no overwrite; cap 25; bounded pool. |
+| AUD-02 | Fixed | b1b6265, 0301dc6 | 409 for approved accounts; JSON-only bodies; CSRF enforced when an access cookie is sent. |
+| AUD-03 | Fixed | 288d8db | Login for verified pending users continues registration; resend/resume links; refresh allowed for verified pending users. |
+| AUD-04 | Fixed | 575536b, 9215955 | `role_required` status gate + `token_required_allow_pending`; WebSocket handshake check. |
+| AUD-05 | Fixed | b1b6265 | Status only changes from `pending_onboarding`; approved users update preferences only. |
+| AUD-06 | Fixed | 288d8db, c179413 | Single commit then queue, 503 on queue failure, resend, uniform response, daily purge. |
+| AUD-07 | Fixed | 288d8db | Reset revokes all refresh tokens and other reset links. |
+| AUD-08 | Fixed in code | 288d8db | Conditional UPDATE consume, compare-and-set rotation. **Concurrency was only tested sequentially/with a simulated lost race on SQLite; a Postgres multi-connection test is still recommended.** |
+| AUD-09 | Fixed | b1b6265 | `verify_token`/`generate_verification_token` and token branches removed. |
+| AUD-10 | Fixed / partly mitigated | 288d8db | `verified_email`, explicit claim rule, suspended refused, 30-min proof TTL. The proof is still a signed client-side cookie, so an older copy stays valid until its TTL (documented). |
+| AUD-11 | Fixed | 288d8db | Uniform login/register/reset answers; dummy hash for unknown accounts. `check-username` remains an oracle by design. |
+| AUD-12 | Fixed | 920e642, 9fa7f06 | `PUBLIC_BASE_URL`; text/TTL aligned. `ProxyFix(x_host=1)` was left unchanged because links no longer depend on it. |
+| AUD-13 | Fixed | 782ef07, 288d8db, 3a7ddd1, 5619854 | New tiers, Redis counters, production requires Redis storage, UI no longer shows 429 as "Already taken". |
+| AUD-14 | Fixed | 288d8db, cb24756, 9fa7f06 | Hashed tokens; route templates and masked emails in logs. |
+| AUD-15 | Fixed (logout) / documented (open sockets) | 766332a, 9215955 | Logout ends sockets on all instances. An already-open socket is not re-validated until it reconnects (SECURITY.md §7). |
+| AUD-16 | Fixed | fd76d2a, b1b6265 | SQL-bounded pool; legacy duplicate removed; no invented scores. |
+| AUD-17 | Fixed | 2ab4b8a, b1b6265 | Validation with field errors. `OnboardingDetails.department` widened to 100 (found while testing the new limit). |
+| AUD-18 | Fixed | b1b6265, acdf6a0, 6bcb511 | Redirect fixed, localStorage email removed, dead step and orphan template deleted. |
+| AUD-19 | Fixed | 5619854 | Startup validation, secure defaults, no CORS wildcard default, dev-only `OAUTHLIB_INSECURE_TRANSPORT`. |
+| AUD-20 | Partly fixed | 946a857, 5856732, c179413 | Migration for the auth/onboarding changes, token cascades, retention job. A baseline migration for the rest of the schema is still open. |
+| AUD-21 | Fixed | 288d8db | Eligibility checked before rotation; `complete-registration` issues fresh cookies. |
+| AUD-22 | Fixed | b1b6265 and the commits above | Tests rewritten with real UI values and real flows; live routes now covered. |
+
+### Additional issues found and fixed during implementation
+
+* **Stored XSS in the onboarding suggestion cards** — other users' names/departments were inserted with `innerHTML`; now escaped (acdf6a0, 6bcb511).
+* `OnboardingDetails.department` was `VARCHAR(50)` while the API accepts 100 characters (would fail on PostgreSQL) — widened (946a857).
+* The old onboarding tests used values the UI never sends (`"200"`, `"group"`); the new tests use the real ones.
+* One analytics test relied on a *pending* user being counted as a platform user; it now uses an approved user.
+
+### Verification performed
+
+* Full suite run in chunks on SQLite + fakeredis: all green except 3 tests in `tests/unit/services/test_distributed_lock.py`, which **also fail on the unmodified base commit** (they depend on Redis Lua scripting under fakeredis) and are unrelated to this work.
+* New tests: status gate, onboarding routes/service, onboarding validation, complete-registration guards, token security, registration recovery/login/forgot-password, Google callback (client stubbed), request logging, production config validation, retention job, migration (old schema, idempotency, fresh schema, downgrade), WebSocket cross-instance disconnect, rate tiers.
+* JavaScript in the changed templates and `api.js` was syntax-checked with Node; the pages were **not** exercised in a browser.
+* **Not verified:** live Google OAuth, real SMTP delivery, behaviour on PostgreSQL under concurrent connections, the migration against a real PostgreSQL database, and production proxy behaviour.
