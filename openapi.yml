@@ -59,7 +59,10 @@ components:
         Primary auth mechanism for browser clients. Set on login/registration/OAuth callback
         as a short-lived (30 minute) JWT. `role_required()` reads this cookie if no
         `Authorization` header is present. A `refresh_token` cookie (7-day, httponly, rotating)
-        is used by `POST /student/refresh-token` to mint a new access token.
+        is used by `POST /student/refresh-token` to mint a new access token. A valid token is not
+        enough: accounts that are not `approved` get 403 `registration_incomplete` on every route
+        except `/auth/me`, `/users/me` and the onboarding suggestion/connect routes, which also
+        accept verified users who are still registering.
     bearerAuth:
       type: http
       scheme: bearer
@@ -477,7 +480,10 @@ paths:
         claim, not email alone (see SECURITY.md §1.2). Redirects to one of: the app homepage
         (existing approved user, cookies set), `/student/onboard/<email>` (needs onboarding),
         `/student/complete-registration?email=<email>` (needs username/password), or back to
-        the login page with `?error=...` on failure. Never returns JSON.
+        the login page with `?error=...` on failure (`oauth_failed`, `email_not_verified` when Google has
+        not verified the address, `account_exists_use_password`, `account_inactive`). A Google login may
+        claim an unfinished password sign-up (no password yet), which also marks the email verified;
+        a password-created account is never taken over. Never returns JSON.
       security: []
       responses:
         '302':
@@ -505,7 +511,7 @@ paths:
     post:
       tags: [Google OAuth]
       summary: Clear pending OAuth session state
-      description: Clears `google_email`/`google_name`/`google_id` from the server-side session. CSRF-exempt (no auth cookie exists yet at this point in the flow).
+      description: Clears `google_email`/`google_name`/`google_id`/`google_proof_at` from the server-side session. CSRF-exempt (no auth cookie exists yet at this point in the flow).
       security: []
       responses:
         '200':
@@ -581,91 +587,24 @@ paths:
                           username: { type: string, nullable: true }
                           avatar: { type: string, nullable: true }
 
-  /student/onboard/suggestions-by-email/{email}:
-    get:
-      tags: [Onboarding]
-      summary: Get onboarding-time match suggestions by email
-      description: Pre-auth endpoint (no token) used during onboarding, before the user has a session. Rate-limited SENSITIVE_AUTH tier (5/min, per IP).
-      security: []
-      parameters:
-        - name: email
-          in: path
-          required: true
-          schema: { type: string, format: email }
-      responses:
-        '200':
-          description: OK — matches, or a fallback top-reputation list if none score highly enough.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data:
-                    type: object
-                    properties:
-                      matches:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            user: { $ref: '#/components/schemas/UserSummary' }
-                            match_score: { type: integer }
-                            reasons: { type: array, items: { type: string } }
-        '400':
-          $ref: '#/components/responses/ErrorGeneric'
-
-  /student/onboard/request-all/{identifier}:
-    post:
-      tags: [Onboarding]
-      summary: Send connection requests to multiple users during onboarding
-      description: |
-        Pre-auth (no JWT yet). `identifier` is either an email or the onboarding verification
-        token; one route dispatches on its shape (an email contains `@`, a token never does).
-        For an email, the caller is authorized by matching it against their Google OAuth session
-        or an existing `access_token` cookie (`_is_request_authorized_for_email`; 401 otherwise).
-        For a token, the signed token is itself the proof. SENSITIVE_AUTH rate tier, per IP.
-      security: []
-      parameters:
-        - name: identifier
-          in: path
-          required: true
-          schema: { type: string, description: An email address or an onboarding verification token. }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                ids:
-                  type: array
-                  items: { type: integer }
-                  description: User IDs to send pending connection requests to. Existing connections (either direction) are silently skipped.
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
-        '401':
-          description: Caller does not own this email (no matching OAuth session or JWT).
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '400':
-          $ref: '#/components/responses/ErrorGeneric'
-
   /student/onboard/{email}:
     post:
       tags: [Onboarding]
-      summary: Save onboarding details
+      summary: Save onboarding answers
       description: |
-        Saves department/class/subjects/schedule/etc, flips the account to
-        `pending_verification`, and issues fresh access+refresh token cookies. Pre-auth —
-        authorized the same way as `request-all` above (Google session or existing JWT matching
-        `email`). SENSITIVE_AUTH rate tier on POST.
+        Optional questionnaire. The caller must own `email`: an `access_token` cookie belonging to
+        that user, or a Google session for the email created in the last 30 minutes (emails are
+        compared case-insensitively). Rate tier REGISTRATION (10/min per IP). CSRF is required when
+        an `access_token` cookie is sent; only the cookie-less Google case is exempt.
+
+        * Still registering (`pending_onboarding` / `pending_verification`, verified email): saves the
+          answers, moves `pending_onboarding` to `pending_verification`, issues session cookies and
+          clears the Google proof. `data.redirect` points at `/student/complete-registration?email=...`.
+        * `approved`: updates the preferences only — no status change, no new tokens.
+        * Unverified email, or a suspended account: 403.
+
+        Values are validated (see the schema); `department` is free text because the UI has an
+        "Other" option.
       security: []
       parameters:
         - name: email
@@ -679,21 +618,26 @@ paths:
             schema:
               type: object
               properties:
-                name: { type: string }
-                department: { type: string }
-                class_level: { type: string }
-                subjects: { type: array, items: { type: string } }
-                learning_style: { type: string }
-                study_preferences: { type: array, items: { type: string } }
-                help_subjects: { type: array, items: { type: string } }
-                strong_subjects: { type: array, items: { type: string } }
+                name: { type: string, maxLength: 100 }
+                department: { type: string, maxLength: 100 }
+                class_level: { type: string, enum: ["", "100 Level", "200 Level", "300 Level", "400 Level", "500 Level"] }
+                subjects: { type: array, maxItems: 30, items: { type: string, maxLength: 100 } }
+                learning_style: { type: string, enum: ["", visual, auditory, kinesthetic, reading] }
+                study_preferences:
+                  type: array
+                  items: { type: string, enum: [group-study, morning-study, explaining-concepts, practical-projects] }
+                help_subjects: { type: array, maxItems: 30, items: { type: string, maxLength: 100 } }
+                strong_subjects: { type: array, maxItems: 30, items: { type: string, maxLength: 100 } }
                 study_schedule:
                   type: object
-                  description: "Map of day name -> array of {morning|afternoon|evening|night}"
-                session_length: { type: string }
+                  description: "Map of weekday name (Monday..Sunday, any case) -> array of morning | afternoon | evening"
+                  additionalProperties:
+                    type: array
+                    items: { type: string, enum: [morning, afternoon, evening] }
+                session_length: { type: string, enum: ["", 30-minutes, 1-hour, 1.5-hours, 2-hours] }
       responses:
         '200':
-          description: Saved. Sets access_token/refresh_token (and csrf_token, if enabled) cookies.
+          description: Saved. For a registering user, sets access_token/refresh_token (and csrf_token) cookies.
           content:
             application/json:
               schema:
@@ -711,49 +655,31 @@ paths:
                           name: { type: string }
                           username: { type: string, nullable: true }
                           email: { type: string }
-                      redirect: { type: string }
-        '401':
-          description: Caller does not own this email.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+                      redirect:
+                        type: string
+                        description: Present for registering users, e.g. /student/complete-registration?email=jane%40example.edu
         '400':
-          $ref: '#/components/responses/ErrorGeneric'
-
-  /student/onboard/suggestions/{token}:
-    get:
-      tags: [Onboarding]
-      summary: Get onboarding match suggestions by signed token
-      description: Same as the by-email variant, but resolves the user from a JWT (`verify_token`) instead of a raw email in the path.
-      security: []
-      parameters:
-        - name: token
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: OK.
+          description: Invalid values. `errors` maps each offending field to a message.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status: { type: string, enum: [success] }
+                  status: { type: string, enum: [error] }
                   message: { type: string }
-                  data:
-                    type: object
-                    properties:
-                      matches:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            user: { $ref: '#/components/schemas/UserSummary' }
-                            match_score: { type: integer }
-                            reasons: { type: array, items: { type: string } }
-        '400':
-          description: Token invalid/expired, or user not found.
+                  errors: { type: object, additionalProperties: { type: string } }
+        '401':
+          description: Caller does not own this email.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Email not verified, or the account cannot be updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: User not found.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -761,12 +687,13 @@ paths:
   /student/register:
     post:
       tags: [Auth]
-      summary: Register a new account
+      summary: Start a registration
       description: |
-        Creates a `pending_verification` account and emails a single-use verification link,
-        unless `google_verified` is true and matches the server-side OAuth session for this
-        email — in which case the account is created with `email_verified=true` and the caller
-        is sent straight to onboarding. SENSITIVE_AUTH rate tier, per IP. CSRF-exempt.
+        Emails a single-use verification link (valid 5 hours). The answer is identical for a new
+        address, an address whose registration was never finished, and an address with an active
+        account (no account enumeration). An unfinished registration gets a fresh link and the
+        earlier ones stop working; an active account receives nothing. Rate tier REGISTRATION
+        (10/min per IP) plus 5/hour per email. CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -776,37 +703,61 @@ paths:
               type: object
               required: [full_name, email]
               properties:
-                full_name: { type: string }
-                email: { type: string, format: email }
-                google_verified:
-                  type: boolean
-                  description: Only honored if it also matches session["google_email"] server-side; a bare client claim is not trusted.
+                full_name: { type: string, maxLength: 100 }
+                email: { type: string, format: email, maxLength: 120 }
       responses:
         '200':
-          description: Registered.
+          description: Same body for every address.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data:
-                    type: object
-                    properties:
-                      google_verified: { type: boolean }
-                      redirect_url: { type: string }
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '400':
-          description: Missing fields, invalid email, or email already registered.
+          description: Missing/non-text fields, invalid email, or name/email too long.
+        '429':
+          description: Too many attempts for this email.
+        '503':
+          description: The email could not be queued. The account is not stranded — signing up again sends a new link.
+
+  /student/resend-verification:
+    post:
+      tags: [Auth]
+      summary: Resend the verification / resume link
+      description: |
+        For a registration that was started but not finished (pending status). Same answer whether
+        or not the address is known. Rate tier SENSITIVE_AUTH plus 3/hour per email. CSRF-exempt.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: If that email is waiting to be verified, a new link was sent.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+        '400':
+          description: Invalid email.
+        '429':
+          description: Too many requests for this email.
 
   /student/login:
     post:
       tags: [Auth]
       summary: Log in with username/email + password
-      description: SENSITIVE_AUTH rate tier, per IP. CSRF-exempt. Sets access_token/refresh_token cookies on success.
+      description: |
+        Rate tier AUTH_ATTEMPT (20/min per IP) plus a per-account counter (10 failed attempts per
+        15 minutes, reset on success). CSRF-exempt. Sets access_token/refresh_token cookies on success.
+
+        Unknown account, wrong password and an account with no password yet all get the same
+        400 "Invalid credentials". The state of an account is only described after the password was
+        proven ("Please verify your email before logging in."). A verified user who is still
+        registering is signed in and `data.redirect` points at /student/complete-registration.
       security: []
       requestBody:
         required: true
@@ -841,7 +792,7 @@ paths:
                       redirect: { type: string }
                       login_streak: { type: integer }
         '400':
-          description: Invalid credentials, unverified email, incomplete registration, or pending approval.
+          description: Invalid credentials (also for unknown accounts), or - after a correct password - unverified email / inactive account.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -850,7 +801,11 @@ paths:
     post:
       tags: [Auth]
       summary: Request a password reset email
-      description: Looks up by email or username, issues a single-use `PasswordResetToken`, emails a reset link. SENSITIVE_AUTH tier. CSRF-exempt.
+      description: |
+        Looks up by email or username and emails a single-use reset link valid for 1 hour (earlier
+        unused links stop working); a registration whose email was never verified gets a
+        verification link instead. The answer is the same for known and unknown accounts. SENSITIVE_AUTH
+        tier plus 3/hour per account (429). CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -910,7 +865,10 @@ paths:
     post:
       tags: [Auth]
       summary: Set a new password using a reset token
-      description: Consumes the single-use `PasswordResetToken`. SENSITIVE_AUTH tier. CSRF-exempt.
+      description: |
+        Atomically consumes the single-use reset token, sets the password and revokes every refresh
+        token of the user in one transaction; if anything fails the token stays usable. Other reset
+        links of the user stop working. SENSITIVE_AUTH tier. CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -948,10 +906,12 @@ paths:
       tags: [Auth]
       summary: Verify email address
       description: |
-        Consumes a single-use `EmailVerificationToken`. On success, auto-logs the user in
-        (sets access/refresh cookies) and redirects them into onboarding. Replaying an
-        already-used token for an already-verified account returns a friendly
-        "already verified" success response rather than an error. SENSITIVE_AUTH tier. CSRF-exempt.
+        Atomically consumes a single-use `EmailVerificationToken`. On success, marks the email verified,
+        auto-logs the user in (sets access/refresh cookies) and redirects them into onboarding; it also
+        serves as the "resume" link for a verified-but-unfinished registration. Replaying a used
+        link gives a friendly "already verified" success only in the browser signed in as that user;
+        anyone else gets 400 with `data.already_verified: true` and `data.login_url`.
+        SENSITIVE_AUTH tier. CSRF-exempt.
       security: []
       parameters:
         - name: token
@@ -984,6 +944,7 @@ paths:
     post:
       tags: [Auth]
       summary: Check username availability
+      description: Rate tier USERNAME_CHECK (30/min per IP); 429 when exceeded. 400 `Username taken` when not available.
       security: []
       requestBody:
         required: true
@@ -1016,9 +977,15 @@ paths:
       tags: [Auth]
       summary: Finish registration (set username + password)
       description: |
-        Final step after onboarding. Requires either a `token` (from the verification email,
-        proves ownership by itself) or the same email-ownership check used elsewhere
-        (`_is_request_authorized_for_email`). SENSITIVE_AUTH tier. CSRF-exempt.
+        Final step. Only for users who are still registering (verified email, pending status);
+        approved accounts get 409, so this route can never overwrite an existing account's
+        credentials. Onboarding is optional. On success the account becomes `approved` and fresh
+        auth cookies are issued.
+
+        The caller must own `email`: an `access_token` cookie belonging to that user (normal CSRF
+        header required), or a Google session for the email created in the last 30 minutes (no CSRF
+        cookie exists yet, so that case is exempt). Rate tier REGISTRATION. Bodies must be
+        application/json.
       security: []
       requestBody:
         required: true
@@ -1026,31 +993,37 @@ paths:
           application/json:
             schema:
               type: object
-              required: [password, confirm_password, username]
+              required: [email, password, confirm_password, username]
               properties:
-                token: { type: string, description: "Optional — JWT proving email ownership" }
-                email: { type: string, format: email, description: "Required if token is not supplied" }
+                email: { type: string, format: email }
                 password: { type: string, format: password, minLength: 6 }
                 confirm_password: { type: string, format: password }
                 username: { type: string, pattern: '^[a-z0-9]{3,20}$' }
       responses:
         '200':
-          description: Registration complete.
+          description: Registration complete; auth cookies set.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data: { type: object, properties: { username: { type: string } } }
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+        '400':
+          $ref: '#/components/responses/ErrorGeneric'
         '401':
           description: Caller does not own this email.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '400':
-          description: Missing fields, password mismatch/too short, invalid username, username taken, or user not found.
+        '403':
+          description: Email not verified, or the account cannot complete registration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: User not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Registration is already complete (approved account).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1063,7 +1036,8 @@ paths:
         Reads `refresh_token` cookie, validates + rotates it (see SECURITY.md §1.3 for reuse
         detection and the 10-second multi-tab grace window). On success sets a new
         `access_token` cookie and usually a new `refresh_token` cookie (omitted only in the
-        grace-window race case). SENSITIVE_AUTH tier. CSRF-exempt.
+        grace-window race case). Rotation is atomic and the account is checked before rotating.
+        BURST_OK tier (60/min per IP). CSRF required.
       security: []
       responses:
         '200':
@@ -1874,13 +1848,15 @@ paths:
                       skills: { type: array, items: { type: string } }
                       detailed: { type: array, items: { type: object, properties: { name: { type: string }, count: { type: integer } } } }
 
-  /student/connections/suggestions-by-email/{email}:
+  /student/connections/onboarding/suggestions:
     get:
-      tags: [Connections]
-      summary: Onboarding connection suggestions by email
-      description: Pre-auth. SENSITIVE_AUTH tier, per IP.
-      security: []
-      parameters: [{ name: email, in: path, required: true, schema: { type: string } }]
+      tags: [Connections, Onboarding]
+      summary: Suggested people to connect with during onboarding
+      description: |
+        Authenticated (verified users who are still registering are allowed). Scored from the user's
+        onboarding answers against a candidate pool bounded to 300 approved users the requester has
+        no connection row with. Up to 10 matches; when nothing scores, up to 6 active members with
+        `match_score: null` (no invented score). Rate tier WRITE_HEAVY per user.
       responses:
         '200':
           description: OK.
@@ -1890,52 +1866,52 @@ paths:
                 type: object
                 properties:
                   status: { type: string, enum: [success] }
-                  data: { type: object, properties: { matches: { type: array, items: { type: object } } } }
-        '400':
-          $ref: '#/components/responses/ErrorGeneric'
+                  data:
+                    type: object
+                    properties:
+                      matches:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            user: { $ref: '#/components/schemas/UserSummary' }
+                            match_score: { type: integer, nullable: true }
+                            reasons: { type: array, items: { type: string } }
+        '401':
+          description: Not signed in.
+        '403':
+          description: Account not allowed (`registration_incomplete` for unverified or inactive accounts).
 
-  /student/connections/onboard-connect/{email}/{target_user_id}:
+  /student/connections/onboarding/connect/{target_user_id}:
     post:
-      tags: [Connections]
-      summary: Instantly connect during onboarding (single user)
-      description: Pre-auth, idempotent. SENSITIVE_AUTH tier, per IP.
-      security: []
+      tags: [Connections, Onboarding]
+      summary: Send one connection request during onboarding
+      description: |
+        Authenticated as above. Sends an ordinary **pending** request; if the target already asked
+        the caller, that request is accepted. Existing rows (blocked, rejected, pending, accepted)
+        are never changed. Rate tier WRITE_HEAVY per user. CSRF required.
       parameters:
-        - { name: email, in: path, required: true, schema: { type: string } }
         - { name: target_user_id, in: path, required: true, schema: { type: integer } }
       responses:
         '201':
-          description: Connected.
+          description: Request sent (or reciprocal request accepted).
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data: { type: object, properties: { connection_id: { type: integer }, status: { type: string } } }
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '200':
-          description: Already connected (idempotent path).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data: { type: object, properties: { connection_id: { type: integer } } }
+          description: Already connected or already requested.
         '400':
-          description: User not found, or connecting with self.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+          description: Cannot connect with yourself.
+        '403':
+          description: Not available (blocked or rejected), or account not allowed.
+        '404':
+          description: User not found or not approved.
 
-  /student/connections/onboard-connect-all/{email}:
+  /student/connections/onboarding/connect-all:
     post:
-      tags: [Connections]
-      summary: Instantly connect during onboarding (bulk)
-      security: []
-      parameters: [{ name: email, in: path, required: true, schema: { type: string } }]
+      tags: [Connections, Onboarding]
+      summary: Send connection requests to several suggested users (max 25)
+      description: Authenticated as above. Per-target outcomes are reported; nothing is overwritten. Rate tier WRITE_HEAVY per user. CSRF required.
       requestBody:
         required: true
         content:
@@ -1944,7 +1920,7 @@ paths:
               type: object
               required: [ids]
               properties:
-                ids: { type: array, items: { type: integer } }
+                ids: { type: array, maxItems: 25, items: { type: integer, minimum: 1 } }
       responses:
         '200':
           description: OK.
@@ -1958,11 +1934,18 @@ paths:
                   data:
                     type: object
                     properties:
-                      connected_count: { type: integer }
-                      connected_ids: { type: array, items: { type: integer } }
-                      skipped_ids: { type: array, items: { type: integer } }
+                      sent: { type: array, items: { type: integer } }
+                      accepted: { type: array, items: { type: integer } }
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: integer }
+                            reason: { type: string, enum: [not_found, already_connected, already_requested, unavailable] }
+                      requested_count: { type: integer }
         '400':
-          description: User not found, or no ids provided.
+          description: Not a list of positive integers, more than 25 ids, or a non-object body.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
