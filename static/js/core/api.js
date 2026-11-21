@@ -530,16 +530,25 @@ async refreshAccessToken() {
   /**
    * DELETE request
    */
-  async delete(endpoint) {
+  async delete(endpoint, data = null) {
     const url = `${this.baseURL}${endpoint}`;
 
     return this._requestWithRefresh(async () => {
       const headers = await this.getHeaders();
-      return fetch(url, {
+      const options = {
         method: 'DELETE',
         headers: headers,
         credentials: 'include'
-      });
+      };
+
+      // Optional JSON body, for deletes that identify the target by value
+      // (e.g. a skill name that must not be put in the URL path).
+      if (data !== null) {
+        options.headers = { ...headers, 'Content-Type': 'application/json' };
+        options.body = JSON.stringify(data);
+      }
+
+      return fetch(url, options);
     }).catch((error) => {
       console.error('DELETE request failed:', error);
       throw error;
