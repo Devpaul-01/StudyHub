@@ -1239,9 +1239,12 @@ def view_profile(current_user, username):
                     "class_level":      profile.class_name,
                     "reputation":       user.reputation,
                     "reputation_level": user.reputation_level,
-                    "login_streak":     user.login_streak,
+                    # Activity details are only sent when the owner allows
+                    # it (own profile always sees their own values).
+                    "login_streak":     user.login_streak if show_active or is_own_profile else None,
                     "joined_at":        user.joined_at.isoformat(),
-                    "last_active":      user.last_active.isoformat() if user.last_active else None,
+                    "last_active":      (user.last_active.isoformat()
+                                         if user.last_active and (show_active or is_own_profile) else None),
                     "active_status":    show_active,
                 },
                 "stats": {
