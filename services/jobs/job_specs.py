@@ -31,3 +31,7 @@ ACTIVITY_FEED_CLEANUP_RETRY = Retry(max=3, interval=[30, 300])
 # over-engineering retry policy for a job whose worst-case failure is
 # "one log line is late."
 STALE_CONVERSATION_ALERT_RETRY = Retry(max=2, interval=[60])
+
+# purge_stale_auth_data_job: daily, idempotent, bounded batches -- same profile
+# as the activity feed cleanup.
+AUTH_CLEANUP_RETRY = Retry(max=3, interval=[30, 300])

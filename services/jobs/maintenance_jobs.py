@@ -35,7 +35,10 @@ import logging
 from sqlalchemy import func
 
 from extensions import db
-from models import ActivityFeed, AIConversation
+from models import (
+    ActivityFeed, AIConversation, EmailVerificationToken, Notification,
+    PasswordResetToken, RefreshToken, StudentProfile, User, UserActivity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,110 @@ def cleanup_expired_activity_feed_job() -> dict:
         total_deleted, batches_run,
     )
     return {"rows_deleted": total_deleted, "batches_run": batches_run}
+
+
+# Retention for authentication leftovers (audit AUD-06 / AUD-20).
+# A sign-up whose email was never verified is deleted after this many days, which
+# also releases the address for its real owner. Spent or expired one-time tokens and
+# refresh tokens are kept this long for debugging, then deleted.
+UNVERIFIED_ACCOUNT_RETENTION_DAYS = 7
+AUTH_TOKEN_RETENTION_DAYS = 30
+AUTH_CLEANUP_BATCH_SIZE = 200
+AUTH_CLEANUP_MAX_BATCHES = 50
+
+
+def purge_stale_auth_data_job() -> dict:
+    """
+    Delete abandoned sign-ups and expired authentication tokens.
+
+    * Accounts that never verified their email (``email_verified`` false, status
+      ``pending_verification``, not linked to Google) and are older than
+      UNVERIFIED_ACCOUNT_RETENTION_DAYS. Such an account can own nothing but the
+      rows created at registration (profile, welcome notification, activity row,
+      tokens), which are removed with it. Each account is deleted inside its own
+      savepoint, so one unexpected row cannot block the rest.
+    * Password-reset, email-verification and refresh tokens that expired more than
+      AUTH_TOKEN_RETENTION_DAYS ago.
+
+    Bounded batches, one commit per batch, idempotent on retry (see the activity
+    feed job above for the pattern).
+    """
+    _SKIPPED_ACCOUNT_IDS.clear()
+    now = datetime.datetime.utcnow()
+    account_cutoff = now - datetime.timedelta(days=UNVERIFIED_ACCOUNT_RETENTION_DAYS)
+    token_cutoff = now - datetime.timedelta(days=AUTH_TOKEN_RETENTION_DAYS)
+
+    accounts_deleted = 0
+    accounts_skipped = 0
+    batches_run = 0
+
+    while batches_run < AUTH_CLEANUP_MAX_BATCHES:
+        stale_ids = [
+            row.id for row in
+            User.query
+            .filter(
+                User.email_verified.is_(False),
+                User.status == "pending_verification",
+                User.google_id.is_(None),
+                User.joined_at < account_cutoff,
+            )
+            .with_entities(User.id)
+            .order_by(User.id)
+            .limit(AUTH_CLEANUP_BATCH_SIZE)
+            .all()
+        ]
+        stale_ids = [i for i in stale_ids if i not in _SKIPPED_ACCOUNT_IDS]
+        if not stale_ids:
+            break
+
+        for user_id in stale_ids:
+            try:
+                with db.session.begin_nested():
+                    for model in (PasswordResetToken, EmailVerificationToken, RefreshToken,
+                                  Notification, UserActivity, StudentProfile):
+                        model.query.filter(model.user_id == user_id).delete(synchronize_session=False)
+                    User.query.filter(User.id == user_id).delete(synchronize_session=False)
+                accounts_deleted += 1
+            except Exception:
+                accounts_skipped += 1
+                _SKIPPED_ACCOUNT_IDS.add(user_id)
+                logger.warning("[AUTH_CLEANUP_SKIPPED] user_id=%s", user_id, exc_info=True)
+        db.session.commit()
+        batches_run += 1
+
+    tokens_deleted = 0
+    for model in (PasswordResetToken, EmailVerificationToken, RefreshToken):
+        while True:
+            ids = [
+                row.id for row in
+                model.query.filter(model.expires_at < token_cutoff)
+                .with_entities(model.id).limit(AUTH_CLEANUP_BATCH_SIZE * 5).all()
+            ]
+            if not ids:
+                break
+            if model is RefreshToken:
+                # Successors reference their predecessor through replaced_by_id; clear the
+                # links first so the delete cannot trip the self-referencing foreign key.
+                RefreshToken.query.filter(RefreshToken.replaced_by_id.in_(ids)).update(
+                    {"replaced_by_id": None}, synchronize_session=False)
+            model.query.filter(model.id.in_(ids)).delete(synchronize_session=False)
+            db.session.commit()
+            tokens_deleted += len(ids)
+
+    logger.info(
+        "[AUTH_CLEANUP_DONE] accounts_deleted=%s accounts_skipped=%s tokens_deleted=%s",
+        accounts_deleted, accounts_skipped, tokens_deleted,
+    )
+    return {
+        "accounts_deleted": accounts_deleted,
+        "accounts_skipped": accounts_skipped,
+        "tokens_deleted": tokens_deleted,
+    }
+
+
+# Accounts this process could not delete (an unexpected dependent row). Remembered so
+# the batch loop above does not pick the same ones again within one run.
+_SKIPPED_ACCOUNT_IDS: set = set()
 
 
 def alert_stale_ai_conversations_job() -> dict:

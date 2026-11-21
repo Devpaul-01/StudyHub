@@ -285,6 +285,20 @@ def _job_activity_feed_cleanup(app):
     _run_locked("activity_feed_cleanup", _work)
 
 
+def _job_auth_cleanup(app):
+    """Enqueue the daily purge of abandoned sign-ups and expired auth tokens."""
+    def _work():
+        logger.info("[Scheduler] ▶ Enqueueing auth cleanup job")
+        with app.app_context():
+            from services.job_queue import maintenance_queue
+            from services.jobs.maintenance_jobs import purge_stale_auth_data_job
+            from services.jobs.job_specs import AUTH_CLEANUP_RETRY
+            job = maintenance_queue.enqueue(purge_stale_auth_data_job, retry=AUTH_CLEANUP_RETRY)
+            logger.info("[SCHED_JOB_ENQUEUED] job_id=%s queue=%s", job.id, maintenance_queue.name)
+
+    _run_locked("auth_cleanup", _work)
+
+
 def _job_stale_conversation_alert(app):
     """See _job_activity_feed_cleanup's docstring — identical shape."""
     def _work():
@@ -409,6 +423,15 @@ def init_scheduler(app) -> None:
     # minutes after counter_reconciliation's 00:20 slot for the same
     # "don't contend for DB load in the same window" reasoning. Enqueues,
     # does not run inline.
+    scheduler.add_job(
+        func=_job_auth_cleanup,
+        args=[app],
+        trigger=CronTrigger(hour=3, minute=30, timezone="UTC"),
+        id="auth_cleanup",
+        name="Auth Cleanup (abandoned sign-ups, expired tokens)",
+        replace_existing=True,
+    )
+
     scheduler.add_job(
         func=_job_stale_conversation_alert,
         args=[app],
