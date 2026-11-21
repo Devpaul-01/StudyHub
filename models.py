@@ -460,6 +460,10 @@ class User(UserMixin, db.Model):
         # GIN index on skills for containment queries (Postgres-specific —
         # see the identical note on Post.__table_args__).
         db.Index("idx_users_skills_gin", "skills", postgresql_using="gin"),
+        # Reputation is floored at 0 by award_reputation(); the constraint
+        # is the database-level backstop so no code path can persist a
+        # negative balance.
+        db.CheckConstraint("reputation >= 0", name="ck_users_reputation_non_negative"),
     )
 
     @property
@@ -1432,18 +1436,30 @@ class ReputationHistory(db.Model):
 
     id             = db.Column(db.Integer, primary_key=True)
     # CASCADE — meaningless without the user.
-    user_id        = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # (user_id is covered by the leading column of idx_rep_history_user_date
+    # below, so no separate single-column index is declared.)
+    user_id        = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     action         = db.Column(db.String(100), nullable=False)
+    # The EFFECTIVE delta actually applied to the balance
+    # (reputation_after - reputation_before). When the zero floor clamps a
+    # negative award this is smaller in magnitude than the requested
+    # points, so SUM(points_change) reproduces users.reputation.
     points_change  = db.Column(db.Integer, nullable=False)
     related_type   = db.Column(db.String(20))
     related_id     = db.Column(db.Integer)
     created_at     = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
     reputation_before = db.Column(db.Integer)
     reputation_after  = db.Column(db.Integer)
+    # Idempotency key for one-shot awards (e.g. "comment_marked_helpful:
+    # comment:12:user:7"). UNIQUE, so a repeated request can never pay
+    # twice even under concurrent execution. NULL for legacy rows and for
+    # awards that are legitimately repeatable.
+    idempotency_key = db.Column(db.String(200), nullable=True)
 
     __table_args__ = (
         db.Index("idx_rep_history_date_user", "created_at", "user_id"),
         db.Index("idx_rep_history_user_date", "user_id", "created_at"),
+        db.Index("uq_reputation_history_idempotency_key", "idempotency_key", unique=True),
     )
 
     def __repr__(self):
