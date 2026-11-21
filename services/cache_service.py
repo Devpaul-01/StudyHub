@@ -107,11 +107,11 @@ def get(key):
     (get() -> None -> recompute -> set()) safe to use unconditionally.
     """
     log = _get_logger()
-    log.info(f"[CACHE] GET: {key}")
+    log.debug(f"[CACHE] GET: {key}")
     
     try:
         raw = redis_client.get(key)
-        log.info(f"[CACHE] GET raw response: {raw is not None}")
+        log.debug(f"[CACHE] GET raw response: {raw is not None}")
     except Exception as e:
         log.warning(
             f"[CACHE] Redis GET failed for key={key!r} — treating as cache miss. Error: {e}",
@@ -120,12 +120,12 @@ def get(key):
         return None
 
     if raw is None:
-        log.info(f"[CACHE] GET: {key} — CACHE MISS (not found)")
+        log.debug(f"[CACHE] GET: {key} — CACHE MISS (not found)")
         return None
 
     try:
         value = json.loads(raw)
-        log.info(f"[CACHE] GET: {key} — CACHE HIT ✅")
+        log.debug(f"[CACHE] GET: {key} — CACHE HIT ✅")
         return value
     except (TypeError, ValueError) as e:
         log.warning(
@@ -141,21 +141,14 @@ def set(key, value, ttl_seconds):
     a cache write failure must never fail the request that triggered it.
     """
     log = _get_logger()
-    log.info(f"[CACHE] SET: {key} (TTL: {ttl_seconds}s)")
+    log.debug(f"[CACHE] SET: {key} (TTL: {ttl_seconds}s)")
     
     try:
         serialized = json.dumps(value)
-        log.info(f"[CACHE] SET: {key} — serialized size: {len(serialized)} bytes")
+        log.debug(f"[CACHE] SET: {key} — serialized size: {len(serialized)} bytes")
         
         result = redis_client.set(key, serialized, ex=ttl_seconds)
-        log.info(f"[CACHE] SET: {key} — result: {result}")
-        
-        # Verify the write
-        verify = redis_client.get(key)
-        if verify:
-            log.info(f"[CACHE] SET: {key} — verified ✅")
-        else:
-            log.warning(f"[CACHE] SET: {key} — verification FAILED (key not found after write)")
+        log.debug(f"[CACHE] SET: {key} — result: {result}")
             
     except Exception as e:
         log.warning(
@@ -172,14 +165,14 @@ def delete(key):
     failure mode.
     """
     log = _get_logger()
-    log.info(f"[CACHE] DELETE: {key}")
+    log.debug(f"[CACHE] DELETE: {key}")
     
     try:
         result = redis_client.delete(key)
         if result:
-            log.info(f"[CACHE] DELETE: {key} — deleted {result} key(s)")
+            log.debug(f"[CACHE] DELETE: {key} — deleted {result} key(s)")
         else:
-            log.info(f"[CACHE] DELETE: {key} — key not found")
+            log.debug(f"[CACHE] DELETE: {key} — key not found")
     except Exception as e:
         log.warning(
             f"[CACHE] Redis DELETE failed for key={key!r}. Error: {e}",
@@ -206,7 +199,7 @@ def delete_pattern(prefix):
     Never raises.
     """
     log = _get_logger()
-    log.info(f"[CACHE] DELETE_PATTERN: {prefix}")
+    log.debug(f"[CACHE] DELETE_PATTERN: {prefix}")
     
     try:
         cursor = 0
@@ -214,12 +207,12 @@ def delete_pattern(prefix):
         while True:
             cursor, keys = redis_client.scan(cursor=cursor, match=prefix, count=200)
             if keys:
-                log.info(f"[CACHE] DELETE_PATTERN: found {len(keys)} keys in batch")
+                log.debug(f"[CACHE] DELETE_PATTERN: found {len(keys)} keys in batch")
                 redis_client.delete(*keys)
                 deleted_count += len(keys)
             if cursor == 0:
                 break
-        log.info(f"[CACHE] DELETE_PATTERN: deleted {deleted_count} keys matching {prefix}")
+        log.debug(f"[CACHE] DELETE_PATTERN: deleted {deleted_count} keys matching {prefix}")
     except Exception as e:
         log.warning(
             f"[CACHE] Redis pattern delete failed for prefix={prefix!r}. Error: {e}",
@@ -233,8 +226,47 @@ def clear():
     application). Mainly useful for tests.
     """
     log = _get_logger()
-    log.info("[CACHE] CLEAR: Clearing all cache entries")
+    log.debug("[CACHE] CLEAR: Clearing all cache entries")
     delete_pattern(f"sh:{CACHE_SCHEMA_VERSION}:*")
+
+
+# ============================================================================
+# PER-USER VERSION KEYS (O(1) invalidation of variable-suffix keys)
+#
+# Some cached values depend on a user's reputation but are keyed by extra
+# variable parts (period, department, range, score, rank...). Invalidating
+# them with delete_pattern() means a SCAN across the WHOLE Redis keyspace
+# on every reputation change. Instead those templates embed a per-user
+# version -- `sh:1:lb:rank:{user_id}:v{uver}:...` -- and invalidation is a
+# single INCR of `sh:1:ver:user:{user_id}`; stale entries are simply never
+# read again and expire via their own TTL.
+# ============================================================================
+
+USER_VERSION_TTL_SECONDS = 30 * 24 * 3600
+
+
+def _user_version_key(user_id):
+    return f"sh:{CACHE_SCHEMA_VERSION}:ver:user:{user_id}"
+
+
+def get_user_version(user_id):
+    """Current cache version for a user (0 if unset). Fails open to 0."""
+    try:
+        raw = redis_client.get(_user_version_key(user_id))
+        return int(raw) if raw is not None else 0
+    except Exception as e:
+        logger.warning(f"[CACHE] get_user_version failed for user={user_id}: {e}")
+        return 0
+
+
+def bump_user_version(user_id):
+    """Invalidate every `{uver}`-keyed entry for a user in O(1). Never raises."""
+    key = _user_version_key(user_id)
+    try:
+        redis_client.incr(key)
+        redis_client.expire(key, USER_VERSION_TTL_SECONDS)
+    except Exception as e:
+        logger.warning(f"[CACHE] bump_user_version failed for user={user_id}: {e}")
 
 
 # ============================================================================
@@ -283,12 +315,14 @@ def cached(key_template, ttl_seconds):
             
             bound = dict(zip(param_names, args))
             bound.update(kwargs)
+            if "{uver}" in key_template and "user_id" in bound:
+                bound["uver"] = get_user_version(bound["user_id"])
             
-            log.info(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
+            log.debug(f"[CACHE] WRAPPER: {func.__name__} called with args: {bound}")
             
             try:
                 key = key_template.format(**bound)
-                log.info(f"[CACHE] WRAPPER: generated key: {key}")
+                log.debug(f"[CACHE] WRAPPER: generated key: {key}")
             except (KeyError, IndexError) as e:
                 # A referenced placeholder wasn't supplied (e.g. called
                 # with fewer args than the template expects). Fail open —
@@ -302,25 +336,29 @@ def cached(key_template, ttl_seconds):
 
             cached_value = get(key)
             if cached_value is not None:
-                log.info(f"[CACHE] WRAPPER: {func.__name__} — CACHE HIT ✅")
+                log.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE HIT ✅")
                 return cached_value
 
-            log.info(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
+            log.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
             result = func(*args, **kwargs)
             
             if result is not None:
-                log.info(f"[CACHE] WRAPPER: {func.__name__} — caching result")
+                log.debug(f"[CACHE] WRAPPER: {func.__name__} — caching result")
                 set(key, result, ttl_seconds)
             else:
-                log.info(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
+                log.debug(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
             
             return result
 
         # Expose the underlying function and manual cache controls for
         # callers/tests that need to bypass or invalidate deliberately.
         wrapper.__wrapped_func__ = func
-        wrapper.cache_delete = lambda *a, **kw: delete(
-            key_template.format(**{**dict(zip(param_names, a)), **kw})
-        )
+        def _cache_delete(*a, **kw):
+            fmt = {**dict(zip(param_names, a)), **kw}
+            if "{uver}" in key_template and "user_id" in fmt:
+                fmt["uver"] = get_user_version(fmt["user_id"])
+            return delete(key_template.format(**fmt))
+
+        wrapper.cache_delete = _cache_delete
         return wrapper
     return decorator

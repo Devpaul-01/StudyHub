@@ -149,3 +149,38 @@ def test_cached_decorator_no_placeholders_fixed_key(fakeredis_client):
     compute()
     compute()
     assert call_count["n"] == 1
+
+
+# ============================================================================
+# per-user version keys
+# ============================================================================
+
+def test_user_version_defaults_to_zero_and_bumps(fakeredis_client):
+    assert cache_service.get_user_version(7) == 0
+    cache_service.bump_user_version(7)
+    cache_service.bump_user_version(7)
+    assert cache_service.get_user_version(7) == 2
+    assert cache_service.get_user_version(8) == 0
+    assert fakeredis_client.ttl("sh:1:ver:user:7") > 0
+
+
+def test_cached_decorator_uver_placeholder_invalidated_by_bump(fakeredis_client):
+    calls = []
+
+    @cache_service.cached("sh:1:test:{user_id}:v{uver}:{period}", ttl_seconds=60)
+    def compute(user_id, period):
+        calls.append((user_id, period))
+        return {"n": len(calls)}
+
+    assert compute(5, "w") == {"n": 1}
+    assert compute(5, "w") == {"n": 1}          # served from cache
+    cache_service.bump_user_version(5)
+    assert compute(5, "w") == {"n": 2}          # new version -> recompute
+    assert compute(6, "w") == {"n": 3}          # other user unaffected
+    cache_service.bump_user_version(5)
+    compute.cache_delete(5, "w")                # manual delete honours the version
+
+
+def test_user_version_helpers_fail_open(raising_redis_client):
+    assert cache_service.get_user_version(1) == 0
+    cache_service.bump_user_version(1)  # must not raise
