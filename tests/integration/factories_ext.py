@@ -24,7 +24,6 @@ def make_onboarding_details(db_session, user, **overrides):
 
     defaults = dict(
         user_id=user.id,
-        email=user.email,
         department=None,
         class_level=None,
         subjects=[],

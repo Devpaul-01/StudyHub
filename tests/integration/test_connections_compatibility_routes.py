@@ -59,14 +59,14 @@ class TestGetConnectionOverview:
         me = make_user()
         db_session.add(
             OnboardingDetails(
-                user_id=me.id, email=me.email,
+                user_id=me.id,
                 strong_subjects=["python"], help_subjects=[],
             )
         )
         target = make_user()
         db_session.add(
             OnboardingDetails(
-                user_id=target.id, email=target.email,
+                user_id=target.id,
                 strong_subjects=["python"], help_subjects=[],
             )
         )

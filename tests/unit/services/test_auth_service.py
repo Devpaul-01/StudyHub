@@ -112,14 +112,15 @@ def test_record_login_and_commit_normal_case(db_session, make_user):
 # finalize_password
 # ============================================================================
 
-def test_finalize_password_updates_user_and_profile_hash(db_session, make_user, make_student_profile):
+def test_finalize_password_stores_the_hash_on_the_user_only(db_session, make_user, make_student_profile):
     user = make_user(email="pw@example.com", email_verified=True)
     profile = make_student_profile(user)
 
     updated_user = auth_service.finalize_password("pw@example.com", "NewSecurePass123")
 
     assert check_password_hash(updated_user.pin, "NewSecurePass123")
-    assert check_password_hash(profile.pin, "NewSecurePass123")
+    # The duplicate credential copy on StudentProfile is gone.
+    assert not hasattr(profile, "pin")
 
 
 def test_finalize_password_no_profile_still_succeeds(db_session, make_user):

@@ -59,7 +59,6 @@ def make_student_profile(db_session, user, **overrides):
 
     defaults = dict(
         user_id=user.id,
-        pin=user.pin,
         full_name=user.name,
         department=overrides.pop("department", None),
         class_name=overrides.pop("class_name", None),

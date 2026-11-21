@@ -17,7 +17,6 @@ def _onboarding(db_session, user, **overrides):
 
     defaults = dict(
         user_id=user.id,
-        email=user.email,
         subjects=[],
         study_preferences=[],
         help_subjects=[],

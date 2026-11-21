@@ -182,9 +182,9 @@ def record_login_and_commit(user: User) -> User:
 
 def finalize_password(email: str, password: str) -> User:
     """
-    Hash `password` and write it to both User.pin and StudentProfile.pin
-    (the mirrored password-storage columns — see Document 1 §3.3's planned
-    pin -> password_hash rename, not yet applied).
+    Hash `password` and store it in User.pin (the password-hash column; its
+    planned rename to password_hash is still open). StudentProfile no longer
+    keeps a second copy.
 
     Raises LookupError if no verified user exists for `email`. Does not
     commit — caller (complete_registration / set_password routes) commits
@@ -195,13 +195,7 @@ def finalize_password(email: str, password: str) -> User:
     if not user:
         raise LookupError("User not found or email not verified")
 
-    hashed_password = generate_password_hash(password)
-    user.pin = hashed_password
-
-    student_profile = StudentProfile.query.filter_by(user_id=user.id).first()
-    if student_profile:
-        student_profile.pin = hashed_password
-
+    user.pin = generate_password_hash(password)
     return user
 
 

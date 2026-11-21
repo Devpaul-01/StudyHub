@@ -404,9 +404,6 @@ def google_callback():
         student_profile = StudentProfile(
             user_id=new_user.id,
             full_name=name,
-            date_of_birth=None,
-            pin=auth_service.PENDING_PIN,
-            status="incomplete",
             department="",
             class_name="",
         )
@@ -517,7 +514,7 @@ def onboard(email):
         student_profile = user.student_profile
         onboarding_details = OnboardingDetails.query.filter_by(user_id=user.id).first()
         if not onboarding_details:
-            onboarding_details = OnboardingDetails(user_id=user.id, email=user.email)
+            onboarding_details = OnboardingDetails(user_id=user.id)
             db.session.add(onboarding_details)
 
         if cleaned["name"]:
@@ -666,9 +663,6 @@ def register():
         db.session.add(StudentProfile(
             user_id=new_user.id,
             full_name=full_name,
-            date_of_birth=None,
-            pin=auth_service.PENDING_PIN,
-            status="incomplete",
             department="",
             class_name="",
         ))
@@ -1144,9 +1138,6 @@ def complete_registration():
         user.status   = "approved"
 
         student_profile = StudentProfile.query.filter_by(user_id=user.id).first()
-        if student_profile:
-            student_profile.username = username
-            student_profile.status   = "active"
 
         try:
             db.session.commit()

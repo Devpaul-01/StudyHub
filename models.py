@@ -443,7 +443,6 @@ class User(UserMixin, db.Model):
     bookmark_folders = db.Column(MutableList.as_mutable(db.JSON), default=list)
 
     joined_at  = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    last_login = db.Column(db.DateTime)
 
     # Relationships
     student_profile    = db.relationship('StudentProfile', backref='user', uselist=False, cascade="all, delete-orphan")
@@ -510,18 +509,13 @@ class StudentProfile(db.Model):
 
     id      = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
-    pin      = db.Column(db.String(200), nullable=False)
-    username = db.Column(db.String(50), unique=True, nullable=True, index=True)
+    # Credentials live on User only (pin, username, status). StudentProfile used
+    # to keep a second copy of each; the copies were never read.
 
     full_name  = db.Column(db.String(120), nullable=False)
     department = db.Column(db.String(100), nullable=True, index=True)
     class_name = db.Column(db.String(50),  nullable=True, index=True)
 
-    date_of_birth    = db.Column(db.Date, nullable=True)
-    guardian_name    = db.Column(db.String(120))
-    guardian_contact = db.Column(db.String(50))
-
-    status        = db.Column(db.String(50), default="active")
     registered_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
     __table_args__ = (
@@ -536,10 +530,9 @@ class OnboardingDetails(db.Model):
     __tablename__ = "onboarding_details"
 
     id      = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, unique=True)
-    email   = db.Column(db.String(120), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
 
-    department   = db.Column(db.String(50))
+    department   = db.Column(db.String(100))
     class_level  = db.Column(db.String(20))
 
     subjects          = db.Column(MutableList.as_mutable(db.JSON), default=list)
