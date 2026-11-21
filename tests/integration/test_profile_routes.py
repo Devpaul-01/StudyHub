@@ -124,8 +124,7 @@ class TestVisibilitySettings:
             json={
                 "set_profile_private": True,
                 "show_active_status": False,
-                "set_dark_mode": True,
-                "send_weekly_notification": False,
+                "show_in_activity_feed": False,
             },
             headers=headers,
         )
@@ -133,10 +132,84 @@ class TestVisibilitySettings:
 
         get_resp = client.get("/student/profile/visibility-settings", headers=auth_headers(user))
         data = get_resp.get_json()["data"]
+        assert data == {
+            "set_profile_private": True,
+            "show_active_status": False,
+            "show_in_activity_feed": False,
+        }
+
+    def test_partial_update_keeps_other_settings(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        """Regression: omitted keys used to be reset to their defaults."""
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        client.post(
+            "/student/profile/visibility-settings",
+            json={"set_profile_private": True, "show_active_status": False,
+                  "show_in_activity_feed": False},
+            headers=headers,
+        )
+
+        resp = client.post(
+            "/student/profile/visibility-settings",
+            json={"show_in_activity_feed": True},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+
+        data = client.get("/student/profile/visibility-settings",
+                          headers=auth_headers(user)).get_json()["data"]
         assert data["set_profile_private"] is True
         assert data["show_active_status"] is False
-        assert data["set_dark_mode"] is True
-        assert data["send_weekly_notification"] is False
+        assert data["show_in_activity_feed"] is True
+
+    @pytest.mark.parametrize("bad_value", ["false", "true", 1, 0, None, [], {}])
+    def test_rejects_non_boolean_values(
+        self, client, make_user, auth_headers, csrf_headers, bad_value
+    ):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post("/student/profile/visibility-settings",
+                           json={"set_profile_private": bad_value}, headers=headers)
+
+        assert resp.status_code == 400
+        data = client.get("/student/profile/visibility-settings",
+                          headers=auth_headers(user)).get_json()["data"]
+        assert data["set_profile_private"] is False
+
+    def test_rejects_unknown_empty_and_non_object_bodies(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        url = "/student/profile/visibility-settings"
+
+        assert client.post(url, json={"nope": True}, headers=headers).status_code == 400
+        assert client.post(url, json={}, headers=headers).status_code == 400
+        assert client.post(url, json=[True], headers=headers).status_code == 400
+        assert client.post(url, data="not json", headers=headers).status_code == 400
+
+    def test_legacy_keys_are_ignored_not_rejected(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post(
+            "/student/profile/visibility-settings",
+            json={"set_profile_private": True, "set_dark_mode": True,
+                  "send_weekly_notification": False},
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        data = client.get("/student/profile/visibility-settings",
+                          headers=auth_headers(user)).get_json()["data"]
+        assert "set_dark_mode" not in data
+        assert "send_weekly_notification" not in data
+        assert data["set_profile_private"] is True
 
 
 # ============================================================================
