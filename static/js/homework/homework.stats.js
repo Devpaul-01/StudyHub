@@ -8,7 +8,7 @@
 
 import { homeworkAPI } from './homework.api.js';
 import { homeworkState } from './homework.state.js';
-import { showHomeworkToast } from './homework.utils.js';
+import { showHomeworkToast, escapeHtml } from './homework.utils.js';
 import { renderStreakStats } from './homework.streak.js';
 import { renderChampionsInStats } from './homework.champions.js';
 
@@ -190,7 +190,7 @@ export function renderStatsDashboard(stats) {
             <div class="hw-subjects-list">
               ${subjects.my_subjects && subjects.my_subjects.length > 0 
                 ? subjects.my_subjects.map(subject => `
-                  <div class="hw-subject-tag">${subject}</div>
+                  <div class="hw-subject-tag">${escapeHtml(subject)}</div>
                 `).join('') 
                 : '<p class="hw-empty-message">No subjects yet</p>'}
             </div>
@@ -200,7 +200,7 @@ export function renderStatsDashboard(stats) {
             <div class="hw-subjects-list">
               ${subjects.helping_with && subjects.helping_with.length > 0 
                 ? subjects.helping_with.map(subject => `
-                  <div class="hw-subject-tag hw-subject-tag-helping">${subject}</div>
+                  <div class="hw-subject-tag hw-subject-tag-helping">${escapeHtml(subject)}</div>
                 `).join('') 
                 : '<p class="hw-empty-message">Not helping with any subjects yet</p>'}
             </div>
@@ -485,7 +485,7 @@ function renderSubjectCompletionBars(subjects) {
       ${display.map(s => `
         <div class="hw-subject-bar-row">
           <div class="hw-subject-bar-label">
-            <span class="hw-subject-bar-name">${s.subject}</span>
+            <span class="hw-subject-bar-name">${escapeHtml(s.subject)}</span>
             <span class="hw-subject-bar-rate">${s.rate}%</span>
           </div>
           <div class="hw-subject-bar-track">
@@ -546,7 +546,7 @@ function renderReactionDonut(reactions) {
           return `
             <div class="hw-donut-legend-item">
               <span class="hw-donut-dot" style="background: ${conf.color}"></span>
-              <span class="hw-donut-legend-label">${r.reaction}</span>
+              <span class="hw-donut-legend-label">${escapeHtml(r.reaction)}</span>
               <span class="hw-donut-legend-count">${r.count} <span class="hw-donut-pct">(${pct}%)</span></span>
             </div>
           `;

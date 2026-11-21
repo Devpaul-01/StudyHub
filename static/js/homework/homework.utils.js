@@ -6,6 +6,39 @@
  */
 
 /**
+ * Escape a value for safe interpolation into HTML text or a quoted attribute.
+ * Every server-supplied string rendered through innerHTML MUST go through this
+ * (titles, subjects, descriptions, names, solution/feedback text, filenames).
+ * null/undefined become ''. Numbers/booleans are stringified.
+ */
+export function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
+}
+
+/**
+ * Return the URL only if it is safe to put in href/src/iframe: http(s) or a
+ * same-site absolute path. Anything else (javascript:, data:, vbscript:, //host
+ * protocol-relative tricks, control characters) yields ''.
+ * The result is NOT escaped - wrap it with escapeHtml() when interpolating.
+ */
+export function safeUrl(url) {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  // Reject control characters / whitespace smuggling inside the scheme.
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^\/(?!\/)/.test(trimmed)) return trimmed;
+  return '';
+}
+
+/**
  * Format time until due
  */
 export function formatTimeUntilDue(hoursUntilDue) {
@@ -207,7 +240,7 @@ export function renderUserStatus(activeDetails) {
   }
   
   if (activeDetails.last_active) {
-    return `<span class="hw-user-status-offline">${activeDetails.last_active}</span>`;
+    return `<span class="hw-user-status-offline">${escapeHtml(activeDetails.last_active)}</span>`;
   }
   
   return '<span class="hw-user-status-offline">Offline</span>';

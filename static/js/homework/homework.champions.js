@@ -6,7 +6,7 @@
  */
 
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast } from './homework.utils.js';
+import { showHomeworkToast, escapeHtml, safeUrl } from './homework.utils.js';
 
 /**
  * Load current week's champions
@@ -78,12 +78,12 @@ function renderMostHelpful(champion) {
     <div class="champion-card champion-card-featured ${crownClass}">
       <div class="champion-badge">👑</div>
       <div class="champion-avatar-wrapper">
-        <img src="${champion.user.avatar || '/static/default-avatar.png'}" 
-             alt="${champion.user.name}" 
+        <img src="${escapeHtml(safeUrl(champion.user.avatar) || '/static/default-avatar.png')}" 
+             alt="${escapeHtml(champion.user.name)}" 
              class="champion-avatar" />
         ${champion.is_you ? '<div class="champion-you-badge">You!</div>' : ''}
       </div>
-      <div class="champion-name">${champion.user.name}</div>
+      <div class="champion-name">${escapeHtml(champion.user.name)}</div>
       <div class="champion-title">Most Helpful</div>
       <div class="champion-count">${champion.help_count} help${champion.help_count !== 1 ? 's' : ''}</div>
     </div>
@@ -107,13 +107,13 @@ function renderSubjectChampions(champions) {
       <div class="champion-card ${crownClass}">
         <div class="champion-subject-badge">${subjectEmoji}</div>
         <div class="champion-avatar-wrapper">
-          <img src="${champion.user.avatar || '/static/default-avatar.png'}" 
-               alt="${champion.user.name}" 
+          <img src="${escapeHtml(safeUrl(champion.user.avatar) || '/static/default-avatar.png')}" 
+               alt="${escapeHtml(champion.user.name)}" 
                class="champion-avatar" />
           ${champion.is_you ? '<div class="champion-you-badge">You!</div>' : ''}
         </div>
-        <div class="champion-name">${champion.user.name}</div>
-        <div class="champion-title">${champion.subject}</div>
+        <div class="champion-name">${escapeHtml(champion.user.name)}</div>
+        <div class="champion-title">${escapeHtml(champion.subject)}</div>
         <div class="champion-count">${champion.help_count} help${champion.help_count !== 1 ? 's' : ''}</div>
       </div>
     `;
@@ -132,12 +132,12 @@ function renderFastestHelper(champion) {
     <div class="champion-card ${crownClass}">
       <div class="champion-badge">⚡</div>
       <div class="champion-avatar-wrapper">
-        <img src="${champion.user.avatar || '/static/default-avatar.png'}" 
-             alt="${champion.user.name}" 
+        <img src="${escapeHtml(safeUrl(champion.user.avatar) || '/static/default-avatar.png')}" 
+             alt="${escapeHtml(champion.user.name)}" 
              class="champion-avatar" />
         ${champion.is_you ? '<div class="champion-you-badge">You!</div>' : ''}
       </div>
-      <div class="champion-name">${champion.user.name}</div>
+      <div class="champion-name">${escapeHtml(champion.user.name)}</div>
       <div class="champion-title">Fastest Helper</div>
       <div class="champion-count">${champion.help_count} response${champion.help_count !== 1 ? 's' : ''}</div>
     </div>
@@ -164,7 +164,7 @@ function renderYourProgress(progress, champions) {
         <div class="progress-hint">
           <span class="hint-icon">💡</span>
           <span class="hint-text">
-            ${closestChampion.gap} more help${closestChampion.gap !== 1 ? 's' : ''} in ${closestChampion.subject} 
+            ${closestChampion.gap} more help${closestChampion.gap !== 1 ? 's' : ''} in ${escapeHtml(closestChampion.subject)} 
             to become champion!
           </span>
         </div>
@@ -173,7 +173,7 @@ function renderYourProgress(progress, champions) {
       <div class="progress-breakdown">
         ${Object.entries(progress.by_subject).map(([subject, count]) => `
           <div class="progress-subject">
-            <span class="progress-subject-name">${getSubjectEmoji(subject)} ${subject}</span>
+            <span class="progress-subject-name">${getSubjectEmoji(subject)} ${escapeHtml(subject)}</span>
             <span class="progress-subject-count">${count}</span>
           </div>
         `).join('')}
@@ -304,8 +304,8 @@ function showChampionCelebration(championType, subject) {
   celebration.innerHTML = `
     <div class="celebration-content">
       <div class="celebration-crown">👑</div>
-      <h2 class="celebration-title">${title}</h2>
-      <p class="celebration-subtitle">${subtitle}</p>
+      <h2 class="celebration-title">${escapeHtml(title)}</h2>
+      <p class="celebration-subtitle">${escapeHtml(subtitle)}</p>
     </div>
   `;
   

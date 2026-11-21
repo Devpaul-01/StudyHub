@@ -7,7 +7,7 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, formatDate, getStatusBadgeClass, getStatusDisplayText } from './homework.utils.js';
+import { showHomeworkToast, formatDate, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl } from './homework.utils.js';
 import { renderResourceItem } from './homework.templates.js';
 
 /**
@@ -22,7 +22,7 @@ function renderSubmissionTimeline(submission) {
     icon: '🤝',
     title: 'Help Offered',
     time: formatDate(submission.created_at),
-    description: `${submission.helper?.name} offered to help`
+    description: `${escapeHtml(submission.helper?.name)} offered to help`
   });
 
   // Solution Submitted
@@ -113,18 +113,18 @@ export function renderSubmissionDetailHelper(submission) {
 
       <!-- Header -->
       <div class="hw-submission-header">
-        <h2 class="hw-submission-title">${submission.title}</h2>
+        <h2 class="hw-submission-title">${escapeHtml(submission.title)}</h2>
         
         <div class="hw-submission-meta">
           <div class="hw-submission-student">
             <img 
-              src="${submission.requester?.avatar || '/static/default-avatar.png'}" 
-              alt="${submission.requester?.name}"
+              src="${escapeHtml(safeUrl(submission.requester?.avatar) || '/static/default-avatar.png')}" 
+              alt="${escapeHtml(submission.requester?.name)}"
               class="hw-submission-avatar"
             />
             <div>
-              <div class="hw-submission-student-name">👤 Student: ${submission.requester?.name}</div>
-              ${submission.requester?.department ? `<div class="hw-submission-student-dept">${submission.requester.department}</div>` : ''}
+              <div class="hw-submission-student-name">👤 Student: ${escapeHtml(submission.requester?.name)}</div>
+              ${submission.requester?.department ? `<div class="hw-submission-student-dept">${escapeHtml(submission.requester.department)}</div>` : ''}
             </div>
           </div>
           
@@ -147,14 +147,14 @@ export function renderSubmissionDetailHelper(submission) {
       <div class="hw-submission-section">
         <h3 class="hw-section-title">📋 Assignment Details</h3>
         <div class="hw-assignment-details-box">
-          ${submission.difficulty ? `<div class="hw-detail-item"><strong>Difficulty:</strong> ${submission.difficulty}</div>` : ''}
-          ${submission.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${submission.subject}</div>` : ''}
+          ${submission.difficulty ? `<div class="hw-detail-item"><strong>Difficulty:</strong> ${escapeHtml(submission.difficulty)}</div>` : ''}
+          ${submission.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${escapeHtml(submission.subject)}</div>` : ''}
           ${submission.assignment?.estimated_hours ? `<div class="hw-detail-item"><strong>Estimated Time:</strong> ${submission.assignment.estimated_hours} hours</div>` : ''}
           
           ${submission.description ? `
             <div class="hw-detail-description">
               <strong>Description:</strong>
-              <p>${submission.description}</p>
+              <p>${escapeHtml(submission.description)}</p>
             </div>
           ` : ''}
         </div>
@@ -213,7 +213,7 @@ export function renderSubmissionDetailHelper(submission) {
         <div class="hw-submission-section">
           <h3 class="hw-section-title">✅ Your Solution</h3>
           <div class="hw-solution-display">
-            <p>${submission.solution.text}</p>
+            <p>${escapeHtml(submission.solution.text)}</p>
             
             ${submission.solution.resources && submission.solution.resources.length > 0 ? `
               <div class="hw-resources-list">
@@ -233,7 +233,7 @@ export function renderSubmissionDetailHelper(submission) {
         <div class="hw-submission-section">
           <h3 class="hw-section-title">💬 Student Feedback</h3>
           <div class="hw-feedback-display">
-            <p>${submission.feedback.text}</p>
+            <p>${escapeHtml(submission.feedback.text)}</p>
           </div>
           <div class="hw-feedback-time">
             Received ${formatDate(submission.feedback_at)}
@@ -266,18 +266,18 @@ export function renderSubmissionDetailRequester(submission) {
 
       <!-- Header -->
       <div class="hw-submission-header">
-        <h2 class="hw-submission-title">${submission.title}</h2>
+        <h2 class="hw-submission-title">${escapeHtml(submission.title)}</h2>
         
         <div class="hw-submission-meta">
           <div class="hw-submission-student">
             <img 
-              src="${submission.helper?.avatar || '/static/default-avatar.png'}" 
-              alt="${submission.helper?.name}"
+              src="${escapeHtml(safeUrl(submission.helper?.avatar) || '/static/default-avatar.png')}" 
+              alt="${escapeHtml(submission.helper?.name)}"
               class="hw-submission-avatar"
             />
             <div>
-              <div class="hw-submission-student-name">👤 Helper: ${submission.helper?.name}</div>
-              ${submission.helper?.department ? `<div class="hw-submission-student-dept">${submission.helper.department}</div>` : ''}
+              <div class="hw-submission-student-name">👤 Helper: ${escapeHtml(submission.helper?.name)}</div>
+              ${submission.helper?.department ? `<div class="hw-submission-student-dept">${escapeHtml(submission.helper.department)}</div>` : ''}
             </div>
           </div>
           
@@ -300,12 +300,12 @@ export function renderSubmissionDetailRequester(submission) {
       <div class="hw-submission-section">
         <h3 class="hw-section-title">📋 Your Assignment</h3>
         <div class="hw-assignment-details-box">
-          ${submission.difficulty ? `<div class="hw-detail-item"><strong>Difficulty:</strong> ${submission.difficulty}</div>` : ''}
-          ${submission.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${submission.subject}</div>` : ''}
+          ${submission.difficulty ? `<div class="hw-detail-item"><strong>Difficulty:</strong> ${escapeHtml(submission.difficulty)}</div>` : ''}
+          ${submission.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${escapeHtml(submission.subject)}</div>` : ''}
           
           ${submission.description ? `
             <div class="hw-detail-description">
-              <p>${submission.description}</p>
+              <p>${escapeHtml(submission.description)}</p>
             </div>
           ` : ''}
         </div>
@@ -314,13 +314,13 @@ export function renderSubmissionDetailRequester(submission) {
       ${submission.solution?.text ? `
         <!-- Helper's Solution -->
         <div class="hw-submission-section">
-          <h3 class="hw-section-title">✅ ${submission.helper?.name}'s Solution</h3>
+          <h3 class="hw-section-title">✅ ${escapeHtml(submission.helper?.name)}'s Solution</h3>
           <div class="hw-solution-submitted-time">
             Submitted ${formatDate(submission.submitted_at)}
           </div>
           
           <div class="hw-solution-display">
-            <p>${submission.solution.text}</p>
+            <p>${escapeHtml(submission.solution.text)}</p>
             
             ${submission.solution.resources && submission.solution.resources.length > 0 ? `
               <div class="hw-resources-list">
@@ -397,7 +397,7 @@ export function renderSubmissionDetailRequester(submission) {
           <div class="hw-submission-section">
             <h3 class="hw-section-title">💬 Your Feedback</h3>
             <div class="hw-feedback-display">
-              <p>${submission.feedback.text}</p>
+              <p>${escapeHtml(submission.feedback.text)}</p>
             </div>
             <div class="hw-feedback-time">
               Given ${formatDate(submission.feedback_at)}
@@ -413,7 +413,7 @@ export function renderSubmissionDetailRequester(submission) {
               <polyline points="12 6 12 12 16 14"/>
             </svg>
             <h3>Waiting for Solution</h3>
-            <p>${submission.helper?.name} is working on your assignment</p>
+            <p>${escapeHtml(submission.helper?.name)} is working on your assignment</p>
           </div>
         </div>
       `}
@@ -484,7 +484,7 @@ export async function openSubmissionDetailModal(submissionId) {
     console.error('Error loading submission:', error);
     modalBody.innerHTML = `
       <div class="hw-error-state">
-        <p>${error.message || 'Failed to load submission details'}</p>
+        <p>${escapeHtml(error.message || 'Failed to load submission details')}</p>
         <button class="hw-btn hw-btn-primary" data-action="close-homework-modal" data-modal-id="hw-submission-detail-modal">
           Close
         </button>

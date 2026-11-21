@@ -8,7 +8,7 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, getFileType } from './homework.utils.js';
+import { showHomeworkToast, getFileType, escapeHtml, safeUrl } from './homework.utils.js';
 import { refreshCurrentTab } from './homework.render.js';
 import { renderResourceItem } from './homework.templates.js';
 
@@ -653,19 +653,27 @@ export function viewResource(url, type) {
     downloadBtn.dataset.url = url;
   }
 
+  // Only http(s)/same-site URLs may reach src attributes (blocks javascript:/data: URLs)
+  const safeResourceUrl = safeUrl(url);
+  if (!safeResourceUrl) {
+    showHomeworkToast('This file link is not supported', 'error');
+    return;
+  }
+  const escapedUrl = escapeHtml(safeResourceUrl);
+
   // Render preview based on type
   if (type === 'image') {
-    container.innerHTML = `<img src="${url}" alt="Resource preview" class="hw-resource-preview-image" />`;
+    container.innerHTML = `<img src="${escapedUrl}" alt="Resource preview" class="hw-resource-preview-image" />`;
   } else if (type === 'video') {
     container.innerHTML = `
       <video controls class="hw-resource-preview-video">
-        <source src="${url}" type="video/mp4">
+        <source src="${escapedUrl}" type="video/mp4">
         Your browser does not support video playback.
       </video>
     `;
   } else if (type === 'pdf' || type === 'document') {
     container.innerHTML = `
-      <iframe src="${url}" class="hw-resource-preview-iframe"></iframe>
+      <iframe src="${escapedUrl}" class="hw-resource-preview-iframe"></iframe>
     `;
   } else {
     container.innerHTML = `
@@ -688,8 +696,14 @@ export function viewResource(url, type) {
  * Download resource
  */
 export function downloadResource(url) {
+  const safe = safeUrl(url);
+  if (!safe) {
+    showHomeworkToast('This file link is not supported', 'error');
+    return;
+  }
   const link = document.createElement('a');
-  link.href = url;
+  link.href = safe;
+  link.rel = 'noopener noreferrer';
   link.download = '';
   link.target = '_blank';
   document.body.appendChild(link);
@@ -737,9 +751,9 @@ export function downloadResource(url) {
     <div class="hw-details-content">
       <!-- Title & Status -->
       <div class="hw-details-header">
-        <h3 class="hw-details-title">${homework.title}</h3>
+        <h3 class="hw-details-title">${escapeHtml(homework.title)}</h3>
         ${homework.already_helping ? `
-          <span class="hw-badge hw-badge-${homework.my_help_status}">
+          <span class="hw-badge hw-badge-${escapeHtml(homework.my_help_status)}">
             ${getStatusDisplayText(homework.my_help_status)}
           </span>
         ` : ''}
@@ -747,8 +761,8 @@ export function downloadResource(url) {
 
       <!-- Meta Info -->
       <div class="hw-details-meta">
-        ${homework.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${homework.subject}</div>` : ''}
-        <div class="hw-detail-item"><strong>Difficulty:</strong> ${homework.difficulty}</div>
+        ${homework.subject ? `<div class="hw-detail-item"><strong>Subject:</strong> ${escapeHtml(homework.subject)}</div>` : ''}
+        <div class="hw-detail-item"><strong>Difficulty:</strong> ${escapeHtml(homework.difficulty)}</div>
         <div class="hw-detail-item"><strong>Due Date:</strong> ${formatDate(homework.due_date)}</div>
         <div class="hw-detail-item"><strong>Estimated Time:</strong> ${homework.estimated_hours ? homework.estimated_hours + ' hours' : 'Not specified'}</div>
         ${homework.help_count > 0 ? `<div class="hw-detail-item"><strong>Helpers:</strong> ${homework.help_count}</div>` : ''}
@@ -757,16 +771,16 @@ export function downloadResource(url) {
       ${homework.description ? `
         <div class="hw-details-section">
           <h4>Description</h4>
-          <p>${homework.description}</p>
+          <p>${escapeHtml(homework.description)}</p>
         </div>
       ` : ''}
 
       <!-- Student Info -->
       <div class="hw-details-student">
-        <img src="${homework.student?.avatar || '/static/default-avatar.png'}" class="hw-party-avatar" alt="${homework.student?.name}" />
+        <img src="${escapeHtml(safeUrl(homework.student?.avatar) || '/static/default-avatar.png')}" class="hw-party-avatar" alt="${escapeHtml(homework.student?.name)}" />
         <div>
-          <div class="hw-party-name">${homework.student?.name}</div>
-          ${homework.student?.department ? `<div class="hw-party-meta">${homework.student.department}</div>` : ''}
+          <div class="hw-party-name">${escapeHtml(homework.student?.name)}</div>
+          ${homework.student?.department ? `<div class="hw-party-meta">${escapeHtml(homework.student.department)}</div>` : ''}
         </div>
       </div>
 
@@ -776,7 +790,7 @@ export function downloadResource(url) {
           <h4>Your Submission</h4>
           ${submission.solution?.text ? `
             <div class="hw-solution-display">
-              <p>${submission.solution.text}</p>
+              <p>${escapeHtml(submission.solution.text)}</p>
               ${submission.solution.resources?.length > 0 ? `
                 <div class="hw-resources-list">
                   ${submission.solution.resources.map((r, i) => renderResourceItem(r, i)).join('')}

@@ -7,7 +7,7 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, getStatusBadgeClass, getStatusDisplayText } from './homework.utils.js';
+import { showHomeworkToast, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl } from './homework.utils.js';
 import { refreshCurrentTab, updateAssignmentCard, removeAssignmentCard } from './homework.render.js';
 import { renderResourceItem } from './homework.templates.js';
 import {
@@ -118,18 +118,18 @@ function openHelpersModal(assignment, helpers, totalHelpers) {
     <!-- Assignment Details Section -->
     <div class="hw-assignment-details">
       <div class="hw-assignment-header">
-        <h4 class="hw-assignment-title">${assignment.title}</h4>
-        <span class="hw-badge hw-badge-${assignment.status}">${formatStatus(assignment.status)}</span>
+        <h4 class="hw-assignment-title">${escapeHtml(assignment.title)}</h4>
+        <span class="hw-badge hw-badge-${escapeHtml(assignment.status)}">${escapeHtml(formatStatus(assignment.status))}</span>
       </div>
       
       <div class="hw-assignment-meta">
         <div class="hw-meta-item">
           <span class="hw-meta-label">Subject:</span>
-          <span class="hw-meta-value">${assignment.subject || 'N/A'}</span>
+          <span class="hw-meta-value">${escapeHtml(assignment.subject || 'N/A')}</span>
         </div>
         <div class="hw-meta-item">
           <span class="hw-meta-label">Difficulty:</span>
-          <span class="hw-meta-value hw-difficulty-${assignment.difficulty}">${assignment.difficulty || 'N/A'}</span>
+          <span class="hw-meta-value hw-difficulty-${escapeHtml(assignment.difficulty)}">${escapeHtml(assignment.difficulty || 'N/A')}</span>
         </div>
         <div class="hw-meta-item">
           <span class="hw-meta-label">Due Date:</span>
@@ -151,45 +151,45 @@ function openHelpersModal(assignment, helpers, totalHelpers) {
         <div class="hw-helper-item">
           <div class="hw-helper-main">
             <img  data-action='view-avatar'
-              src="${helper.helper?.avatar || '/static/default-avatar.png'}" 
-              alt="${helper.helper?.name}"
+              src="${escapeHtml(safeUrl(helper.helper?.avatar) || '/static/default-avatar.png')}" 
+              alt="${escapeHtml(helper.helper?.name)}"
               class="hw-helper-avatar"
             />
             <div class="hw-helper-info">
               <div class="hw-helper-name-row">
-                <span class="hw-helper-name">${helper.helper?.name || 'Unknown'}</span>
+                <span class="hw-helper-name">${escapeHtml(helper.helper?.name || 'Unknown')}</span>
                 ${helper.is_marked_helpful ? `
                   <span class="hw-helper-badge hw-badge-helpful" title="Marked as helpful">
                     ⭐ Helpful
                   </span>
                 ` : ''}
                 ${helper.reaction_type ? `
-                  <span class="hw-helper-badge hw-badge-reaction" title="Reaction: ${helper.reaction_type}">
+                  <span class="hw-helper-badge hw-badge-reaction" title="Reaction: ${escapeHtml(helper.reaction_type)}">
                     ${helper.reaction_type === 'lifesaver' ? '🏆' : '👍'}
                   </span>
                 ` : ''}
               </div>
-              <div class="hw-helper-username">@${helper.helper?.username || 'unknown'}</div>
+              <div class="hw-helper-username">@${escapeHtml(helper.helper?.username || 'unknown')}</div>
             </div>
           </div>
 
           <div class="hw-helper-details">
             <div class="hw-helper-detail-row">
               <span class="hw-detail-label">Status:</span>
-              <span class="hw-badge hw-badge-${helper.status}">${formatStatus(helper.status)}</span>
+              <span class="hw-badge hw-badge-${escapeHtml(helper.status)}">${escapeHtml(formatStatus(helper.status))}</span>
             </div>
             
             ${helper.subject ? `
               <div class="hw-helper-detail-row">
                 <span class="hw-detail-label">Subject:</span>
-                <span class="hw-detail-value">${helper.subject}</span>
+                <span class="hw-detail-value">${escapeHtml(helper.subject)}</span>
               </div>
             ` : ''}
 
             ${helper.difficulty ? `
               <div class="hw-helper-detail-row">
                 <span class="hw-detail-label">Difficulty:</span>
-                <span class="hw-detail-value hw-difficulty-${helper.difficulty}">${helper.difficulty}</span>
+                <span class="hw-detail-value hw-difficulty-${escapeHtml(helper.difficulty)}">${escapeHtml(helper.difficulty)}</span>
               </div>
             ` : ''}
 
@@ -440,9 +440,9 @@ function openSubmissionDetailsModal(submission) {
     <div class="hw-submission-details">
       <!-- Header Section -->
       <div class="hw-submission-header">
-        <h3 class="hw-submission-title">${submission.title}</h3>
+        <h3 class="hw-submission-title">${escapeHtml(submission.title)}</h3>
         <span class="hw-badge ${getStatusBadgeClass(submission.status)}">
-          ${formatStatus(submission.status)}
+          ${escapeHtml(formatStatus(submission.status))}
         </span>
       </div>
 
@@ -456,7 +456,7 @@ function openSubmissionDetailsModal(submission) {
           <div class="hw-assignment-info-row">
             <span class="hw-info-label">Assignment Status:</span>
             <span class="hw-badge ${getStatusBadgeClass(submission.assignment.status)}">
-              ${formatStatus(submission.assignment.status)}
+              ${escapeHtml(formatStatus(submission.assignment.status))}
             </span>
           </div>
         </div>
@@ -475,15 +475,15 @@ function openSubmissionDetailsModal(submission) {
           ${submission.requester ? `
             <div class="hw-party-info">
               <img 
-                src="${submission.requester.avatar || '/static/images/default-avatar.png'}" 
-                alt="${submission.requester.name}"
+                src="${escapeHtml(safeUrl(submission.requester.avatar) || '/static/images/default-avatar.png')}" 
+                alt="${escapeHtml(submission.requester.name)}"
                 class="hw-party-avatar"
               />
               <div class="hw-party-details">
-                <div class="hw-party-name">${submission.requester.name}</div>
-                <div class="hw-party-meta">@${submission.requester.username}</div>
+                <div class="hw-party-name">${escapeHtml(submission.requester.name)}</div>
+                <div class="hw-party-meta">@${escapeHtml(submission.requester.username)}</div>
                 ${submission.requester.department ? `
-                  <div class="hw-party-meta">${submission.requester.department}</div>
+                  <div class="hw-party-meta">${escapeHtml(submission.requester.department)}</div>
                 ` : ''}
               </div>
             </div>
@@ -502,15 +502,15 @@ function openSubmissionDetailsModal(submission) {
           ${submission.helper ? `
             <div class="hw-party-info">
               <img 
-                src="${submission.helper.avatar || '/static/images/default-avatar.png'}" 
-                alt="${submission.helper.name}"
+                src="${escapeHtml(safeUrl(submission.helper.avatar) || '/static/images/default-avatar.png')}" 
+                alt="${escapeHtml(submission.helper.name)}"
                 class="hw-party-avatar"
               />
               <div class="hw-party-details">
-                <div class="hw-party-name">${submission.helper.name}</div>
-                <div class="hw-party-meta">@${submission.helper.username}</div>
+                <div class="hw-party-name">${escapeHtml(submission.helper.name)}</div>
+                <div class="hw-party-meta">@${escapeHtml(submission.helper.username)}</div>
                 ${submission.helper.department ? `
-                  <div class="hw-party-meta">${submission.helper.department}</div>
+                  <div class="hw-party-meta">${escapeHtml(submission.helper.department)}</div>
                 ` : ''}
                 ${submission.helper.active_details ? `
                   <div class="hw-party-status ${submission.helper.active_details.is_online ? 'hw-status-online' : ''}">
@@ -529,15 +529,15 @@ function openSubmissionDetailsModal(submission) {
         ${submission.subject ? `
           <div class="hw-meta-card">
             <div class="hw-meta-label">Subject</div>
-            <div class="hw-meta-value">${submission.subject}</div>
+            <div class="hw-meta-value">${escapeHtml(submission.subject)}</div>
           </div>
         ` : ''}
         
         ${submission.difficulty ? `
           <div class="hw-meta-card">
             <div class="hw-meta-label">Difficulty</div>
-            <div class="hw-meta-value hw-difficulty-${submission.difficulty}">
-              ${submission.difficulty}
+            <div class="hw-meta-value hw-difficulty-${escapeHtml(submission.difficulty)}">
+              ${escapeHtml(submission.difficulty)}
             </div>
           </div>
         ` : ''}
@@ -562,7 +562,7 @@ function openSubmissionDetailsModal(submission) {
             <h4>Description</h4>
           </div>
           <div class="hw-section-content">
-            <p>${submission.description}</p>
+            <p>${escapeHtml(submission.description)}</p>
           </div>
         </div>
       ` : ''}
@@ -580,7 +580,7 @@ function openSubmissionDetailsModal(submission) {
             ` : ''}
           </div>
           <div class="hw-section-content">
-            <p>${submission.solution.text}</p>
+            <p>${escapeHtml(submission.solution.text)}</p>
             
             ${submission.solution.resources && submission.solution.resources.length > 0 ? `
               <div class="hw-resources-section">
@@ -618,7 +618,7 @@ function openSubmissionDetailsModal(submission) {
             ` : ''}
           </div>
           <div class="hw-section-content">
-            <p>${submission.feedback.text}</p>
+            <p>${escapeHtml(submission.feedback.text)}</p>
             
             ${submission.feedback.resources && submission.feedback.resources.length > 0 ? `
               <div class="hw-resources-section">

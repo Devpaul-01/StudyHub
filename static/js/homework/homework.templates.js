@@ -15,7 +15,9 @@ import {
   formatDate,
   getFileTypeIcon,
   renderUserStatus,
-  truncateText
+  truncateText,
+  escapeHtml,
+  safeUrl
 } from './homework.utils.js';
 function renderResourcesSection(resources) {
   if (!resources || resources.length === 0) return '';
@@ -34,12 +36,12 @@ function renderResourcesSection(resources) {
           <button 
             class="hw-resource-thumb" 
             data-action="view-resource" 
-            data-resource-url="${resource.url}" 
-            data-resource-type="${resource.type}"
-            title="${resource.filename || 'Resource'}"
+            data-resource-url="${escapeHtml(safeUrl(resource.url))}" 
+            data-resource-type="${escapeHtml(resource.type)}"
+            title="${escapeHtml(resource.filename || 'Resource')}"
           >
             ${resource.type === 'image' ? `
-              <img src="${resource.url}" alt="${resource.filename}" />
+              <img src="${escapeHtml(safeUrl(resource.url))}" alt="${escapeHtml(resource.filename)}" />
             ` : `
               <div class="hw-resource-icon">
                 ${getFileTypeIcon(resource.type)}
@@ -210,7 +212,7 @@ export function renderMyHomeworkCard(assignment) {
     <div class="hw-card ${assignment.is_overdue ? 'hw-card-overdue' : ''}" data-assignment-id="${assignment.id}">
       <div class="hw-card-header">
         <div class="hw-card-title-row">
-          <h3 class="hw-card-title">${assignment.title}</h3>
+          <h3 class="hw-card-title">${escapeHtml(assignment.title)}</h3>
           <button class="hw-card-options-btn" data-action="toggle-homework-options" data-assignment-id="${assignment.id}">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="1"/>
@@ -221,7 +223,7 @@ export function renderMyHomeworkCard(assignment) {
         </div>
         
         <div class="hw-card-meta">
-          ${assignment.subject ? `<span class="hw-card-subject">${assignment.subject}</span>` : ''}
+          ${assignment.subject ? `<span class="hw-card-subject">${escapeHtml(assignment.subject)}</span>` : ''}
           <span class="hw-badge ${difficultyClass}">
             ${getDifficultyEmoji(assignment.difficulty)} ${assignment.difficulty}
           </span>
@@ -232,7 +234,7 @@ export function renderMyHomeworkCard(assignment) {
       </div>
 
       ${assignment.description ? `
-        <p class="hw-card-description">${truncateText(assignment.description, 120)}</p>
+        <p class="hw-card-description">${escapeHtml(truncateText(assignment.description, 120))}</p>
       ` : ''}
       ${renderResourcesSection(assignment.resources)}
 
@@ -345,11 +347,11 @@ export function renderConnectionsHomeworkCard(hw) {
   
   <div class="hw-card-header">
     <div class="hw-card-title-row">
-      <h3 class="hw-card-title">${hw.title}</h3>
+      <h3 class="hw-card-title">${escapeHtml(hw.title)}</h3>
     </div>
 
     <div class="hw-card-meta">  
-      ${hw.subject ? `<span class="hw-card-subject">${hw.subject}</span>` : ''}  
+      ${hw.subject ? `<span class="hw-card-subject">${escapeHtml(hw.subject)}</span>` : ''}  
       <span class="hw-badge ${difficultyClass}">  
         ${getDifficultyEmoji(hw.difficulty)} ${hw.difficulty}  
       </span>  
@@ -357,24 +359,24 @@ export function renderConnectionsHomeworkCard(hw) {
   </div>  
 
   ${hw.description ? `  
-    <p class="hw-card-description">${truncateText(hw.description, 120)}</p>  
+    <p class="hw-card-description">${escapeHtml(truncateText(hw.description, 120))}</p>  
   ` : ''}  
 
   ${renderResourcesSection(hw.resources)}  
 
   <div class="hw-student-info">  
     <img   
-      src="${hw.student?.avatar || '/static/default-avatar.png'}"   
-      alt="${hw.student?.name}"  
+      src="${escapeHtml(safeUrl(hw.student?.avatar) || '/static/default-avatar.png')}"   
+      alt="${escapeHtml(hw.student?.name)}"  
       data-action="view-avatar"  
       class="hw-student-avatar"  
     />  
 
     <div class="hw-student-details">  
-      <div class="hw-student-name">${hw.student?.name || 'Unknown'}</div>  
+      <div class="hw-student-name">${escapeHtml(hw.student?.name || 'Unknown')}</div>  
 
       <div class="hw-student-meta">  
-        ${hw.student?.department ? `<span>${hw.student.department}</span> • ` : ''}  
+        ${hw.student?.department ? `<span>${escapeHtml(hw.student.department)}</span> • ` : ''}  
         ${renderUserStatus(hw.student?.active_details)}  
       </div>  
     </div>  
@@ -500,20 +502,20 @@ export function renderMyHelpRequestsList(helpRequests) {
     <div class="hw-card" data-action="open-submission-detail" data-submission-id="${req.id}" style="cursor:pointer;">
       <div class="hw-card-header">
         <div class="hw-card-title-row">
-          <h3 class="hw-card-title">${req.title || 'Untitled assignment'}</h3>
+          <h3 class="hw-card-title">${escapeHtml(req.title || 'Untitled assignment')}</h3>
           <span class="hw-badge ${getStatusBadgeClass(req.status)}">${getStatusDisplayText(req.status)}</span>
         </div>
         <div class="hw-card-meta">
-          ${req.subject ? `<span class="hw-card-subject">${req.subject}</span>` : ''}
+          ${req.subject ? `<span class="hw-card-subject">${escapeHtml(req.subject)}</span>` : ''}
         </div>
       </div>
       <div class="hw-student-info">
-        <img src="${req.helper?.avatar || '/static/default-avatar.png'}" alt="${req.helper?.name || ''}"
+        <img src="${escapeHtml(safeUrl(req.helper?.avatar) || '/static/default-avatar.png')}" alt="${escapeHtml(req.helper?.name || '')}"
              data-action="view-avatar" class="hw-student-avatar" />
         <div class="hw-student-details">
-          <div class="hw-student-name">${req.helper?.name || 'Unknown'} offered to help</div>
+          <div class="hw-student-name">${escapeHtml(req.helper?.name || 'Unknown')} offered to help</div>
           <div class="hw-student-meta">
-            ${req.helper?.department ? `<span>${req.helper.department}</span> • ` : ''}
+            ${req.helper?.department ? `<span>${escapeHtml(req.helper.department)}</span> • ` : ''}
             ${renderUserStatus(req.helper?.active_details)}
           </div>
         </div>
@@ -542,22 +544,22 @@ export function renderHelpingWithList(helpingWith) {
     <div class="hw-card" data-action="open-submission-detail" data-submission-id="${hw.id}" style="cursor:pointer;">
       <div class="hw-card-header">
         <div class="hw-card-title-row">
-          <h3 class="hw-card-title">${hw.title || 'Untitled assignment'}</h3>
+          <h3 class="hw-card-title">${escapeHtml(hw.title || 'Untitled assignment')}</h3>
           <span class="hw-badge ${getStatusBadgeClass(hw.status)}">${getStatusDisplayText(hw.status)}</span>
         </div>
         <div class="hw-card-meta">
-          ${hw.subject ? `<span class="hw-card-subject">${hw.subject}</span>` : ''}
+          ${hw.subject ? `<span class="hw-card-subject">${escapeHtml(hw.subject)}</span>` : ''}
           ${hw.difficulty ? `<span class="hw-badge ${getDifficultyBadgeClass(hw.difficulty)}">${getDifficultyEmoji(hw.difficulty)} ${hw.difficulty}</span>` : ''}
         </div>
       </div>
-      ${hw.description ? `<p class="hw-card-description">${truncateText(hw.description, 120)}</p>` : ''}
+      ${hw.description ? `<p class="hw-card-description">${escapeHtml(truncateText(hw.description, 120))}</p>` : ''}
       <div class="hw-student-info">
-        <img src="${hw.student?.avatar || '/static/default-avatar.png'}" alt="${hw.student?.name || ''}"
+        <img src="${escapeHtml(safeUrl(hw.student?.avatar) || '/static/default-avatar.png')}" alt="${escapeHtml(hw.student?.name || '')}"
              data-action="view-avatar" class="hw-student-avatar" />
         <div class="hw-student-details">
-          <div class="hw-student-name">Helping ${hw.student?.name || 'Unknown'}</div>
+          <div class="hw-student-name">Helping ${escapeHtml(hw.student?.name || 'Unknown')}</div>
           <div class="hw-student-meta">
-            ${hw.student?.department ? `<span>${hw.student.department}</span> • ` : ''}
+            ${hw.student?.department ? `<span>${escapeHtml(hw.student.department)}</span> • ` : ''}
             ${renderUserStatus(hw.student?.active_details)}
           </div>
         </div>
@@ -642,11 +644,11 @@ export function renderResourceItem(resource, index, isEdit = false) {
     <div class="hw-resource-item" data-resource-index="${index}">
       <div class="hw-resource-icon">${getFileTypeIcon(resource.type)}</div>
       <div class="hw-resource-info">
-        <div class="hw-resource-name">${resource.filename || resource.name}</div>
-        <div class="hw-resource-size">${resource.type}</div>
+        <div class="hw-resource-name">${escapeHtml(resource.filename || resource.name)}</div>
+        <div class="hw-resource-size">${escapeHtml(resource.type)}</div>
       </div>
       <div class="hw-resource-actions">
-        <button class="hw-resource-view-btn" data-action="view-resource" data-resource-url="${resource.url}" data-resource-type="${resource.type}">
+        <button class="hw-resource-view-btn" data-action="view-resource" data-resource-url="${escapeHtml(safeUrl(resource.url))}" data-resource-type="${escapeHtml(resource.type)}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
             <circle cx="12" cy="12" r="3"/>
