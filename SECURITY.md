@@ -68,46 +68,89 @@ the mitigation if one leaks.
 every use, and revocable. A `family_id` ties together every token descended from one login, which
 is what makes revoking a whole family possible.
 
-Rotation with reuse detection works like this: every `/refresh-token` call marks the presented
-token used and issues a new one in the same family. If an already-used token shows up again,
-`auth_service.rotate_refresh_token()` checks the timing. Within 10 seconds of its own rotation, it's
-treated as two open tabs racing to refresh at the same moment — the caller gets a fresh access
-token without a new refresh rotation. Outside that window, it's treated as a compromised token
-being replayed, and the entire family gets revoked server-side. Every session descended from that
-original login has to log in again.
+Rotation with reuse detection works like this: every `/refresh-token` call revokes the presented
+token and issues a new one in the same family. Revocation is a single compare-and-set
+(`UPDATE ... WHERE revoked = false`), so two requests presenting the same token at the same moment
+(two tabs, or two app instances) cannot both rotate it. The loser is handled like any reuse:
+`auth_service.rotate_refresh_token()` checks the timing. Within 10 seconds of the rotation it is
+treated as two open tabs racing — the caller gets a fresh access token without a new refresh
+rotation. Outside that window it is treated as a compromised token being replayed, and the entire
+family is revoked server-side. Every session descended from that login has to log in again.
 
-### 1.4 Email verification and password reset — single-use, DB-backed
+The account is checked **before** the token is rotated (a rejected account does not burn its
+token). Accounts that are still registering with a verified email may refresh, so a 30-minute
+access token does not strand someone half-way through onboarding; what such users may *call* is
+limited by the account-status gate (§1.7). A password reset revokes every refresh token of the user.
+
+### 1.4 Email verification and password reset — hashed, single-use, atomic
 
 Both flows use opaque, single-use, database-backed tokens (`EmailVerificationToken`,
-`PasswordResetToken`) instead of a signed JWT the server can't invalidate individually. This one's
-a direct fix for Finding #3 (marked Important). Email verification used to issue a stateless JWT
-good for its full 5-hour life, and it didn't matter how many times it got used — plus successful
-verification auto-logs the user in. So a verification email that got forwarded, or cached by a
-link-preview bot, or leaked any other way, was a live session-hijack vector for the whole 5 hours,
-not a one-time link like it looked. Tokens now get marked used the moment they're consumed, so a
-replayed link just fails on the second attempt.
+`PasswordResetToken`) instead of a signed JWT the server can't invalidate individually.
 
-Password reset splits peeking from consuming on purpose. `GET /verify-reset/<token>` does a
-read-only validity check (`is_valid()`) so a reset link can be opened or previewed without burning
-it. The token only actually gets marked used inside `set_password()`, right when a new password is
-written. This sidesteps a real class of bug: email clients and chat apps routinely pre-fetch
-links, and if opening the link consumed the token, a preview fetch could silently burn a one-time
-token before the actual user ever clicked it.
+* **Hashed at rest.** Only the SHA-256 of the token is stored (`token_hash`); the raw value exists
+  only in the emailed link, so a database leak does not yield usable links.
+* **Atomic single use.** Spending a token is one conditional `UPDATE ... WHERE used = false AND
+  expires_at > now`. Two simultaneous requests (double click, two instances) cannot both succeed.
+  The consume functions do not commit: the password change, the token use and the revocation of
+  sessions share one transaction, so a failure leaves the link unspent instead of burned.
+* **One live token per user and purpose.** Issuing a token invalidates the user's earlier unused
+  ones; a successful reset invalidates the rest.
+* **Lifetimes.** Reset links: 1 hour. Verification links: 5 hours.
+* **Peek vs consume.** `GET/POST /verify-reset/<token>` is a read-only check, so opening or
+  previewing a link does not burn it (mail clients and chat apps pre-fetch links). The token is
+  spent by `set_password()` when the new password is written.
+* **A reset ends all sessions.** `set_password()` revokes every refresh token of the user.
+* **Replayed verification links** only get a friendly answer in the browser that is already signed
+  in as that user; anyone else is told to sign in or request a new link.
+* **Links are built from `PUBLIC_BASE_URL`**, never from request headers
+  (`helpers.public_url`), so a forged `Host`/`X-Forwarded-Host` cannot make us email a link to
+  another domain.
 
-### 1.5 Registration hardening
+### 1.5 Registration, recovery and Google sign-in
 
-Registration accepts a client-supplied `google_verified` flag, but that flag alone doesn't get
-trusted. `register()` also checks that the server-side OAuth session (`session["google_email"]`)
-actually matches the submitted email before treating the registration as Google-verified. Without
-that check, anyone could POST `{"google_verified": true}` directly and skip email verification
-with zero proof they ever did Google OAuth for that address.
+**Uniform answers (no account enumeration).** `POST /register` answers identically for a new
+address, an unfinished registration and an active account; "forgot password" answers identically
+for known and unknown accounts; login answers "Invalid credentials" for an unknown account, a wrong
+password and an account that has no password, and does a dummy hash for unknown accounts so timing
+is similar. An account's state ("verify your email") is only described to someone who proved the
+password. (`check-username` is an availability oracle by nature and has its own rate tier.)
 
-A related fix (Finding #5) clears the transient OAuth session state (`google_email`/`google_name`/
-`google_id`) on every completed auth event server-side — login, onboarding save, registration —
-instead of counting on the frontend to call a separate clear-session endpoint. Left uncleared, a
-stale `google_email` from an abandoned OAuth attempt, or from a previous user on a shared device,
-would keep working as an authorization proof for onboarding/registration routes on an unrelated
-email.
+**Recovery.** Signing up again with an address whose registration was never finished sends a fresh
+link (earlier links stop working); `POST /resend-verification` does the same. A user who verified
+their email but never chose a username can use "forgot password" and then log in: a correct
+password for a verified, still-registering account signs them in and sends them to
+`/student/complete-registration`. Nobody is locked out of their own registration.
+
+**Partial failures.** User, profile and token are committed together and only then is the email
+queued. If the queue is down the request fails with 503 and the account is not stranded: signing up
+again sends a new link. Abandoned sign-ups are purged after 7 days (see `BACKGROUND_JOBS.md`),
+which also frees the address for its real owner.
+
+**Google sign-in.**
+* Addresses Google reports as unverified are refused.
+* A Google login may claim an *unfinished password sign-up* (no password yet) — Google just proved
+  control of the mailbox, so the email counts as verified. A password-created account is never
+  taken over (`account_exists_use_password`); a `google_id` mismatch is refused; suspended
+  accounts get neither a session nor a proof.
+* The "proof" that lets a brand-new Google user finish onboarding before they hold a JWT is the
+  signed Flask session (`google_email` plus `google_proof_at`). It expires after 30 minutes
+  (`GOOGLE_PROOF_TTL_SECONDS`) because a client-side session cookie cannot be revoked server-side,
+  and it is cleared on every completed auth event.
+* The client-supplied `google_verified` flag no longer exists.
+
+### 1.5a Registration steps authorise the right person
+
+`POST /onboard/<email>` and `POST /complete-registration` require proof that the caller owns the
+email: a fresh Google session for it, or an access cookie belonging to that user (emails compared
+case-insensitively). They also check the account state:
+
+* `complete-registration` only works for users who are still registering (verified email, pending
+  status). Approved accounts get **409** — a session cookie can never be used to overwrite an
+  existing account's username or password.
+* `onboard` lets approved users update their preferences, but never changes their status or issues
+  tokens; onboarding is optional for becoming approved.
+* Request bodies must be `application/json` (other content types are not parsed), because a
+  cross-site HTML form can send `text/plain` without a CORS preflight.
 
 ### 1.6 WebSocket auth happens at the handshake
 
@@ -120,6 +163,26 @@ or invalid. The client gets disconnected before any event handler runs — it's 
 and merely unauthenticated. There's also a secondary `authenticate` event as a fallback for the
 non-httponly config, where the token has to travel in the handshake payload instead of a cookie.
 Its own docstring calls the `connect`-based check the primary path.
+
+### 1.7 Account-status gate
+
+A valid JWT is not enough. `role_required` loads the user and rejects every account whose
+`status` is not `approved` with **403 `registration_incomplete`**. Users who are still registering
+hold a JWT (issued after email verification or onboarding), so routes they legitimately need opt in
+with `token_required_allow_pending` — currently `/auth/me`, `/users/me` and the onboarding
+suggestion/connect routes — and even then only for `pending_onboarding`/`pending_verification`
+accounts with a verified email. Any other status (for example suspended) is always rejected. The
+WebSocket handshake applies the same rule, and a logout disconnects the user's sockets on every
+instance (the Redis presence index plus the Socket.IO message queue).
+
+### 1.8 Onboarding connection requests
+
+The suggestion and connect endpoints under `/connections/onboarding/` are authenticated; the user
+comes from the access token, never from an email in the URL (the old `-by-email` routes accepted an
+email as proof of identity and allowed anyone to create connections for anyone). Connecting sends a
+normal pending request — nobody becomes connected without consent — and existing rows (blocked,
+rejected, pending, accepted) are never overwritten. Bulk requests are capped at 25 ids, validated
+and batch-loaded. Suggestions come from a candidate pool bounded in SQL.
 
 ---
 
@@ -150,11 +213,12 @@ check above.
 `supports_credentials=True` isn't optional here — the app authenticates via cookies, not an
 `Authorization` header, for browser clients. A cross-origin frontend can't complete a request at
 all unless the browser's told it can send/receive those cookies. That has a real consequence:
-`CORS_ALLOWED_ORIGINS` can't sit at a wildcard (`["*"]`, the config default outside development)
-once credentials are involved. Browsers won't honor `Access-Control-Allow-Credentials: true`
-paired with a wildcard origin — they reject the request at the browser layer before this app's
-logic ever runs. `CORS_ALLOWED_ORIGINS` needs to be set to the real frontend origin(s) in any
-environment where frontend and API aren't same-origin.
+`CORS_ALLOWED_ORIGINS` can't sit at a wildcard once credentials are involved. Browsers won't honor
+`Access-Control-Allow-Credentials: true` paired with a wildcard origin — they reject the request
+at the browser layer before this app's logic ever runs. Cross-origin access is therefore opt-in:
+the default is an empty list (no cross-origin requests), development sets `*` explicitly, and
+**production refuses to start** with `*` (see §2.5). Set `CORS_ALLOWED_ORIGINS` to the real
+frontend origin(s) in any environment where frontend and API aren't same-origin.
 
 ### 2.3 Security headers
 
@@ -190,6 +254,22 @@ Third, it clears all three auth cookies.
 `<img src="...">` tag on some other site, since browsers don't apply CSRF protections to simple
 cross-origin `GET` navigations the way they effectively do for POST under this app's cookie/CORS
 setup.
+
+
+### 2.5 Production configuration is validated at startup
+
+`ProductionConfig.validate()` runs in `create_app()` and refuses to start the app (listing every
+problem at once) when:
+
+* rate limiting is enabled but its storage is `memory://` — in-memory counters are per process, so
+  every extra instance multiplies the limits (`RATE_LIMIT_STORAGE_URI` or `REDIS_URL`)
+* `PUBLIC_BASE_URL` is missing or not `https://` — emailed verification/reset links are built from
+  it, never from request headers
+* `CORS_ALLOWED_ORIGINS` contains `*`
+* `SESSION_COOKIE_SECURE` is false (it now defaults to true in production)
+
+`OAUTHLIB_INSECURE_TRANSPORT` (which lets oauthlib accept an `http://` OAuth callback) is only set
+for development and tests.
 
 ---
 
@@ -242,13 +322,23 @@ by risk and cost, not one global number:
 
 | Tier | Limit | Applied to |
 |---|---|---|
-| `SENSITIVE_AUTH` | 5/minute | Login, registration, password-reset request, email verification, onboarding writes — every pre-auth route, keyed by IP |
+| `SENSITIVE_AUTH` | 5/minute | Password-reset request/check/set, email verification, resend-verification — keyed by IP |
+| `AUTH_ATTEMPT` | 20/minute | Login, keyed by IP. Real brute-force protection is the per-account counter below |
+| `REGISTRATION` | 10/minute | Sign-up, `onboard` and `complete-registration` writes, keyed by IP |
+| `USERNAME_CHECK` | 30/minute | The live "is this username free" check |
 | `WRITE_HEAVY` | 30/minute | Create/update/delete on posts, threads, comments, connections |
 | `AI_EXPENSIVE` | 10/hour | AI chat, refinement, meeting-notes generation — these cost real money per call |
 | `BURST_OK` | 60/minute | Reactions, likes, other low-risk high-frequency actions |
 | `PUBLIC_READ` | 300/minute | Read-only, often-unauthenticated endpoints |
 | `WEBHOOK` | 100/minute | External-service callback endpoints, if any are exposed |
 | `ADMIN` | 20/minute | Operational/admin endpoints — low volume by nature, privileged callers only |
+
+**Per-account/per-email counters.** IP limits cannot stop one victim's inbox being flooded or one
+account being guessed from many addresses, so `allow_action()` (Redis, shared by every instance,
+identifier hashed, fails open) also counts: failed logins per account (10 per 15 minutes, reset on
+success), registrations per email (5/hour), resend-verification per email (3/hour) and password-reset
+requests per account (3/hour). Token refresh uses `BURST_OK` (60/min) so many students behind one
+campus address are not locked out of refreshing.
 
 A global default (`200/day`, `50/hour`) covers any route that doesn't opt into a specific tier.
 `/health`, `/ping`, and `/ready` are exempt from rate limiting entirely. Authenticated routes key
@@ -329,6 +419,21 @@ Naming what isn't finished, same as everywhere else in this doc:
   which itself documents a prior bug where the fixture silently produced an empty header and
   masked whether `enforce_csrf` was actually being hit — see that fixture's own comments).
   `SameSite=Lax` is still additional, real protection on top of this, not a replacement for it.
+  The registration-step routes (`/student/onboard/*`, `/student/complete-registration`) are exempt
+  **only** when the request has no `access_token` cookie (a brand-new Google user has no CSRF
+  cookie yet); with a cookie they go through the normal check.
+- **Access tokens cannot be revoked and WebSockets are checked once.** A logout or suspension does
+  not kill an access JWT before its 30 minutes are up, and a socket's JWT is validated at connect
+  time only. Logout does disconnect the user's sockets on every instance, and non-approved accounts
+  cannot connect or call product routes, but a socket that is already open when an account is
+  suspended stays open until it disconnects.
+- **The Google session proof is a signed client-side cookie.** It expires after 30 minutes and is
+  cleared server-side on completion, but an older copy of the cookie remains valid until it expires.
+- **Account lockout is per account, not per (account, IP).** Ten failed logins lock an account's
+  sign-in for the rest of a 15-minute window, so someone can briefly lock another user out. That is
+  the usual trade-off against credential stuffing; the window is short.
+- **The full schema is not migration-managed.** Only the authentication/onboarding tables and two
+  earlier features have Alembic migrations; a baseline for the rest of the schema is still open.
 - **Password minimum is 6 characters**, no complexity requirement beyond that. This is a real
   current limit, not a placeholder waiting to be filled in.
 - **`_auto_reply_buckets`** — the limiter gating Learnora's unprompted auto-replies (no `@mention`
