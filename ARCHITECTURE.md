@@ -189,7 +189,9 @@ erDiagram
         string email UK
         string username UK
         string google_id UK "nullable — NULL means password account"
-        string pin "password hash"
+        string pin "password hash; PENDING_VERIFICATION until a password is chosen"
+        string status "pending_verification / pending_onboarding / approved / (suspended)"
+        bool email_verified
         string role "student/admin/system"
         int reputation
         string reputation_level "Newbie..Master"
@@ -199,10 +201,26 @@ erDiagram
         int user_id FK
         string token_hash UK "SHA-256, raw value never stored"
         string family_id "groups a rotation chain"
-        bool revoked
+        bool revoked "NOT NULL"
         int replaced_by_id FK
     }
+    PasswordResetToken {
+        int id PK
+        int user_id FK "ON DELETE CASCADE"
+        string token_hash UK "SHA-256 of the emailed token; 1 hour"
+        datetime expires_at
+        bool used "spent by one conditional UPDATE"
+    }
+    EmailVerificationToken {
+        int id PK
+        int user_id FK "ON DELETE CASCADE"
+        string token_hash UK "SHA-256 of the emailed token; 5 hours"
+        datetime expires_at
+        bool used
+    }
 ```
+
+`StudentProfile` holds profile data only (name, department, class). It no longer keeps copies of the password hash, username or status — those live on `User` — and `OnboardingDetails` no longer duplicates the email. Both password-reset and email-verification tokens are stored hashed and spent atomically (§6). `OnboardingDetails.department` and `StudentProfile.department` are both written by the onboarding step (the profile copy feeds profile/discovery pages, the onboarding copy feeds matching).
 
 `RefreshToken` is deliberately not a stateless JWT (unlike the access token, which still is). It's a DB-backed, hashed-at-rest, rotate-on-use credential with reuse detection — see §8 for the full mechanics. `google_id` is stored separately from `email` specifically to distinguish "an account already exists for this email, created via Google — safe to log in" from "an account already exists for this email, created via password — do not log in just because Google authenticated the same address," which closes an OAuth account-hijack path that a naive email-match would leave open.
 
@@ -327,6 +345,29 @@ Both are flagged here rather than presented as working infrastructure, in keepin
 
 ## 6. Authentication & authorization architecture
 
+### 6.0 Account lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending_verification: POST /register (email link) — pin = PENDING_VERIFICATION
+    [*] --> pending_onboarding: Google callback (new user, email already verified)
+    pending_verification --> pending_verification: verify-email (email_verified = true, session issued)
+    pending_onboarding --> pending_verification: POST /onboard (optional step)
+    pending_onboarding --> approved: POST /complete-registration (onboarding is optional)
+    pending_verification --> approved: POST /complete-registration (username + password)
+    pending_verification --> [*]: purged after 7 days if the email was never verified
+    approved --> approved: POST /onboard (preferences only — status never changes)
+```
+
+Only `approved` accounts reach product routes. `role_required` rejects every other status with
+403 `registration_incomplete`; the few routes a registering user needs (`/auth/me`, `/users/me`,
+the onboarding suggestions/connect routes) use `token_required_allow_pending`, which accepts the two
+pending states for verified emails. A registration that is abandoned half-way is recoverable: signing
+up again (or `POST /resend-verification`) sends a fresh link, and "forgot password" followed by a
+login sends a verified user on to `/complete-registration`. See `SECURITY.md` §1.5–§1.8.
+
+### 6.1 Sessions and tokens
+
 ![Refresh token rotation and reuse detection — DB-backed, hashed at rest, rotated on every use, with a multi-tab grace window](assets/architecture/refresh-token-rotation.png)
 
 ```mermaid
@@ -348,13 +389,14 @@ sequenceDiagram
     R->>R: decode_token() — verify signature + expiry
     R->>DB: User.query.get(payload.user_id)
     R->>R: check user.role in allowed_roles
+    R->>R: check user.status == approved (or pending + verified email on opt-in routes)
     R->>R: g.current_user_id = user.id
 
     Note over C,R: Token refresh (access token expired)
     C->>R: POST /auth/refresh-token (refresh_token cookie)
     R->>DB: auth_service.rotate_refresh_token()
     alt token unused, valid
-        DB->>DB: mark old row revoked, issue new row (same family_id)
+        DB->>DB: check account is eligible, then compare-and-set: UPDATE ... SET revoked WHERE revoked = false,<br/>issue new row (same family_id)
         R->>C: new access_token + new refresh_token cookies
     else token already revoked, within 10s grace
         Note over DB: legitimate multi-tab race — hand back access token,<br/>do NOT re-rotate or overwrite the cookie
@@ -368,9 +410,13 @@ sequenceDiagram
 
 **Access tokens** are short-lived (30 minute) stateless JWTs — unchanged in this refactor, since their short lifetime already bounds the exposure window without needing revocation machinery. **Refresh tokens** are the opposite: 7-day-lived bearer credentials, which is exactly the profile where a stateless, unrevocable JWT is the wrong tool. The refresh token is opaque on the wire; only its SHA-256 hash is ever persisted (`RefreshToken.token_hash`), so a database leak doesn't hand out usable long-lived credentials the way storing the raw value would.
 
+**One-time email tokens.** Password-reset (1 hour) and email-verification (5 hours) tokens are opaque, stored only as SHA-256 hashes and spent with a single conditional `UPDATE ... WHERE used = false AND expires_at > now`, so concurrent requests cannot both succeed. The consume step does not commit; the caller changes the password / verifies the email and commits once, so a failure leaves the link unspent. A password reset also revokes every refresh token of the user. Emailed links are built from `PUBLIC_BASE_URL` rather than request headers. A scheduled job purges abandoned sign-ups and long-expired tokens (`BACKGROUND_JOBS.md`).
+
+**Onboarding connections.** `/connections/onboarding/*` is authenticated; connecting sends an ordinary pending request, never overwrites an existing connection row, and suggestions come from an SQL-bounded candidate pool (`services/onboarding_service.py`).
+
 **Rotation-on-use with reuse detection.** Every `/refresh-token` call marks the presented token `revoked` and issues a new one in the same `family_id`. If a token that's already `revoked` is presented again, that's either (a) a genuine replay of a stolen token, or (b) two browser tabs racing — Tab A refreshes and rotates first, Tab B (holding the same cookie) presents the now-superseded token moments later. A **10-second grace window** on a revoked token's immediate successor distinguishes the two: within the window, the caller gets a working access token without a new refresh-token rotation (Tab B simply continues using the token Tab A already installed); outside the window, or for anything more than one generation removed, the entire token family is revoked immediately, forcing every session descended from that login to re-authenticate. This is standard refresh-token-rotation reuse detection, with the grace window added specifically because a strict "any reuse kills the family" rule breaks the ordinary multi-tab case, which is common enough to matter.
 
-**Cookies, not headers.** The frontend authenticates via three cookies (`access_token`, `refresh_token`, `csrf_token`) rather than an `Authorization` header — which is why `supports_credentials=True` on the Flask-CORS configuration is load-bearing, not optional: browsers refuse to combine `Access-Control-Allow-Credentials: true` with a wildcard origin, so `CORS_ALLOWED_ORIGINS` must be the real frontend origin(s) in any environment with a cross-origin frontend, or the browser rejects the request before the app's own logic ever runs. `ACCESS_TOKEN_HTTPONLY` (config flag, **default `true`**) governs whether `access_token` itself is `httponly` — when it is, a separate JS-readable `csrf_token` cookie is issued alongside it, intended as a double-submit CSRF pattern. Being a config flag rather than a code branch removed after rollout means the switch is instant and reversible without a redeploy. Worth flagging directly: the `csrf_token` cookie is issued but nothing in the reviewed routes actually validates it against a submitted header — see `SECURITY.md` §2.1 for the full gap.
+**Cookies, not headers.** The frontend authenticates via three cookies (`access_token`, `refresh_token`, `csrf_token`) rather than an `Authorization` header — which is why `supports_credentials=True` on the Flask-CORS configuration is load-bearing, not optional: browsers refuse to combine `Access-Control-Allow-Credentials: true` with a wildcard origin, so `CORS_ALLOWED_ORIGINS` must be the real frontend origin(s) in any environment with a cross-origin frontend, or the browser rejects the request before the app's own logic ever runs. `ACCESS_TOKEN_HTTPONLY` (config flag, **default `true`**) governs whether `access_token` itself is `httponly` — when it is, a separate JS-readable `csrf_token` cookie is issued alongside it, intended as a double-submit CSRF pattern. Being a config flag rather than a code branch removed after rollout means the switch is instant and reversible without a redeploy. `student_bp.before_request` (`enforce_csrf`) validates the `csrf_token` cookie against the `X-CSRF-Token` header on every mutating request; only a short list of pre-auth routes is exempt, and the registration-step routes are exempt only when no `access_token` cookie is present — see `SECURITY.md` §2.1 and §7.
 
 ---
 

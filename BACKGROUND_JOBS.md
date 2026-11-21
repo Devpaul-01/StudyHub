@@ -74,7 +74,7 @@ Every job wraps its body in `DistributedLock.acquire()` before doing anything. T
 
 Every process that loses the lock race logs the skip and increments a **consecutive-skip counter** for that job. Five consecutive skips triggers a `logger.error` + Sentry alert — the intended signal for "something is wrong with the instance that keeps winning the lock; it may be silently failing to complete its work," rather than a routine "another instance was faster" log line.
 
-### 2.2 The five jobs
+### 2.2 The six jobs
 
 #### `weekly_leaderboard_snapshot`
 - **Purpose:** Writes weekly `LeaderboardSnapshot` rows (global rank, department rank, score) used for "you moved up 3 places this week" trend indicators.
@@ -99,6 +99,11 @@ Every process that loses the lock race logs the skip and increments a **consecut
 - **Trigger:** Cron — daily at 03:00 UTC. Fires the locked tick, which then enqueues the real work onto `maintenance_queue` rather than executing inline — see §3.1 for why this one (and the job below) are dispatched to RQ instead of run directly, unlike the three jobs above.
 - **Processing:** `cleanup_expired_activity_feed_job` — full detail in §3.1.
 - **Idempotency:** Genuinely idempotent, by construction rather than by accident (§3.1).
+
+#### `auth_cleanup`
+- **Purpose:** Removes authentication leftovers: sign-ups whose email was never verified (so nobody can occupy another person's address forever) and expired one-time/refresh tokens (so the token tables do not grow without bound).
+- **Trigger:** Cron — daily at 03:30 UTC. Fires the locked tick, which enqueues `purge_stale_auth_data_job` onto `maintenance_queue` (§3.3a).
+- **Idempotency:** Genuinely idempotent — the deletion conditions are the idempotency check.
 
 #### `stale_ai_conversation_alert`
 - **Purpose:** A read-only, non-destructive alert — counts archived `AIConversation` rows past a staleness threshold (180 days, explicitly flagged in the code as a default to tune once real growth data exists, not a derived retention policy) and logs both the count and an approximate total-message figure as a storage-growth signal. Deletes nothing.
@@ -146,6 +151,14 @@ Two named queues, both consumed by the same `worker.py` process (or several, for
 - **Processing:** Deletes in **bounded batches** of 5,000 IDs at a time rather than one unbounded `DELETE ... WHERE expires_at < now()`, committing once per batch. A second safety valve caps the whole job run at 200 batches (1,000,000 rows) — if more than that is pending, the job stops and logs a warning rather than monopolizing a worker slot indefinitely, deliberately leaving the remainder for the next scheduled run.
 - **Idempotency:** Genuinely idempotent, by construction rather than by accident — each batch selects rows still matching the expiry condition and deletes exactly those; re-running after a partial failure (a crash mid-batch, a duplicate enqueue) simply finds fewer or zero matching rows on the next pass. There's no "have I already processed this row" bookkeeping to get wrong, because the deletion condition itself is the idempotency check.
 
+### 3.3a `purge_stale_auth_data_job`
+
+- **Purpose:** Daily retention for authentication data (audit AUD-06/AUD-20).
+- **Accounts:** deletes users with `email_verified = false`, `status = pending_verification`, no `google_id` and `joined_at` older than 7 days (`UNVERIFIED_ACCOUNT_RETENTION_DAYS`), together with the rows created at registration (profile, welcome notification, activity row, tokens). Each account is deleted inside its own savepoint, so one unexpected dependent row cannot block the rest (it is logged as `[AUTH_CLEANUP_SKIPPED]`). Verified, Google-linked, onboarding and approved accounts are never touched.
+- **Tokens:** deletes password-reset, email-verification and refresh tokens that expired more than 30 days ago (`AUTH_TOKEN_RETENTION_DAYS`); refresh-token successor links are cleared first so the self-referencing foreign key cannot block the delete.
+- **Bounds:** batches of 200 accounts (at most 50 batches per run) and 1,000 tokens per delete, one commit per batch.
+- **Idempotency:** Genuinely idempotent; a second run finds nothing to delete. Returns `{accounts_deleted, accounts_skipped, tokens_deleted}` on its RQ job record.
+
 ### 3.3 `alert_stale_ai_conversations_job`
 
 - **Purpose:** A read-only storage-growth signal, not a cleanup job — it counts archived `AIConversation` rows whose `last_message_at` is older than a 180-day threshold, plus an approximate total-message count across those rows (used as a cheap proxy for the size of the unbounded JSON `messages` blob each conversation stores, without computing real byte sizes in SQL), and logs both. **It never deletes anything.**
@@ -163,6 +176,7 @@ Retry policy is scoped per job, not a single blanket setting applied to every qu
 | `send_email_job` | 3 | `[10, 60]` — escalating |
 | `cleanup_expired_activity_feed_job` | 3 | `[30, 300]` — escalating |
 | `alert_stale_ai_conversations_job` | 2 | `[60]` — fixed |
+| `purge_stale_auth_data_job` | 3 | `[30, 300]` — escalating (`AUTH_CLEANUP_RETRY`) |
 
 The email job's tighter initial backoff (10s) reflects that a transient SMTP hiccup is often gone within seconds; the cleanup job's wider spread (30s → 300s) gives more room for whatever caused a batch delete to fail — a lock contention, a transient connection drop — to clear before retrying a heavier operation.
 

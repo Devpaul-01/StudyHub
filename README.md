@@ -172,14 +172,15 @@ The scheduler runs in-process inside `app.py`/`start-all.py` whenever `SCHEDULER
 | `LLM_GATEWAY_TIMEOUT_SECONDS` / `LLM_GATEWAY_STREAM_TIMEOUT_SECONDS` | Optional request timeouts for non-streaming / streaming gateway calls (defaults `30` / `60`) |
 | `FLASK_ENV` / `APP_ENV` | Selects the config class (checked in that order); defaults to `production` |
 | `ACCESS_TOKEN_HTTPONLY` | Whether the access-token cookie is JS-readable; governs whether a separate CSRF cookie is issued |
-| `CORS_ALLOWED_ORIGINS` | Required to be the real frontend origin(s) — `Access-Control-Allow-Credentials` cannot pair with a wildcard origin |
-| `SESSION_COOKIE_SECURE` | Whether auth cookies are marked `Secure` (default `False`; set `true` behind HTTPS) |
-| `RATE_LIMIT_STORAGE_URI` | Flask-Limiter storage. Defaults to `memory://` in development; in production it falls back to `REDIS_URL` when unset |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins. Defaults to none (no cross-origin access); development uses `*`. **Production refuses to start with `*`** — credentials are enabled |
+| `SESSION_COOKIE_SECURE` | Whether auth cookies are marked `Secure` (default `true` in production, `false` elsewhere). Production refuses to start with it off |
+| `RATE_LIMIT_STORAGE_URI` | Flask-Limiter storage. Defaults to `memory://` in development; in production it falls back to `REDIS_URL` when unset. **Production refuses to start with in-memory storage** while rate limiting is enabled (counters are per process, so extra instances multiply the limits). Per-account/per-email limits always use Redis |
 | `LEARNORA_BOT_USER_ID` | User ID of the Learnora bot account. Thread AI replies are disabled while it is `0` or unset |
 | `THREAD_MSG_RATE_MAX` / `THREAD_MSG_RATE_WINDOW` | Per-user thread-message cap over a window in seconds (defaults 30 / 60) |
 | `THREAD_AI_ACTION_RATE_MAX` / `THREAD_AI_ACTION_RATE_WINDOW` | Per-user thread AI-action cap over a window in seconds (defaults 10 / 300) |
 | `SENTRY_RELEASE` | Optional release tag (e.g. a git SHA) attached to Sentry events |
-| `CURRENT_URL` / `PORT` | Public base URL used in emailed links (default `http://127.0.0.1:5001/`) and the listen port (default 5001) |
+| `PUBLIC_BASE_URL` | **Required in production, must be `https://`.** Origin used to build emailed verification/reset links — never taken from request headers, so a forged `Host`/`X-Forwarded-Host` cannot redirect those links. Falls back to `CURRENT_URL` when only that is set; in development it falls back to the request host |
+| `CURRENT_URL` / `PORT` | Base URL used by other features (default `http://127.0.0.1:5001/`) and the listen port (default 5001) |
 | `SENTRY_DSN` | Optional — error tracking is fully fail-open if unset |
 | Cloudinary / Flask-Mail / Firebase credentials | Media storage, email, and push notification integrations |
 
@@ -193,6 +194,10 @@ pytest
 `pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (1,440 passing as of this writing: 650 unit and 790 integration, plus 2 skipped). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
 Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
+
+### Database migrations
+
+Alembic (through Flask-Migrate) manages schema changes: run `flask db upgrade` after pulling. The authentication/onboarding migration (`c3a1d94e7b52`) is idempotent, so it is safe on a database built from the current models and on an older one: it replaces raw one-time tokens with hashed ones (outstanding reset/verification links are discarded), drops columns that were never read, and adds `users.google_id` when missing. Only a few tables are migration-managed so far; a baseline for the rest of the schema is still open.
 
 ### Running Just the Unit or Integration Suite
 

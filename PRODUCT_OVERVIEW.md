@@ -49,13 +49,15 @@ Reputation, badges, and leaderboard rank accumulate as a byproduct of using the 
 
 Sign-up supports both a traditional email/password flow and Google OAuth, converging on the same account model — a `google_id` distinct from `email` means an account created via Google and an account created via password with the same email address are never silently merged, which closes an account-hijack path a naive email-match would leave open (`ARCHITECTURE.md` §6).
 
-New accounts go through email verification before becoming fully active (`User.is_active` requires `email_verified`, an `approved` status, and a real username — not just a row existing in the table). Sessions are cookie-based, with a short-lived access token and a longer-lived refresh token that rotates on every use and detects reuse — full mechanics in `ARCHITECTURE.md` §6.
+New accounts go through email verification before becoming fully active (`User.is_active` requires `email_verified`, an `approved` status, and a real username — not just a row existing in the table). Until registration is finished a user can only reach the onboarding screens; every other API route answers 403 `registration_incomplete`. Sessions are cookie-based, with a short-lived access token and a longer-lived refresh token that rotates on every use and detects reuse — full mechanics in `ARCHITECTURE.md` §6.
+
+Nobody gets stuck half-way: signing up again with the same address sends a fresh link, "forgot password" works for an unfinished registration, and abandoned sign-ups that never verified their email are cleaned up after 7 days so the address is free for its real owner. Sign-up, login and password-reset answers are the same whether or not an address is known, so they cannot be used to find out who has an account.
 
 ### Onboarding → instant matches
 
 Onboarding captures department, year, subjects, learning style, weekly availability, and — distinctly — subjects you need help with versus subjects you're strong in. That last split is what powers the "complementary skills" half of compatibility scoring (§5): matching isn't just "same interests," it's "you can help each other."
 
-The onboarding flow ends by immediately surfacing ranked matches computed from that data, not a blank slate. A match scoring ≥70% compatible auto-accepts on the first connection request — the product decision being that forcing an accept step on an obviously strong match is friction without a real purpose.
+Onboarding is optional — a user can skip it and still finish registration — and answers can be updated later. The flow ends by immediately surfacing ranked matches computed from that data, not a blank slate (when nothing scores, active members are shown without a made-up percentage). Connecting from onboarding sends an ordinary connection request that the other person accepts; blocked or declined pairs are never overridden. Outside onboarding, a match scoring ≥70% compatible auto-accepts on the first connection request — the product decision being that forcing an accept step on an obviously strong match is friction without a real purpose.
 
 ![Onboarding's final step — ranked study-partner matches shown immediately, computed from the just-completed onboarding data](assets/product/onboarding-match-preview.png)
 
