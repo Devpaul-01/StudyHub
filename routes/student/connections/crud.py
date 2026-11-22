@@ -1025,7 +1025,7 @@ def _page_meta(total, offset, returned):
 
 
 @connections_crud_bp.route("/connections/requests/received", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def received_connection_requests(current_user):
     """Get ALL pending connection requests sent TO you (no pagination)"""
@@ -1175,7 +1175,7 @@ def received_connection_requests(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/requests/sent", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def sent_connection_requests(current_user):
     """Get ALL pending connection requests YOU sent (no pagination)"""
@@ -1325,7 +1325,7 @@ def sent_connection_requests(current_user):
 # ============================================================================
 
 @connections_crud_bp.route("/connections/list", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def list_connections(current_user):
     """

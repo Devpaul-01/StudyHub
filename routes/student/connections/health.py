@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 connections_health_bp = Blueprint("connections_health", __name__)
 @connections_health_bp.route("/connections/<int:connection_id>/details", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_connection_details(current_user, connection_id):
     """
@@ -314,7 +314,7 @@ def get_connection_details(current_user, connection_id):
         
 
 @connections_health_bp.route("/connections/online", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_online_connections(current_user):
     """
@@ -447,7 +447,7 @@ def get_online_connections(current_user):
 # ============================================================================
 
 @connections_health_bp.route("/connections/online/count", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_online_connections_count(current_user):
     """
@@ -515,7 +515,7 @@ def get_online_connections_count(current_user):
 # ============================================================================
 
 @connections_health_bp.route("/connections/online/department", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_online_connections_by_department(current_user):
     """
@@ -649,7 +649,7 @@ def get_online_connections_by_department(current_user):
 
 
 @connections_health_bp.route("/connections/<int:connection_id>/notes", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_connection_notes(current_user, connection_id):
     """
