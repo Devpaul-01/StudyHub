@@ -265,3 +265,30 @@ export function showHomeworkToast(message, type = 'info') {
     console.log(`[${type.toUpperCase()}] ${message}`);
   }
 }
+
+/**
+ * Convert a value from <input type="datetime-local"> (wall-clock time in the
+ * user's timezone, no offset) into an unambiguous UTC ISO-8601 instant that
+ * the backend stores verbatim. Returns '' for empty/invalid input.
+ */
+export function localInputToUtcIso(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+/**
+ * Convert a server timestamp into a datetime-local input value in the user's
+ * timezone. The API emits naive UTC strings ("2026-12-01T10:00:00", no 'Z'),
+ * which JS would otherwise parse as *local* time and shift by the UTC offset.
+ */
+export function serverUtcToLocalInput(value) {
+  if (!value) return '';
+  const raw = String(value);
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const date = new Date(hasZone ? raw : `${raw}Z`);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+         `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}

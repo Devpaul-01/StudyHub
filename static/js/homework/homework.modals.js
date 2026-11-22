@@ -8,7 +8,10 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, getFileType, escapeHtml, safeUrl } from './homework.utils.js';
+import {
+  showHomeworkToast, getFileType, escapeHtml, safeUrl,
+  localInputToUtcIso, serverUtcToLocalInput
+} from './homework.utils.js';
 import { refreshCurrentTab } from './homework.render.js';
 import { renderResourceItem } from './homework.templates.js';
 
@@ -53,13 +56,7 @@ export function openEditHomeworkModal(assignmentId) {
   if (descriptionInput) descriptionInput.value = assignment.description || '';
   
   if (dueDateInput && assignment.due_date) {
-    const date = new Date(assignment.due_date);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    dueDateInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+    dueDateInput.value = serverUtcToLocalInput(assignment.due_date);
   }
   
   if (difficultySelect) difficultySelect.value = assignment.difficulty || 'medium';
@@ -140,7 +137,7 @@ export async function handleEditHomework(container, event) {
       title,
       subject,
       description,
-      due_date: dueDate,
+      due_date: localInputToUtcIso(dueDate),
       difficulty,
       estimated_hours: estimatedHours ? parseFloat(estimatedHours) : null,
       resources: resources
@@ -425,7 +422,7 @@ export async function handleCreateHomework(container, event) {
       title,
       subject,
       description,
-      due_date: dueDate,
+      due_date: localInputToUtcIso(dueDate),
       difficulty,
       estimated_hours: estimatedHours ? parseFloat(estimatedHours) : null,
       share_for_help: shareForHelp,
