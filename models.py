@@ -1460,10 +1460,15 @@ class ReputationHistory(db.Model):
     created_at     = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
     reputation_before = db.Column(db.Integer)
     reputation_after  = db.Column(db.Integer)
+    # Set by one-time awards (milestones, solutions, helpful marks) so the
+    # same event can never pay out twice. NULL for ordinary rows; the unique
+    # index below ignores NULLs on both PostgreSQL and SQLite.
+    idempotency_key   = db.Column(db.String(120), nullable=True)
 
     __table_args__ = (
         db.Index("idx_rep_history_date_user", "created_at", "user_id"),
         db.Index("idx_rep_history_user_date", "user_id", "created_at"),
+        db.Index("uq_rep_history_idempotency_key", "idempotency_key", unique=True),
     )
 
     def __repr__(self):
