@@ -1399,6 +1399,52 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
 
+  /student/profile/fcm-token:
+    post:
+      tags: [Profile]
+      summary: Register this device's push-notification (FCM) token
+      description: >
+        One token per account, and a token belongs to one account - saving
+        it detaches it from any other account that held it. The token is
+        also cleared when the account logs out.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+                  message: { type: string }
+        '400':
+          description: Token missing or longer than 500 characters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    delete:
+      tags: [Profile]
+      summary: Clear this account's push-notification token
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+                  message: { type: string }
+
   /student/profile/visibility-settings:
     get:
       tags: [Profile]

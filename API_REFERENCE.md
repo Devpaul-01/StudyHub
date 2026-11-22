@@ -515,9 +515,21 @@ validation. **502** if the storage provider fails (the provider's message is log
 Clears your avatar and deletes the stored image (best effort - the request succeeds even if the
 storage provider cannot be reached). **Auth:** required.
 
+### `GET /student/profile/view/{username}`
+HTML shell for the public profile page (no user data; the page then calls
+`GET /student/profile/{username}`). Served without a session; the page's first API call sends
+logged-out visitors to the login screen.
+
 ### `GET /student/profile/me`
 Serves the HTML app shell opened on the profile tab (the JSON data comes from
 `GET /student/profile/me/data`). There is no JSON `POST` on this path.
+
+### `POST /student/profile/fcm-token` / `DELETE /student/profile/fcm-token`
+Register or clear this device's push-notification (FCM) token. Body for POST: `{"token": "..."}`
+(max 500 characters). One token per account, and a token belongs to one account: saving it detaches
+it from any other account that held it. It is also cleared when the account logs out.
+
+**Auth:** required. **400** if the token is missing or too long.
 
 ### `GET /student/profile/visibility-settings` / `POST /student/profile/visibility-settings`
 Privacy toggles: `set_profile_private` (default `false`), `show_active_status` and
