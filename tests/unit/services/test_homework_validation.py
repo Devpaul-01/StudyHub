@@ -15,6 +15,8 @@ from services.homework_validation import (
     parse_due_date,
     require_json_object,
     validate_assignment_create,
+    validate_feedback,
+    validate_solution_submit,
     validate_assignment_update,
 )
 
@@ -147,3 +149,34 @@ class TestAssignmentPayloads:
     def test_update_rejects(self, body):
         with pytest.raises(HomeworkValidationError):
             validate_assignment_update(body)
+
+
+class TestSubmissionPayloads:
+    def test_solution_happy_path(self):
+        out = validate_solution_submit({"solution_text": "  answer ", "resources": []})
+        assert out == {"solution_text": "answer", "resources": []}
+
+    @pytest.mark.parametrize("body", [None, {}, {"solution_text": " "}, {"solution_text": 3}])
+    def test_solution_rejects(self, body):
+        with pytest.raises(HomeworkValidationError):
+            validate_solution_submit(body)
+
+    def test_feedback_defaults(self):
+        out = validate_feedback({})
+        assert out["mark_complete"] is True
+        assert out["rating"] is None and out["reaction_type"] is None
+        assert out["is_helpful"] is None
+        assert out["feedback_text"] == "" and out["feedback_resources"] == []
+
+    def test_feedback_accepts_numeric_string_rating_and_whole_floats(self):
+        assert validate_feedback({"rating": "4"})["rating"] == 4
+        assert validate_feedback({"rating": 5.0})["rating"] == 5
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"rating": 6}, {"rating": 0}, {"rating": 2.5}, {"rating": "x"}, {"rating": False},
+         {"reaction_type": "nope"}, {"is_helpful": "yes"}, {"mark_complete": 1}],
+    )
+    def test_feedback_rejects(self, body):
+        with pytest.raises(HomeworkValidationError):
+            validate_feedback(body)

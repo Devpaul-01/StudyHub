@@ -263,3 +263,59 @@ def validate_assignment_update(data) -> dict:
     if "status" in data:
         out["status"] = clean_choice(data["status"], "status", ASSIGNMENT_STATUSES)
     return out
+
+
+# ----------------------------------------------------------------------------
+# Submission payloads (F-07, F-09)
+# ----------------------------------------------------------------------------
+
+REACTION_TYPES = ("thanks", "lifesaver", "mindblown", "perfect")
+
+
+def validate_solution_submit(data) -> dict:
+    """Validate a submit-solution body -> {"solution_text", "resources"}."""
+    data = require_json_object(data)
+    return {
+        "solution_text": clean_text(
+            data.get("solution_text"), "solution_text", max_len=MAX_SOLUTION_LEN, required=True
+        ),
+        "resources": clean_resources(data.get("resources"), "resources"),
+    }
+
+
+def validate_feedback(data) -> dict:
+    """
+    Validate a give-feedback body. Returns column-ready values; ``reaction_type``
+    and ``rating`` are None when not supplied. ``is_helpful`` is None when the
+    client did not state a view (the route decides the default).
+    """
+    data = require_json_object(data)
+
+    reaction = data.get("reaction_type")
+    if reaction is not None:
+        reaction = clean_choice(reaction, "reaction_type", REACTION_TYPES)
+
+    rating = data.get("rating")
+    if rating is not None:
+        if isinstance(rating, bool):
+            raise HomeworkValidationError("Rating must be a whole number from 1 to 5", "rating")
+        try:
+            as_float = float(rating)
+        except (TypeError, ValueError):
+            raise HomeworkValidationError("Rating must be a whole number from 1 to 5", "rating")
+        if not math.isfinite(as_float) or as_float != int(as_float) or not 1 <= int(as_float) <= 5:
+            raise HomeworkValidationError("Rating must be a whole number from 1 to 5", "rating")
+        rating = int(as_float)
+
+    is_helpful = data.get("is_helpful")
+    if is_helpful is not None:
+        is_helpful = clean_bool(is_helpful, "is_helpful")
+
+    return {
+        "feedback_text": clean_text(data.get("feedback_text"), "feedback_text", max_len=MAX_FEEDBACK_LEN),
+        "feedback_resources": clean_resources(data.get("feedback_resources"), "feedback_resources"),
+        "reaction_type": reaction,
+        "rating": rating,
+        "is_helpful": is_helpful,
+        "mark_complete": clean_bool(data.get("mark_complete", True), "mark_complete"),
+    }
