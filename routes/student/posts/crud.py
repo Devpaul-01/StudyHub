@@ -18,7 +18,9 @@ import re
 import os
 import time
 import traceback
-from routes.student.reputation import check_and_award_milestone
+from services.reputation_service import check_and_award_milestone
+from services.atomic_counters import adjust_counter
+from sqlalchemy.exc import IntegrityError
 
 import mimetypes
 from datetime import date, timedelta
@@ -237,15 +239,18 @@ def react_to_post(current_user, post_id):
         if not post:
             return error_response("Post not found", 404)
 
-        existing = PostReaction.query.filter_by(
-            post_id=post_id,
-            student_id=current_user.id
-        ).first()
+        existing = (
+            PostReaction.query
+            .filter_by(post_id=post_id, student_id=current_user.id)
+            .with_for_update()
+            .first()
+        )
 
         if existing:
             # ── UNLIKE ────────────────────────────────────────────────────
             db.session.delete(existing)
-            post.positive_reactions_count = max(0, post.positive_reactions_count - 1)
+            # Atomic relative update (never a read-modify-write of the count).
+            adjust_counter(Post, post_id, "positive_reactions_count", -1)
             db.session.commit()
             return jsonify({
                 "status": "success",
@@ -255,39 +260,56 @@ def react_to_post(current_user, post_id):
                     "count": post.positive_reactions_count
                 }
             })
-        else:
-            # ── LIKE ──────────────────────────────────────────────────────
-            new_reaction = PostReaction(
-                post_id=post_id,
-                student_id=current_user.id,
-                reaction_type="like"
-            )
-            db.session.add(new_reaction)
-            post.positive_reactions_count += 1
-            db.session.commit()
 
-            # Reputation award (not on self-like)
-            if post.student_id != current_user.id:
-                try:
-                    from routes.student.reputation import check_and_award_milestone
-                    check_and_award_milestone(post.student_id, post_id=post_id)
-                    # Document 2 §5 fix: award_reputation() (called internally
-                    # by check_and_award_milestone) no longer commits on its
-                    # own — added explicitly here so a milestone-triggered
-                    # reputation award is actually persisted, not just
-                    # computed in memory and discarded.
-                    db.session.commit()
-                except Exception:
-                    db.session.rollback()
-
+        # ── LIKE ──────────────────────────────────────────────────────────
+        # The reaction row goes in inside a savepoint: a concurrent
+        # double-click that already inserted it makes the UNIQUE constraint
+        # reject this one, and the request resolves to "already liked"
+        # instead of a 500.
+        try:
+            with db.session.begin_nested():
+                db.session.add(PostReaction(
+                    post_id=post_id,
+                    student_id=current_user.id,
+                    reaction_type="like"
+                ))
+        except IntegrityError:
+            db.session.rollback()
+            post = Post.query.get(post_id)
             return jsonify({
                 "status": "success",
                 "message": "Post liked",
-                "data": {
-                    "liked": True,
-                    "count": post.positive_reactions_count
-                }
+                "data": {"liked": True, "count": post.positive_reactions_count}
             }), 201
+
+        adjust_counter(Post, post_id, "positive_reactions_count", 1)
+
+        # Milestone reputation (never for a self-like). Runs in the SAME
+        # transaction as the like. It is wrapped in a savepoint so a failure
+        # here cannot discard the like itself -- but unlike before it is
+        # logged, and it self-heals: the milestone check is ledger-based
+        # (count >= threshold and not yet paid), so the next like on the
+        # post pays anything this attempt missed.
+        if post.student_id != current_user.id:
+            try:
+                with db.session.begin_nested():
+                    check_and_award_milestone(post.student_id, post_id=post_id)
+            except Exception:
+                current_app.logger.error(
+                    "Like milestone award failed (post_id=%s author_id=%s)",
+                    post_id, post.student_id, exc_info=True,
+                )
+
+        db.session.commit()
+
+        return jsonify({
+            "status": "success",
+            "message": "Post liked",
+            "data": {
+                "liked": True,
+                "count": post.positive_reactions_count
+            }
+        }), 201
 
     except Exception as e:
         db.session.rollback()
