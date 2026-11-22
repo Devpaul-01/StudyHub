@@ -31,3 +31,8 @@ ACTIVITY_FEED_CLEANUP_RETRY = Retry(max=3, interval=[30, 300])
 # over-engineering retry policy for a job whose worst-case failure is
 # "one log line is late."
 STALE_CONVERSATION_ALERT_RETRY = Retry(max=2, interval=[60])
+
+# expire_help_requests_job: cheap, idempotent single UPDATE that reruns every
+# 15 minutes anyway, so a failed run is self-healing; 2 quick attempts are
+# enough to ride out a momentary DB blip.
+HELP_REQUEST_EXPIRY_RETRY = Retry(max=2, interval=[30])

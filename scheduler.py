@@ -50,6 +50,7 @@ Jobs registered here:
     • monthly_leaderboard_snapshot – 1st of every month 00:10 UTC
     • counter_reconciliation       – every Sunday 00:20 UTC
     • activity_feed_cleanup        – daily 03:00 UTC
+    • help_request_expiry          – every 15 minutes
     • stale_ai_conversation_alert  – every Sunday 00:25 UTC
 
 BACKGROUND JOBS PHASE:
@@ -285,6 +286,24 @@ def _job_activity_feed_cleanup(app):
     _run_locked("activity_feed_cleanup", _work)
 
 
+def _job_help_request_expiry(app):
+    """Enqueues the help-request expiry sweep (same shape as the jobs above)."""
+    def _work():
+        with app.app_context():
+            from services.job_queue import maintenance_queue
+            from services.jobs.maintenance_jobs import expire_help_requests_job
+            from services.jobs.job_specs import HELP_REQUEST_EXPIRY_RETRY
+            job = maintenance_queue.enqueue(
+                expire_help_requests_job,
+                retry=HELP_REQUEST_EXPIRY_RETRY,
+            )
+            logger.info(
+                "[SCHED_JOB_ENQUEUED] job_id=%s queue=%s", job.id, maintenance_queue.name
+            )
+
+    _run_locked("help_request_expiry", _work)
+
+
 def _job_stale_conversation_alert(app):
     """See _job_activity_feed_cleanup's docstring — identical shape."""
     def _work():
@@ -415,6 +434,18 @@ def init_scheduler(app) -> None:
         trigger=CronTrigger(day_of_week="sun", hour=0, minute=25, timezone="UTC"),
         id="stale_ai_conversation_alert",
         name="Stale AI Conversation Alert",
+        replace_existing=True,
+    )
+
+    # Help-request expiry: every 15 minutes. Enqueues (idempotent single
+    # UPDATE) behind the same distributed lock as every other job, so N
+    # scheduler-enabled instances never duplicate it.
+    scheduler.add_job(
+        func=_job_help_request_expiry,
+        args=[app],
+        trigger=CronTrigger(minute="*/15", timezone="UTC"),
+        id="help_request_expiry",
+        name="Help Request Expiry",
         replace_existing=True,
     )
 

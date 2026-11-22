@@ -35,7 +35,7 @@ import logging
 from sqlalchemy import func
 
 from extensions import db
-from models import ActivityFeed, AIConversation
+from models import ActivityFeed, AIConversation, HelpRequest
 
 logger = logging.getLogger(__name__)
 
@@ -173,3 +173,24 @@ def alert_stale_ai_conversations_job() -> dict:
         "stale_count": stale_count,
         "approx_total_messages": stale_message_total,
     }
+
+
+def expire_help_requests_job() -> dict:
+    """
+    Flips every 'active' HelpRequest whose expires_at has passed to 'expired'
+    (audit CON-17: nothing ever did, so the status stayed 'active' forever).
+
+    A single conditional UPDATE: naturally idempotent (a second/duplicate run
+    matches zero rows), safe to run concurrently, bounded by the number of
+    currently-active requests (a partial unique index keeps that to at most
+    one per user).
+    """
+    now = datetime.datetime.utcnow()
+    expired = HelpRequest.query.filter(
+        HelpRequest.status == "active",
+        HelpRequest.expires_at.isnot(None),
+        HelpRequest.expires_at < now,
+    ).update({"status": "expired"}, synchronize_session=False)
+    db.session.commit()
+    logger.info("[HELP_REQUEST_EXPIRY] expired=%d", expired)
+    return {"requests_expired": expired}

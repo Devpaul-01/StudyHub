@@ -104,3 +104,37 @@ def test_alert_stale_conversations_is_read_only(db_session, make_user, make_ai_c
     refreshed = AIConversation.query.get(conv.id)
     assert refreshed.is_archived is True  # unchanged
     assert refreshed.total_messages == 3  # unchanged
+
+
+# ============================================================================
+# expire_help_requests_job  (audit CON-17)
+# ============================================================================
+
+def test_expire_help_requests_only_touches_expired_active_rows(db_session, make_user):
+    from models import HelpRequest
+    now = datetime.datetime.utcnow()
+    a, b, c = make_user(), make_user(), make_user()
+    old = HelpRequest(requester_id=a.id, subject="x", status="active", expires_at=now - datetime.timedelta(minutes=5))
+    live = HelpRequest(requester_id=b.id, subject="y", status="active", expires_at=now + datetime.timedelta(hours=1))
+    done = HelpRequest(requester_id=c.id, subject="z", status="expired", expires_at=now - datetime.timedelta(hours=3))
+    db_session.add_all([old, live, done])
+    db_session.commit()
+    old_id, live_id, done_id = old.id, live.id, done.id
+
+    result = maintenance_jobs.expire_help_requests_job()
+
+    assert result == {"requests_expired": 1}
+    assert HelpRequest.query.get(old_id).status == "expired"
+    assert HelpRequest.query.get(live_id).status == "active"
+    assert HelpRequest.query.get(done_id).status == "expired"
+
+
+def test_expire_help_requests_is_idempotent(db_session, make_user):
+    from models import HelpRequest
+    u = make_user()
+    db_session.add(HelpRequest(requester_id=u.id, subject="x", status="active",
+                               expires_at=datetime.datetime.utcnow() - datetime.timedelta(minutes=1)))
+    db_session.commit()
+
+    assert maintenance_jobs.expire_help_requests_job()["requests_expired"] == 1
+    assert maintenance_jobs.expire_help_requests_job()["requests_expired"] == 0
