@@ -49,7 +49,8 @@ just a re-export shim); this file imports from the new location.
 
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 from models import User, ReputationHistory, Post
 from extensions import db
 from services.reputation_levels import get_reputation_level
@@ -98,6 +99,41 @@ REPUTATION_ACTIONS = {
     "thread_created": {"points": 3, "description": "Created study thread"},
     "thread_completed": {"points": 10, "description": "Thread reached 10+ members"},
 }
+
+
+# ── Post-commit cache invalidation ───────────────────────────────────────────
+_PENDING_INVALIDATIONS_KEY = "reputation_pending_cache_invalidations"
+# Long enough to outlive every per-user cache entry (max TTL is 1 h).
+_CACHE_VERSION_TTL_SECONDS = 7 * 24 * 3600
+
+
+def invalidate_user_caches(user_id):
+    """Drop a user's reputation-derived caches immediately.
+
+    Exact-key deletes plus one version bump: every per-user leaderboard key
+    embeds `sh:1:ver:{user_id}` (see cache_service.cached(version_key=...)),
+    so a single INCR retires all of them with no keyspace SCAN.
+    """
+    cache_service.delete(f"sh:1:rep:me:{user_id}")
+    cache_service.delete(f"sh:1:an:overview:{user_id}")
+    cache_service.incr(f"sh:1:ver:{user_id}", ttl_seconds=_CACHE_VERSION_TTL_SECONDS)
+
+
+def _schedule_user_cache_invalidation(user_id):
+    """Remember to invalidate once the current transaction commits."""
+    db.session.info.setdefault(_PENDING_INVALIDATIONS_KEY, set()).add(user_id)
+
+
+@event.listens_for(Session, "after_commit")
+def _run_pending_invalidations(session):
+    for uid in session.info.pop(_PENDING_INVALIDATIONS_KEY, None) or ():
+        invalidate_user_caches(uid)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_pending_invalidations(session):
+    session.info.pop(_PENDING_INVALIDATIONS_KEY, None)
+
 
 
 def award_reputation(user_id, action_key, related_type=None, related_id=None, custom_points=None):
@@ -156,25 +192,17 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     db.session.add(history)
 
     # ── Cache invalidation (plan §5.1) ──────────────────────────────────
-    # Hard-invalidate the acting user's own point-total/rank/breakdown/
-    # analytics caches immediately — these reflect this exact reputation
-    # change and must never serve stale-past-this-request data.
+    # The acting user's own cached cards must never outlive this change, but
+    # this function does not commit. Invalidating here would let a request
+    # that reads between now and the caller's commit re-cache the OLD data
+    # for a full TTL. So only *schedule* the invalidation; it runs from the
+    # session's after_commit hook below and is dropped on rollback.
     #
-    # Deliberately NOT invalidated here: sh:1:lb:global:* (any period/
-    # department/page combination). A single user's reputation change can,
-    # in principle, shift every other user's *relative rank* on a global
-    # leaderboard page — hard-invalidating every cached leaderboard page on
-    # every single reputation-changing action would mean the leaderboard
-    # cache is invalidated on nearly every write in the whole gamification
-    # system, defeating the purpose of caching it at all. The 60-second TTL
-    # on lb:global:* is the deliberate trade-off (plan §4.2/§5.1): this
-    # user's own point total is always fresh via the invalidation below;
-    # leaderboard *position* pages (their own and everyone else's) can lag
-    # by up to 60 seconds. Do not "fix" this into fan-out invalidation.
-    cache_service.delete(f"sh:1:rep:me:{user_id}")
-    cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")
-    cache_service.delete_pattern(f"sh:1:lb:breakdown:{user_id}:*")
-    cache_service.delete(f"sh:1:an:overview:{user_id}")
+    # Deliberately NOT invalidated: sh:1:lb:global:* (any period/department/
+    # page). One user's change can shift everyone's relative rank, and
+    # fan-out invalidation on nearly every gamification write would defeat
+    # the cache. Those pages lag by their 60 s TTL by design.
+    _schedule_user_cache_invalidation(user_id)
 
     old_level = get_reputation_level(reputation_before)
     new_level = get_reputation_level(user.reputation)

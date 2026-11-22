@@ -502,6 +502,7 @@ def get_department_leaderboard(
 @cache_service.cached(
     "sh:1:lb:rank:{user_id}:nearby-core:{period}:{department_key}:{n_range}:{my_score}:{my_rank}",
     ttl_seconds=60,
+    version_key="sh:1:ver:{user_id}",
 )
 def _get_nearby_for_user(
     user_id: int, my_score: int, my_rank: int, period: str,
@@ -617,7 +618,8 @@ def _get_nearby_for_user(
 
 
 @cache_service.cached(
-    "sh:1:lb:rank:{user_id}:nearby:{period}:{department_key}:{n_range}", ttl_seconds=60
+    "sh:1:lb:rank:{user_id}:nearby:{period}:{department_key}:{n_range}", ttl_seconds=60,
+    version_key="sh:1:ver:{user_id}",
 )
 def _get_nearby_users_cached(
     user_id: int, period: str, department_key: str, n_range: int
@@ -692,7 +694,8 @@ def get_nearby_users(
 
 
 @cache_service.cached(
-    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60
+    "sh:1:lb:rank:{user_id}:{period}:{department_key}", ttl_seconds=60,
+    version_key="sh:1:ver:{user_id}",
 )
 def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
     """
@@ -872,7 +875,9 @@ def get_my_rank(user_id: int, period: str = "weekly", department: str | None = N
 # 4. CONNECTIONS LEADERBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:connections:{user_id}:{period}", ttl_seconds=60)
+@cache_service.cached(
+    "sh:1:lb:connections:{user_id}:{period}", ttl_seconds=60, version_key="sh:1:ver:{user_id}"
+)
 def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
     """Leaderboard scoped to a user's accepted connections (+ self).
 
@@ -1392,7 +1397,9 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 # 10. SCORE BREAKDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:breakdown:{user_id}:{period}", ttl_seconds=120)
+@cache_service.cached(
+    "sh:1:lb:breakdown:{user_id}:{period}", ttl_seconds=120, version_key="sh:1:ver:{user_id}"
+)
 def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
     """Transparent breakdown of how a user's score is composed.
 

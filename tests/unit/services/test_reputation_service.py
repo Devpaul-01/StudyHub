@@ -136,19 +136,51 @@ def test_award_reputation_downward_crossing_notifies(db_session, make_user):
     assert mock_notify.call_args[0][1]["name"] == "Newbie"
 
 
-def test_award_reputation_invalidates_expected_cache_keys(db_session, make_user):
+def test_award_reputation_does_not_invalidate_before_commit(db_session, make_user, fakeredis_client):
+    """Invalidating before the caller commits lets a concurrent reader
+    re-cache the pre-commit value for a full TTL."""
     user = make_user(reputation=10)
-    with patch("services.reputation_service.notification_service.notify_level_up"), \
-         patch("services.reputation_service.cache_service.delete") as mock_delete, \
-         patch("services.reputation_service.cache_service.delete_pattern") as mock_delete_pattern:
+    fakeredis_client.set(f"sh:1:rep:me:{user.id}", "1")
+    with patch("services.reputation_service.notification_service.notify_level_up"):
         reputation_service.award_reputation(user.id, "post_10_likes")
 
-    delete_keys = {c.args[0] for c in mock_delete.call_args_list}
-    assert f"sh:1:rep:me:{user.id}" in delete_keys
-    assert f"sh:1:an:overview:{user.id}" in delete_keys
-    pattern_keys = {c.args[0] for c in mock_delete_pattern.call_args_list}
-    assert f"sh:1:lb:rank:{user.id}:*" in pattern_keys
-    assert f"sh:1:lb:breakdown:{user.id}:*" in pattern_keys
+    assert fakeredis_client.get(f"sh:1:rep:me:{user.id}") == "1"
+    assert fakeredis_client.get(f"sh:1:ver:{user.id}") is None
+
+
+def test_award_reputation_invalidates_after_commit(db_session, make_user, fakeredis_client):
+    user = make_user(reputation=10)
+    fakeredis_client.set(f"sh:1:rep:me:{user.id}", "1")
+    fakeredis_client.set(f"sh:1:an:overview:{user.id}", "1")
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        reputation_service.award_reputation(user.id, "post_10_likes")
+    db_session.commit()
+
+    assert fakeredis_client.get(f"sh:1:rep:me:{user.id}") is None
+    assert fakeredis_client.get(f"sh:1:an:overview:{user.id}") is None
+    assert fakeredis_client.get(f"sh:1:ver:{user.id}") == "1"   # per-user version bumped
+
+
+def test_award_reputation_discards_invalidation_on_rollback(db_session, make_user, fakeredis_client):
+    user = make_user(reputation=10)
+    db_session.commit()
+    fakeredis_client.set(f"sh:1:rep:me:{user.id}", "1")
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        reputation_service.award_reputation(user.id, "post_10_likes")
+    db_session.rollback()
+    db_session.commit()
+
+    assert fakeredis_client.get(f"sh:1:rep:me:{user.id}") == "1"
+    assert fakeredis_client.get(f"sh:1:ver:{user.id}") is None
+
+
+def test_one_commit_invalidates_each_user_once(db_session, make_user, fakeredis_client):
+    user = make_user(reputation=10)
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        reputation_service.award_reputation(user.id, "post_10_likes")
+        reputation_service.award_reputation(user.id, "comment_marked_helpful")
+    db_session.commit()
+    assert fakeredis_client.get(f"sh:1:ver:{user.id}") == "1"
 
 
 # ============================================================================
