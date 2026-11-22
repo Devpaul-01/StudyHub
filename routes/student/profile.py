@@ -247,9 +247,8 @@ def get_my_posts(current_user):
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Get my posts error: {str(e)}")
-        return error_response("Failed to load posts")
+    except Exception:
+        return _server_error("Get my posts error", "Failed to load posts")
 
 # ============================================================================
 # MY STATS
@@ -326,9 +325,8 @@ def get_my_stats(current_user):
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"My stats error: {str(e)}")
-        return error_response("Failed to load stats")
+    except Exception:
+        return _server_error("My stats error", "Failed to load stats")
 
 
 # ============================================================================
@@ -371,9 +369,8 @@ def get_academic_info(current_user):
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Get academic info error: {str(e)}")
-        return error_response("Failed to load academic info")
+    except Exception:
+        return _server_error("Get academic info error", "Failed to load academic info")
 
 
 # (field, max items kept, max characters per item). Lists longer than the
@@ -1207,10 +1204,8 @@ def unpin_post(current_user, post_id):
         db.session.commit()
         return success_response("Post unpinned successfully")
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Unpin post error: {str(e)}")
-        return error_response("Failed to unpin post")
+    except Exception:
+        return _server_error("Unpin post error", "Failed to unpin post")
 
 
 # ============================================================================
