@@ -31,7 +31,7 @@ from routes.student.helpers import (
 # others'), WRITE_HEAVY on edits (academic info, avatar, update, skills,
 # goals, pin/unpin, study schedule, visibility settings), BURST_OK on
 # avatar delete (cheap state change).
-from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 profile_bp = Blueprint("student_profile", __name__)
 
@@ -64,7 +64,7 @@ def _server_error(log_label, message="Something went wrong. Please try again."):
 # ============================================================================
 
 @profile_bp.route("/profile/me/data", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_profile_data(current_user):
     """Return full profile data for the logged-in user's own profile view."""
@@ -115,7 +115,7 @@ def get_my_profile_data(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/my-posts", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_posts(current_user):
     """
@@ -256,7 +256,7 @@ def get_my_posts(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/my-stats", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_stats(current_user):
     """Comprehensive stats for the Stats tab."""
@@ -336,7 +336,7 @@ def get_my_stats(current_user):
 # ============================================================================
 
 @profile_bp.route("/profile/academic-info", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_academic_info(current_user):
     """Returns the current user's academic / onboarding details."""
@@ -679,7 +679,7 @@ def visibility_settings(current_user):
 
 
 @profile_bp.route("/profile/visibility-settings", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_visibility_settings(current_user):
     try:
@@ -756,7 +756,7 @@ def _connection_status(viewer, other):
 
 
 @profile_bp.route("/profile/<username>", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def view_profile(current_user, username):
     """View any user's profile.
@@ -1230,7 +1230,7 @@ def _schedule_for_client(stored):
 
 
 @profile_bp.route("/profile/study-schedule", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_study_schedule(current_user):
     """Get the user's study schedule.
