@@ -192,7 +192,10 @@ def test_check_and_award_milestone_exact_10_likes(db_session, make_user, make_po
     post = make_post(user, positive_reactions_count=10)
     with patch("services.reputation_service.award_reputation") as mock_award:
         reputation_service.check_and_award_milestone(user.id, post_id=post.id)
-    mock_award.assert_called_once_with(user.id, "post_10_likes", "post", post.id)
+    mock_award.assert_called_once_with(
+        user.id, "post_10_likes", "post", post.id,
+        idempotency_key=f"post_10_likes:post:{post.id}", once_per_related=True,
+    )
 
 
 def test_check_and_award_milestone_exact_50_likes(db_session, make_user, make_post):
@@ -200,7 +203,10 @@ def test_check_and_award_milestone_exact_50_likes(db_session, make_user, make_po
     post = make_post(user, positive_reactions_count=50)
     with patch("services.reputation_service.award_reputation") as mock_award:
         reputation_service.check_and_award_milestone(user.id, post_id=post.id)
-    mock_award.assert_called_once_with(user.id, "post_50_likes", "post", post.id)
+    mock_award.assert_called_once_with(
+        user.id, "post_50_likes", "post", post.id,
+        idempotency_key=f"post_50_likes:post:{post.id}", once_per_related=True,
+    )
 
 
 def test_check_and_award_milestone_exact_100_likes(db_session, make_user, make_post):
@@ -208,7 +214,10 @@ def test_check_and_award_milestone_exact_100_likes(db_session, make_user, make_p
     post = make_post(user, positive_reactions_count=100)
     with patch("services.reputation_service.award_reputation") as mock_award:
         reputation_service.check_and_award_milestone(user.id, post_id=post.id)
-    mock_award.assert_called_once_with(user.id, "post_100_likes", "post", post.id)
+    mock_award.assert_called_once_with(
+        user.id, "post_100_likes", "post", post.id,
+        idempotency_key=f"post_100_likes:post:{post.id}", once_per_related=True,
+    )
 
 
 def test_check_and_award_milestone_does_not_retrigger_past_threshold(db_session, make_user, make_post):
@@ -236,3 +245,68 @@ def test_check_and_award_milestone_noop_with_no_ids(db_session, make_user):
         # Should not raise
         reputation_service.check_and_award_milestone(user.id)
     mock_award.assert_not_called()
+
+
+# ============================================================================
+# One-time awards (idempotency)
+# ============================================================================
+
+def _count(db_session, user_id, action):
+    from models import ReputationHistory
+    return db_session.query(ReputationHistory).filter_by(user_id=user_id, action=action).count()
+
+
+def test_award_reputation_same_idempotency_key_pays_once(db_session, make_user):
+    user = make_user(reputation=0)
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        first = reputation_service.award_reputation(
+            user.id, "comment_marked_helpful", "comment", 1, idempotency_key="helpful:1:2")
+        second = reputation_service.award_reputation(
+            user.id, "comment_marked_helpful", "comment", 1, idempotency_key="helpful:1:2")
+    assert first is not None and second is None
+    assert user.reputation == 3
+    assert _count(db_session, user.id, "comment_marked_helpful") == 1
+
+
+def test_award_reputation_different_keys_each_pay(db_session, make_user):
+    user = make_user(reputation=0)
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        reputation_service.award_reputation(user.id, "comment_marked_helpful", "comment", 1, idempotency_key="helpful:1:2")
+        reputation_service.award_reputation(user.id, "comment_marked_helpful", "comment", 1, idempotency_key="helpful:1:3")
+    assert user.reputation == 6
+
+
+def test_once_per_related_respects_rows_written_before_keys_existed(db_session, make_user):
+    """Legacy rows have no idempotency_key; they must still block a re-award."""
+    from models import ReputationHistory
+    user = make_user(reputation=15)
+    db_session.add(ReputationHistory(
+        user_id=user.id, action="comment_marked_solution", points_change=15,
+        related_type="comment", related_id=7, reputation_before=0, reputation_after=15))
+    db_session.flush()
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        result = reputation_service.award_reputation(
+            user.id, "comment_marked_solution", "comment", 7,
+            idempotency_key="solution:7", once_per_related=True)
+    assert result is None
+    assert user.reputation == 15
+
+
+def test_once_per_related_still_awards_a_different_related_object(db_session, make_user):
+    user = make_user(reputation=0)
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        reputation_service.award_reputation(user.id, "comment_marked_solution", "comment", 7,
+                                            idempotency_key="solution:7", once_per_related=True)
+        reputation_service.award_reputation(user.id, "comment_marked_solution", "comment", 8,
+                                            idempotency_key="solution:8", once_per_related=True)
+    assert user.reputation == 30
+
+
+def test_milestone_pays_once_when_the_count_passes_through_the_threshold_repeatedly(db_session, make_user, make_post):
+    user = make_user(reputation=0)
+    post = make_post(user, positive_reactions_count=10)
+    with patch("services.reputation_service.notification_service.notify_level_up"):
+        for _ in range(4):                       # like -> unlike -> like ... leaves count at 10 each time
+            reputation_service.check_and_award_milestone(user.id, post_id=post.id)
+    assert _count(db_session, user.id, "post_10_likes") == 1
+    assert user.reputation == 5

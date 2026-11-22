@@ -136,7 +136,8 @@ def _discard_pending_invalidations(session):
 
 
 
-def award_reputation(user_id, action_key, related_type=None, related_id=None, custom_points=None):
+def award_reputation(user_id, action_key, related_type=None, related_id=None, custom_points=None,
+                     idempotency_key=None, once_per_related=False):
     """
     Award (or deduct) reputation points for a user and record the change
     in ReputationHistory. Creates a level-up Notification if this change
@@ -147,6 +148,14 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     must ensure a db.session.commit() happens after this call (either
     their own, or the route's shared one) — see the module docstring above
     for the two call sites that needed a fix alongside this move.
+
+    One-time awards: pass `idempotency_key` (e.g. "solution:42") and/or
+    `once_per_related=True` and the award is skipped, returning None, if the
+    same key was already used or this user already has an `action_key` row for
+    the same related_type/related_id. `once_per_related` also covers rows
+    written before idempotency keys existed. The check runs after the user row
+    is locked, so concurrent attempts for one recipient serialize and only the
+    first pays out; the unique index on the key is the backstop.
 
     Returns the ReputationHistory row (session-pending, not yet committed),
     or None if the user doesn't exist or no valid action/points were given.
@@ -170,6 +179,24 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     if not user:
         return None
 
+    if idempotency_key is not None and db.session.execute(
+        select(ReputationHistory.id)
+        .where(ReputationHistory.idempotency_key == idempotency_key)
+        .limit(1)
+    ).first():
+        return None
+    if once_per_related and related_id is not None and db.session.execute(
+        select(ReputationHistory.id)
+        .where(
+            ReputationHistory.user_id == user_id,
+            ReputationHistory.action == (action_key if action_key else "custom"),
+            ReputationHistory.related_type == related_type,
+            ReputationHistory.related_id == related_id,
+        )
+        .limit(1)
+    ).first():
+        return None
+
     requested_points = custom_points if custom_points else action["points"]
 
     reputation_before = user.reputation or 0
@@ -187,7 +214,8 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
         related_type=related_type,
         related_id=related_id,
         reputation_before=reputation_before,
-        reputation_after=user.reputation
+        reputation_after=user.reputation,
+        idempotency_key=idempotency_key,
     )
     db.session.add(history)
 
@@ -229,6 +257,9 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     return history
 
 
+_POST_LIKE_MILESTONES = {10: "post_10_likes", 50: "post_50_likes", 100: "post_100_likes"}
+
+
 def check_and_award_milestone(user_id, post_id=None, comment_id=None):
     """
     Check whether a post/comment interaction just crossed a reputation
@@ -241,9 +272,23 @@ def check_and_award_milestone(user_id, post_id=None, comment_id=None):
     if post_id:
         post = Post.query.get(post_id)
         if post and post.student_id == user_id:
-            if post.positive_reactions_count == 10:
-                award_reputation(user_id, "post_10_likes", "post", post_id)
-            elif post.positive_reactions_count == 50:
-                award_reputation(user_id, "post_50_likes", "post", post_id)
-            elif post.positive_reactions_count == 100:
-                award_reputation(user_id, "post_100_likes", "post", post_id)
+            milestone_action = _POST_LIKE_MILESTONES.get(post.positive_reactions_count)
+            if milestone_action:
+                # Like/unlike/like at the threshold used to pay out every time
+                # the count passed through it. Each milestone is one-time per
+                # post. The cheap read first avoids taking the author's row
+                # lock on every like of a popular post.
+                already = db.session.execute(
+                    select(ReputationHistory.id).where(
+                        ReputationHistory.user_id == user_id,
+                        ReputationHistory.action == milestone_action,
+                        ReputationHistory.related_type == "post",
+                        ReputationHistory.related_id == post_id,
+                    ).limit(1)
+                ).first()
+                if not already:
+                    award_reputation(
+                        user_id, milestone_action, "post", post_id,
+                        idempotency_key=f"{milestone_action}:post:{post_id}",
+                        once_per_related=True,
+                    )
