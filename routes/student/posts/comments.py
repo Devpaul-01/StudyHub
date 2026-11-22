@@ -47,6 +47,9 @@ from services.post_service import (
 )
 from services import notification_service
 from services.reputation_service import award_reputation, reverse_reputation, action_points
+from services.atomic_counters import adjust_counter
+from services.badge_triggers import schedule_badge_check
+from sqlalchemy.exc import IntegrityError
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): like_comment/mark_comment_helpful -> BURST_OK
 # (low-risk, high-frequency); create/edit/delete comment, mark/unmark
@@ -339,87 +342,81 @@ def mark_comment_helpful(current_user, comment_id):
         if comment.student_id == current_user.id:
             return error_response("Cannot mark your own comment as helpful", 403)
         
-        # Check if already marked
-        existing = CommentHelpfulMark.query.filter_by(
-            comment_id=comment_id,
-            user_id=current_user.id
-        ).first()
-        
-        
-    
-  
-        
-        if existing:
-            db.session.delete(existing)
-            if comment.helpful_count > 0:
-                comment.helpful_count -= 1
-
-            # AUDIT §5 FIX (helpful-count behavior): decrement the comment
-            # AUTHOR's total_helpful/total_helps_received to stay consistent
-            # with the underlying CommentHelpfulMark record being removed
-            # here. Symmetric with comment.helpful_count's own floor-at-0
-            # guard above — this is a persisted, per-user aggregate (same
-            # category as comment.helpful_count, post.comments_count
-            # elsewhere in this file), not an ephemeral cache-style counter,
-            # so it's mutated via a normal ORM attribute assignment inside
-            # this same commit rather than a separate Redis counter — this
-            # matches the codebase's existing convention for persisted
-            # counters throughout this file, and requires no additional
-            # shared-state coordination to be correct across instances: the
-            # database's own row-level write serialization on the `users`
-            # row is what makes concurrent (un)marks land correctly, exactly
-            # as it already does for comment.helpful_count above.
-            author = User.query.get(comment.student_id)
-            if author:
-                if author.total_helpful > 0:
-                    author.total_helpful -= 1
-                if author.total_helps_received > 0:
-                    author.total_helps_received -= 1
-
-            db.session.commit()  # ← this line is missing!
-            return success_response("Comment unmarked helpful", data={"is_helpful": False, "count": comment.helpful_count})
-        
-        # Create mark
-        helpful_mark = CommentHelpfulMark(
-            comment_id=comment_id,
-            user_id=current_user.id,
-            marked_at=datetime.datetime.utcnow()
+        # Lock this marker's row for the comment (if any) so a double-click
+        # cannot run two toggles interleaved.
+        existing = (
+            CommentHelpfulMark.query
+            .filter_by(comment_id=comment_id, user_id=current_user.id)
+            .with_for_update()
+            .first()
         )
-        db.session.add(helpful_mark)
-        
-        # Increment count
-        comment.helpful_count += 1
 
-        # AUDIT §5 FIX (helpful-count behavior): increment the comment
-        # AUTHOR's (not the marker's) total_helpful/total_helps_received.
-        # The CommentHelpfulMark unique constraint on (comment_id, user_id)
-        # (models.py) is what already guarantees this branch can only be
-        # reached once per marker per comment — a second attempt by the
-        # same user hits the `existing` branch above instead — so this
-        # increment can never double-count for a single comment/marker
-        # pair, matching the "duplicate helpful actions cannot incorrectly
-        # increment it" requirement without any extra locking beyond what
-        # already protects comment.helpful_count on the line above.
-        author = User.query.get(comment.student_id)
-        if author:
-            author.total_helpful += 1
-            author.total_helps_received += 1
-        
-        db.session.commit()
-        
-        # ✅ Award reputation to commenter
-        from routes.student.reputation import award_reputation
-        award_reputation(comment.student_id, "comment_marked_helpful", "comment", comment_id)
+        # ── UNMARK: soft-delete. The row is PERMANENTLY RETAINED as the
+        # idempotency record for this (comment, marker) pair, so a later
+        # re-mark can never be paid a second time (see CommentHelpfulMark).
+        if existing is not None and existing.is_active:
+            existing.is_active = False
+            adjust_counter(Comment, comment.id, "helpful_count", -1)
+            adjust_counter(User, comment.student_id, "total_helpful", -1)
+            adjust_counter(User, comment.student_id, "total_helps_received", -1)
+            db.session.commit()
+            return success_response(
+                "Comment unmarked helpful",
+                data={"is_helpful": False, "count": comment.helpful_count},
+            )
 
-        # Document 2 §5 fix: award_reputation() no longer commits internally
-        # (moved to services/reputation_service.py, which follows the
-        # "services don't commit" convention). This call site previously
-        # relied entirely on that internal commit — added explicitly here so
-        # the reputation change is actually persisted (this was a real,
-        # silent bug: without this, the point award and any level-up
-        # notification were computed in memory and never saved).
+        # ── RE-MARK after an unmark: reactivate. Counters are restored but
+        # NO reputation is awarded -- it was paid when the row was created.
+        if existing is not None:
+            existing.is_active = True
+            existing.marked_at = datetime.datetime.utcnow()
+            adjust_counter(Comment, comment.id, "helpful_count", 1)
+            adjust_counter(User, comment.student_id, "total_helpful", 1)
+            adjust_counter(User, comment.student_id, "total_helps_received", 1)
+            db.session.commit()
+            return success_response(
+                "Comment marked as helpful",
+                data={"is_helpful": True, "count": comment.helpful_count},
+            ), 201
+
+        # ── FIRST MARK: create the row, bump counters and pay the author
+        # in ONE transaction. The row is created inside a savepoint: if a
+        # concurrent request from the same user won the race, the UNIQUE
+        # constraint rejects this insert and the request resolves to the
+        # (already marked) state instead of a 500.
+        try:
+            with db.session.begin_nested():
+                db.session.add(CommentHelpfulMark(
+                    comment_id=comment_id,
+                    user_id=current_user.id,
+                    marked_at=datetime.datetime.utcnow(),
+                    is_active=True,
+                ))
+        except IntegrityError:
+            db.session.rollback()
+            comment = Comment.query.get(comment_id)
+            return success_response(
+                "Comment marked as helpful",
+                data={"is_helpful": True, "count": comment.helpful_count},
+            )
+
+        adjust_counter(Comment, comment.id, "helpful_count", 1)
+        adjust_counter(User, comment.student_id, "total_helpful", 1)
+        adjust_counter(User, comment.student_id, "total_helps_received", 1)
+
+        award_reputation(
+            comment.student_id, "comment_marked_helpful", "comment", comment_id,
+            idempotency_key=(
+                f"comment_marked_helpful:comment:{comment_id}:user:{current_user.id}"
+            ),
+        )
+
+        # Helpful badges depend on total_helpful; evaluate them off the
+        # request path once this transaction commits.
+        schedule_badge_check(comment.student_id)
+
         db.session.commit()
-        
+
         return success_response(
             "Comment marked as helpful",
             data={"is_helpful": True, "count": comment.helpful_count}
@@ -771,6 +768,7 @@ def post_comments(current_user, post_id):
             comment_marked_helpful = CommentHelpfulMark.query.filter_by(
                 user_id=current_user.id,
                 comment_id=c.id,
+                is_active=True,
             ).first() is not None
 
             replies_data = []
@@ -785,6 +783,7 @@ def post_comments(current_user, post_id):
                 reply_marked_helpful = CommentHelpfulMark.query.filter_by(
                     user_id=current_user.id,
                     comment_id=r.id,
+                    is_active=True,
                 ).first() is not None
                 
                 replies_data.append({
