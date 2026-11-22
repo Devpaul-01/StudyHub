@@ -173,7 +173,10 @@ function getActivityDisplay(type, user, data) {
       
     case 'offered_help':
       icon = '🤝';
-      message = `<strong>${escapeHtml(user.name)}</strong> is helping <strong>${escapeHtml(data.requester_name)}</strong> with ${escapeHtml(data.subject)}`;
+      // Requester identity is intentionally not part of this event (audit F-08).
+      message = data.subject
+        ? `<strong>${escapeHtml(user.name)}</strong> is helping a classmate with ${escapeHtml(data.subject)}`
+        : `<strong>${escapeHtml(user.name)}</strong> is helping a classmate`;
       
       if (data.subject) {
         badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
@@ -195,7 +198,9 @@ function getActivityDisplay(type, user, data) {
       
     case 'submitted_solution':
       icon = '📝';
-      message = `<strong>${escapeHtml(user.name)}</strong> submitted solution to <strong>${escapeHtml(data.requester_name)}</strong>`;
+      message = data.subject
+        ? `<strong>${escapeHtml(user.name)}</strong> submitted a solution for ${escapeHtml(data.subject)}`
+        : `<strong>${escapeHtml(user.name)}</strong> submitted a solution`;
       
       if (data.subject) {
         badge = `<span class="activity-badge badge-subject">${escapeHtml(data.subject)}</span>`;
@@ -204,7 +209,7 @@ function getActivityDisplay(type, user, data) {
       
     case 'achieved_streak':
       icon = '🔥';
-      message = `<strong>${escapeHtml(user.name)}</strong> reached a <strong>${escapeHtml(data.streak_count)}-day</strong> helping streak!`;
+      message = `<strong>${escapeHtml(user.name)}</strong> reached a <strong>${escapeHtml(data.current_streak)}-day</strong> helping streak!`;
       badge = '<span class="activity-badge badge-achievement">Achievement</span>';
       break;
       
