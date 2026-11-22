@@ -36,6 +36,7 @@ import {
 } from './connection.events.js';
 
 import {renderHelpResults, appendVolunteerCard,renderConnectionTab} from './connection.render.js';
+import { escapeHtml } from './connection.utils.js';
 
 
 // ============================================================================
@@ -333,7 +334,7 @@ export const ConnectionHandlers = {
       results.innerHTML = `
         <div style="text-align: center; padding: 32px 20px;">
           <div style="font-size: 36px; margin-bottom: 12px;">🔍</div>
-          <p style="font-weight: 500; margin: 0 0 6px 0;">No matches found for "${subject}"</p>
+          <p style="font-weight: 500; margin: 0 0 6px 0;">No matches found for "${escapeHtml(subject)}"</p>
           <p style="font-size: 13px; opacity: 0.6; margin: 0 0 20px 0;">Broadcast to your connections instead</p>
 
         </div>

@@ -9,7 +9,7 @@ import {
   createSearchResultCard, createBlockedUserCard, createMutualConnectionCard,
   buildAvailableNowList, buildConnectionDetails,
 } from './connection.templates.js';
-import { getLoadingSkeleton, showEmptyState } from './connection.utils.js';
+import { getLoadingSkeleton, showEmptyState, escapeHtml } from './connection.utils.js';
 import { renderConnectionTab } from './connection.render.js';
 import { loadConnectionTab } from './connection.init.js';
 
@@ -460,7 +460,7 @@ export async function viewUserOverview(userId) {
           <line x1="12" y1="8" x2="12" y2="12"></line>
           <line x1="12" y1="16" x2="12.01" y2="16"></line>
         </svg>
-        <span>${message}</span>
+        <span>${escapeHtml(message)}</span>
       </div>
     `;
     loadingSection.style.display = 'none';
@@ -492,7 +492,7 @@ export async function performConnectionSearch(query) {
     if (!results.users || results.users.length === 0) {
       searchResults.innerHTML = `
         <div class="empty-state">
-          <p>No results found for "${query}"</p>
+          <p>No results found for "${escapeHtml(query)}"</p>
         </div>
       `;
       return;
@@ -856,7 +856,7 @@ export async function showAvailableNowModal(subject = '') {
   _openDynamicModal(
     'available-now-modal', '🟢 Available Now',
     `<div style="margin-bottom:0.75rem;">
-      <input id="available-now-subject-input" type="text" value="${subject}"
+      <input id="available-now-subject-input" type="text" value="${escapeHtml(subject)}"
              placeholder="Filter by subject (optional)"
              style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--border);
                     border-radius:8px;background:var(--bg-primary);color:var(--text-primary);

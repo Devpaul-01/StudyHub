@@ -7,7 +7,7 @@ import {
   createSugguestionConnectionCard, // ✅ FIXED TYPO
   createDiscoveryConnectionCard
 } from './connection.templates.js';
-import { getLoadingSkeleton, showEmptyState } from './connection.utils.js';
+import { getLoadingSkeleton, showEmptyState, escapeHtml } from './connection.utils.js';
 
 // ============================================================================
 // UPDATE UI ELEMENTS
@@ -20,7 +20,7 @@ export function renderHelpBroadcastSent(helpRequestId, subject, notifiedCount) {
         <div style="font-size: 36px; margin-bottom: 8px;">📡</div>
         <h4 style="margin: 0 0 4px 0; font-weight: 600;">Request Sent!</h4>
         <p style="margin: 0; font-size: 13px; opacity: 0.7;">
-          Notified ${notifiedCount} connection${notifiedCount !== 1 ? 's' : ''} about your <strong>${subject}</strong> request
+          Notified ${notifiedCount} connection${notifiedCount !== 1 ? 's' : ''} about your <strong>${escapeHtml(subject)}</strong> request
         </p>
       </div>
 
@@ -69,18 +69,18 @@ export function appendVolunteerCard(volunteer) {
   `;
   card.innerHTML = `
     <img
-      src="${volunteer.avatar || '/static/default-avatar.png'}"
-      alt="${volunteer.name}"
+      src="${escapeHtml(volunteer.avatar || '/static/default-avatar.png')}"
+      alt="${escapeHtml(volunteer.name)}"
       style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex-shrink: 0;"
     />
     <div style="flex: 1; min-width: 0;">
-      <p style="margin: 0; font-weight: 600; font-size: 14px;">${volunteer.name}</p>
-      <p style="margin: 0; font-size: 12px; opacity: 0.6;">@${volunteer.username}</p>
+      <p style="margin: 0; font-weight: 600; font-size: 14px;">${escapeHtml(volunteer.name)}</p>
+      <p style="margin: 0; font-size: 12px; opacity: 0.6;">@${escapeHtml(volunteer.username)}</p>
     </div>
     <button
       data-action="message-volunteer"
       data-user-id="${volunteer.user_id}"
-      data-user-name="${volunteer.name}"
+      data-user-name="${escapeHtml(volunteer.name)}"
       class="btn btn-sm btn-primary"
       style="flex-shrink: 0;"
     >
@@ -323,7 +323,7 @@ export function renderHelpResults(helpers, subject) {
     <div
       data-action="connect-from-help"
       data-user-id="${helper.user.id}"
-      data-user-name="${helper.user.name}"
+      data-user-name="${escapeHtml(helper.user.name)}"
       style="
         display:flex !important;
         align-items:center !important;
@@ -342,8 +342,8 @@ export function renderHelpResults(helpers, subject) {
 
       <img
         data-action="view-avatar"
-        src="${helper.user.avatar || '/static/default-avatar.png'}"
-        alt="${helper.user.name}"
+        src="${escapeHtml(helper.user.avatar || '/static/default-avatar.png')}"
+        alt="${escapeHtml(helper.user.name)}"
         style="
           width:48px !important;
           height:48px !important;
@@ -361,7 +361,7 @@ export function renderHelpResults(helpers, subject) {
           font-size:14px !important;
           color:#1e1b4b !important;
         ">
-          ${helper.user.name}
+          ${escapeHtml(helper.user.name)}
         </h4>
 
         <div style="
@@ -373,8 +373,8 @@ export function renderHelpResults(helpers, subject) {
           gap:4px !important;
         ">
           ${badge}
-          ${helper.user.department || ''}
-          ${helper.user.class_level ? '• ' + helper.user.class_level : ''}
+          ${escapeHtml(helper.user.department || '')}
+          ${helper.user.class_level ? '• ' + escapeHtml(helper.user.class_level) : ''}
         </div>
 
         <p style="
@@ -382,7 +382,7 @@ export function renderHelpResults(helpers, subject) {
           font-size:12px !important;
           color:#9ca3af !important;
         ">
-          ${helper.reason || `Can help with ${subject}`}
+          ${escapeHtml(helper.reason || `Can help with ${subject}`)}
         </p>
 
       </div>
@@ -391,7 +391,7 @@ export function renderHelpResults(helpers, subject) {
         data-action="open-connection-request"
         data-user-id="${helper.user.id}"
         data-type='find-help'
-        data-user-name="${helper.user.username}"
+        data-user-name="${escapeHtml(helper.user.username)}"
         style="
           background:linear-gradient(135deg,#6366f1,#8b5cf6,#ec4899) !important;
           color:#ffffff !important;

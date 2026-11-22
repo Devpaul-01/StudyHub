@@ -4,6 +4,22 @@
 
 import { REPUTATION_ICONS, HEALTH_COLORS } from './connection.constants.js';
 
+/**
+ * Escape a value for safe interpolation into an HTML template literal
+ * (element text AND quoted attribute values). Every user-controlled string
+ * (names, bios, messages, subjects ...) must go through this before it is
+ * assigned to innerHTML (audit CON-04).
+ */
+export function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function getReputationIcon(level) {
   return REPUTATION_ICONS[level] || '⭐';
 }

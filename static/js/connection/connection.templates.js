@@ -2,12 +2,12 @@
 // CONNECTION CARD TEMPLATES
 // ============================================================================
 
-import { getReputationIcon, getHealthColor, formatTimeAgo } from './connection.utils.js';
+import { getReputationIcon, getHealthColor, formatTimeAgo, escapeHtml } from './connection.utils.js';
 function renderSubjects(subjects) {
   if (!subjects || subjects.length === 0) {
     return '<span class="empty-text">No subjects listed</span>';
   }
-  return subjects.slice(0, 5).map(s => `<span class="tag">${s}</span>`).join('');
+  return subjects.slice(0, 5).map(s => `<span class="tag">${escapeHtml(s)}</span>`).join('');
 }
 
 // Helper: Render schedule
@@ -39,8 +39,8 @@ export function createConnectedConnectionCard(connection) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar || '/static/default-avatar.png'}">
-          <img src="${user.avatar || '/static/default-avatar.png'}"  class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar || '/static/default-avatar.png')}">
+          <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}"  class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
         
           ${user.is_online 
             ? '<span class="status-dot online" title="Online now"></span>' 
@@ -49,11 +49,11 @@ export function createConnectedConnectionCard(connection) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
 
@@ -188,7 +188,7 @@ export function createConnectedConnectionCard(connection) {
       <!-- Collapsible Details -->
       <div class="card-details-expandable hidden">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
 
         ${onboarding.strong_subjects && onboarding.strong_subjects.length > 0 ? `
@@ -222,7 +222,7 @@ export function createConnectedConnectionCard(connection) {
 
         ${connection.suggestion ? `
         <div class="detail-section">
-          <p class="health-suggestion">${connection.suggestion}</p>
+          <p class="health-suggestion">${escapeHtml(connection.suggestion)}</p>
         </div>
         ` : ''}
       </div>
@@ -243,8 +243,8 @@ export function createReceivedConnectionCard(connection) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar || '/static/default-avatar.png'}" >
-          <img src="${user.avatar || '/static/default-avatar.png'}"  class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar || '/static/default-avatar.png')}" >
+          <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}"  class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline">${user.last_active || 'Offline'}</span>`
@@ -252,11 +252,11 @@ export function createReceivedConnectionCard(connection) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
 
@@ -288,7 +288,7 @@ export function createReceivedConnectionCard(connection) {
       <!-- Message from requester -->
       ${connection.message ? `
       <div class="connection-message">
-        <p>"${connection.message}"</p>
+        <p>"${escapeHtml(connection.message)}"</p>
         <small>${formatTimeAgo(connection.requested_at)}</small>
       </div>
       ` : ''}
@@ -327,7 +327,7 @@ export function createReceivedConnectionCard(connection) {
       <!-- Collapsible Details -->
       <div class="card-details-expandable hidden">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
 
         ${onboarding.strong_subjects && onboarding.strong_subjects.length > 0 ? `
@@ -365,8 +365,8 @@ export function createSentConnectionCard(connection) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar || '/static/default-avatar.png'}" >
-          <img src="${user.avatar || '/static/default-avatar.png'}"  class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar || '/static/default-avatar.png')}" >
+          <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}"  class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline">${user.last_active || 'Offline'}</span>`
@@ -374,11 +374,11 @@ export function createSentConnectionCard(connection) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
 
@@ -401,7 +401,7 @@ export function createSentConnectionCard(connection) {
       <!-- Your message -->
       ${connection.your_message ? `
       <div class="connection-message">
-        <p>Your message: "${connection.your_message}"</p>
+        <p>Your message: "${escapeHtml(connection.your_message)}"</p>
         <small>Sent ${formatTimeAgo(connection.requested_at)}</small>
       </div>
       ` : ''}
@@ -432,7 +432,7 @@ export function createSentConnectionCard(connection) {
       <!-- Collapsible Details -->
       <div class="card-details-expandable hidden">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
       </div>
     </div>
@@ -455,8 +455,8 @@ export function createDiscoveryConnectionCard(connection) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar || '/static/default-avatar.png'}">
-          <img src="${user.avatar || '/static/default-avatar.png'}" class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar || '/static/default-avatar.png')}">
+          <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}" class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline"></span>`
@@ -464,11 +464,11 @@ export function createDiscoveryConnectionCard(connection) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
 
@@ -502,7 +502,7 @@ export function createDiscoveryConnectionCard(connection) {
         <p class="mutual-label">${connection.mutuals_count} mutual connection${connection.mutuals_count !== 1 ? 's' : ''}</p>
         <div class="mutual-avatars">
           ${sampleMutuals.map(m => `
-            <img data-action='view-avatar' data-username=${m.username} src="${m.avatar || '/static/default-avatar.png'}" alt="${m.name}" class="mutual-avatar" title="${m.name}">
+            <img data-action='view-avatar' data-username=${escapeHtml(m.username)} src="${escapeHtml(m.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(m.name)}" class="mutual-avatar" title="${escapeHtml(m.name)}">
           `).join('')}
         </div>
       </div>
@@ -519,7 +519,7 @@ export function createDiscoveryConnectionCard(connection) {
 
       <!-- Primary Actions -->
       <div class="card-actions-primary">
-        <button class="btn btn-primary" data-user-name="${user.username}" data-action="open-connection-request" data-user-id="${user.id}">
+        <button class="btn btn-primary" data-user-name="${escapeHtml(user.username)}" data-action="open-connection-request" data-user-id="${user.id}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
             <circle cx="8.5" cy="7" r="4"></circle>
@@ -541,7 +541,7 @@ export function createDiscoveryConnectionCard(connection) {
       <!-- Collapsible Details -->
       <div class="card-details-expandable hidden">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
 
         ${onboarding.strong_subjects && onboarding.strong_subjects.length > 0 ? `
@@ -568,8 +568,8 @@ export function createSugguestionConnectionCard(connection) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar || '/static/default-avatar.png'}">
-          <img src="${user.avatar || '/static/default-avatar.png'}" class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar || '/static/default-avatar.png')}">
+          <img src="${escapeHtml(user.avatar || '/static/default-avatar.png')}" class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline"></span>`
@@ -577,11 +577,11 @@ export function createSugguestionConnectionCard(connection) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name" data-action="view-profile" data-user-id="${user.id}">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
 
@@ -610,7 +610,7 @@ export function createSugguestionConnectionCard(connection) {
       <!-- Reasons -->
       ${reasons.length > 0 ? `
       <div class="suggestion-reasons">
-        ${reasons.map(r => `<span class="reason-tag">${r}</span>`).join('')}
+        ${reasons.map(r => `<span class="reason-tag">${escapeHtml(r)}</span>`).join('')}
       </div>
       ` : ''}
 
@@ -631,7 +631,7 @@ export function createSugguestionConnectionCard(connection) {
 
       <!-- Primary Actions -->
       <div class="card-actions-primary">
-        <button class="btn btn-primary"data-user-name="${user.username}" data-action="open-connection-request" data-user-id="${user.id}">
+        <button class="btn btn-primary"data-user-name="${escapeHtml(user.username)}" data-action="open-connection-request" data-user-id="${user.id}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
             <circle cx="8.5" cy="7" r="4"></circle>
@@ -653,14 +653,14 @@ export function createSugguestionConnectionCard(connection) {
       <!-- Collapsible Details -->
       <div class="card-details-expandable hidden">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
 
         ${onboarding.subjects && onboarding.subjects.length > 0 ? `
         <div class="detail-section">
           <h4 class="section-title">Subjects</h4>
           <div class="tags-list">
-            ${onboarding.subjects.map(s => `<span class="tag">${s}</span>`).join('')}
+            ${onboarding.subjects.map(s => `<span class="tag">${escapeHtml(s)}</span>`).join('')}
           </div>
         </div>
         ` : ''}
@@ -694,16 +694,16 @@ export function createBlockedUserCard(user) {
       <!-- Header -->
       <div class="card-header">
         <div class="avatar-container">
-          <img src="${user.avatar}" class="user-avatar" loading="lazy" alt="${user.name}">
+          <img src="${escapeHtml(user.avatar)}" class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           <span class="status-dot blocked" title="Blocked"></span>
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
       </div>
@@ -711,7 +711,7 @@ export function createBlockedUserCard(user) {
       <!-- Info -->
       <div class="card-details-expandable">
         <div class="detail-section">
-          ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+          ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
         </div>
 
         <div class="detail-section muted">
@@ -748,8 +748,8 @@ export function createSearchResultCard(user) {
       
       <!-- Header -->
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" data-src="${user.avatar}">
-          <img src="${user.avatar}" class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" data-src="${escapeHtml(user.avatar)}">
+          <img src="${escapeHtml(user.avatar)}" class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline">${user.last_active || 'Offline'}</span>`
@@ -757,18 +757,18 @@ export function createSearchResultCard(user) {
         </div>
 
         <div class="user-basic-info">
-          <h3 class="user-name">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            ${user.department ? `<span class="meta-badge">${user.department}</span>` : ''}
-            ${user.class_level ? `<span class="meta-badge">${user.class_level}</span>` : ''}
+            ${user.department ? `<span class="meta-badge">${escapeHtml(user.department)}</span>` : ''}
+            ${user.class_level ? `<span class="meta-badge">${escapeHtml(user.class_level)}</span>` : ''}
           </div>
         </div>
       </div>
 
       <!-- Bio -->
       <div class="detail-section">
-        ${user.bio ? `<p class="user-bio">${user.bio}</p>` : ''}
+        ${user.bio ? `<p class="user-bio">${escapeHtml(user.bio)}</p>` : ''}
       </div>
 
       <!-- Stats -->
@@ -808,7 +808,7 @@ function renderConnectionButton(user) {
       return `<button class="btn btn-secondary" disabled style="${indigoGradient}">Blocked</button>`;
     
     default:
-      return `<button data-user-name="${user.username}" class="btn btn-primary" data-action="open-connection-request" data-user-id="${user.id}" style="${indigoGradient}">Connect</button>`;
+      return `<button data-user-name="${escapeHtml(user.username)}" class="btn btn-primary" data-action="open-connection-request" data-user-id="${user.id}" style="${indigoGradient}">Connect</button>`;
   }
 }
 
@@ -823,8 +823,8 @@ export function createMutualConnectionCard(connection) {
     <div class="connection-card mutual" data-connection-id="${connection.id}" data-user-id="${user.id}">
       
       <div class="card-header">
-        <div class="avatar-container" data-action="view-avatar" src="${connection.avatar || '/static/default-avatar.png'}">
-          <img src="${connection.avatar || '/static/default-avatar.png'}"  class="user-avatar" loading="lazy" alt="${user.name}">
+        <div class="avatar-container" data-action="view-avatar" src="${escapeHtml(connection.avatar || '/static/default-avatar.png')}">
+          <img src="${escapeHtml(connection.avatar || '/static/default-avatar.png')}"  class="user-avatar" loading="lazy" alt="${escapeHtml(user.name)}">
           ${user.is_online 
             ? '<span class="status-dot online"></span>' 
             : `<span class="status-dot offline">${user.last_active || 'Offline'}</span>`
@@ -833,10 +833,10 @@ export function createMutualConnectionCard(connection) {
         
 
         <div class="user-basic-info">
-          <h3 class="user-name">${user.name}</h3>
-          <p class="user-username">@${user.username}</p>
+          <h3 class="user-name">${escapeHtml(user.name)}</h3>
+          <p class="user-username">@${escapeHtml(user.username)}</p>
           <div class="user-meta-inline">
-            <span class="meta-badge">${user.department || '—'}</span>
+            <span class="meta-badge">${escapeHtml(user.department || '—')}</span>
           </div>
         </div>
       </div>
@@ -865,7 +865,7 @@ export function createMutualConnectionCard(connection) {
 export function buildAvailableNowList(availableUsers, subject) {
   if (!availableUsers || !availableUsers.length) {
     return `<div class="p-empty" style="padding:1rem;text-align:center;color:var(--text-secondary);">
-      ${subject ? `No connections are free right now who can help with "${subject}".` : 'No connections are free right now.'}
+      ${subject ? `No connections are free right now who can help with "${escapeHtml(subject)}".` : 'No connections are free right now.'}
     </div>`;
   }
   return availableUsers.map(entry => {
@@ -874,18 +874,18 @@ export function buildAvailableNowList(availableUsers, subject) {
     const repIcon = getReputationIcon(u.reputation_level);
     const reasons = [];
     if (avail.is_online) reasons.push('🟢 Online now');
-    if (avail.can_help_with_subject) reasons.push(`📚 Can help with "${subject}"`);
+    if (avail.can_help_with_subject) reasons.push(`📚 Can help with "${escapeHtml(subject)}"`);
     if (avail.schedule_available) reasons.push('📅 Free per their schedule');
 
     return `
       <div class="connection-card" data-user-id="${u.id}" style="padding:0.75rem;">
         <div style="display:flex;align-items:center;gap:0.6rem;">
-          <img src="${u.avatar || '/static/default-avatar.png'}" alt="${u.name}"
-               data-action="view-avatar" data-src="${u.avatar || '/static/default-avatar.png'}"
+          <img src="${escapeHtml(u.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(u.name)}"
+               data-action="view-avatar" data-src="${escapeHtml(u.avatar || '/static/default-avatar.png')}"
                style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;cursor:pointer;">
           <div style="flex:1;min-width:0;">
-            <div style="font-weight:600;font-size:0.88rem;">${repIcon} ${u.name}</div>
-            <div style="font-size:0.75rem;color:var(--text-secondary);">${u.department || ''}</div>
+            <div style="font-weight:600;font-size:0.88rem;">${repIcon} ${escapeHtml(u.name)}</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">${escapeHtml(u.department || '')}</div>
           </div>
           <button data-action="form-thread" data-user-id="${u.id}"
                   class="p-btn p-btn--secondary" style="flex-shrink:0;padding:0.3rem 0.7rem;font-size:0.75rem;">
@@ -894,7 +894,7 @@ export function buildAvailableNowList(availableUsers, subject) {
         </div>
         ${reasons.length ? `
           <div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.4rem;">
-            ${reasons.map(r => `<span style="font-size:0.7rem;color:var(--text-secondary);">${r}</span>`).join(' ')}
+            ${reasons.map(r => `<span style="font-size:0.7rem;color:var(--text-secondary);">${escapeHtml(r)}</span>`).join(' ')}
           </div>` : ''}
       </div>`;
   }).join('');
@@ -919,13 +919,13 @@ export function buildConnectionDetails(data) {
     <div style="display:flex;flex-direction:column;gap:1rem;max-height:70vh;overflow-y:auto;">
 
       <div style="display:flex;align-items:center;gap:0.75rem;">
-        <img src="${partner.avatar || '/static/default-avatar.png'}" alt="${partner.name}"
-             data-action="view-avatar" data-src="${partner.avatar || '/static/default-avatar.png'}"
+        <img src="${escapeHtml(partner.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(partner.name)}"
+             data-action="view-avatar" data-src="${escapeHtml(partner.avatar || '/static/default-avatar.png')}"
              style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;">
         <div>
-          <div style="font-weight:700;font-size:1rem;">${repIcon} ${partner.name}</div>
+          <div style="font-weight:700;font-size:1rem;">${repIcon} ${escapeHtml(partner.name)}</div>
           <div style="font-size:0.78rem;color:var(--text-secondary);">
-            ${partner.department || ''} ${partner.is_online ? '• 🟢 Online' : ''}
+            ${escapeHtml(partner.department || '')} ${partner.is_online ? '• 🟢 Online' : ''}
           </div>
         </div>
       </div>
@@ -935,7 +935,7 @@ export function buildConnectionDetails(data) {
           <span style="font-size:0.82rem;font-weight:700;">Connection Health</span>
           <span style="font-size:0.9rem;font-weight:700;color:${healthColor};">${health?.health_score ?? '—'}%</span>
         </div>
-        <div style="font-size:0.78rem;color:var(--text-secondary);">${health?.suggestion || ''}</div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);">${escapeHtml(health?.suggestion || '')}</div>
         <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.3rem;">
           Connected ${connection.days_connected} day(s) ago •
           Last interaction ${health?.last_interaction_days ?? '—'} day(s) ago
@@ -952,7 +952,7 @@ export function buildConnectionDetails(data) {
         ${interaction_metrics.last_message ? `
           <div style="margin-top:0.4rem;font-size:0.76rem;color:var(--text-secondary);">
             Last message ${interaction_metrics.last_message.days_ago}d ago:
-            "${interaction_metrics.last_message.preview}"
+            "${escapeHtml(interaction_metrics.last_message.preview)}"
           </div>` : ''}
       </div>
 
@@ -961,7 +961,7 @@ export function buildConnectionDetails(data) {
           Shared Threads (${shared_threads.count})
         </div>
         ${shared_threads.threads.length ? shared_threads.threads.map(t => `
-          <div style="font-size:0.78rem;padding:0.25rem 0;">${t.title}</div>
+          <div style="font-size:0.78rem;padding:0.25rem 0;">${escapeHtml(t.title)}</div>
         `).join('') : `<div class="p-empty">None yet</div>`}
       </div>
 
@@ -972,7 +972,7 @@ export function buildConnectionDetails(data) {
         ${mutual_connections.sample.length ? `
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
             ${mutual_connections.sample.map(m => `
-              <img src="${m.avatar || '/static/default-avatar.png'}" alt="${m.name}" title="${m.name}"
+              <img src="${escapeHtml(m.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(m.name)}" title="${escapeHtml(m.name)}"
                    style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
             `).join('')}
           </div>` : `<div class="p-empty">None yet</div>`}
