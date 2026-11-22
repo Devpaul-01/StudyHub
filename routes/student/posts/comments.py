@@ -166,7 +166,10 @@ def mark_solution(current_user, post_id):
             # db.session.commit() a few lines below covers this change too,
             # as one transaction alongside the solution-marking and
             # notification writes.
-            reputation_result = award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
+            reputation_result = award_reputation(
+                commenter.id, "comment_marked_solution", "comment", comment_id,
+                idempotency_key=f"solution:{comment_id}", once_per_related=True,
+            )
             
             # ✅ Check badge milestones
             # check_and_award_badge commits internally (commit=True default,
@@ -384,7 +387,11 @@ def mark_comment_helpful(current_user, comment_id):
         
         # ✅ Award reputation to commenter
         from routes.student.reputation import award_reputation
-        award_reputation(comment.student_id, "comment_marked_helpful", "comment", comment_id)
+        # One payout per (comment, marker): mark/unmark/mark must not pay again.
+        award_reputation(
+            comment.student_id, "comment_marked_helpful", "comment", comment_id,
+            idempotency_key=f"helpful:{comment_id}:{current_user.id}",
+        )
 
         # Document 2 §5 fix: award_reputation() no longer commits internally
         # (moved to services/reputation_service.py, which follows the
