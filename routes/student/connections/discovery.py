@@ -48,6 +48,27 @@ from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 logger = logging.getLogger(__name__)
 
 connections_discovery_bp = Blueprint("connections_discovery", __name__)
+def _not_related_to(user_id):
+    """
+    SQL predicate: "no connection row of ANY status (pending / accepted /
+    rejected / blocked) between User and `user_id`".
+
+    Audit CON-15: replaces loading every existing connection into Python and
+    sending a growing `NOT IN (<ids>)` list with each suggestion query.
+    """
+    return ~db.session.query(Connection.id).filter(
+        or_(
+            and_(Connection.requester_id == user_id, Connection.receiver_id == User.id),
+            and_(Connection.receiver_id == user_id, Connection.requester_id == User.id),
+        )
+    ).exists()
+
+
+def _recently_active_first():
+    """Deterministic candidate order: most recently active, then newest id."""
+    return (User.last_active.desc().nullslast(), User.id.desc())
+
+
 @connections_discovery_bp.route("/connections/mutual/<int:user_id>", methods=["GET"])
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
@@ -219,23 +240,6 @@ def connection_suggestions(current_user):
             logger.info(f"[connection_suggestions] user_id={current_user.id} has no onboarding details — "
                         f"scoring will be skipped for both categories")
 
-        # Build excluded IDs from existing connections
-        existing_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            )
-        ).all()
-        logger.debug(f"[connection_suggestions] user_id={current_user.id} "
-                     f"existing_connections_count={len(existing_connections)}")
-
-        excluded_ids = {current_user.id}
-        for conn in existing_connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            excluded_ids.add(other_id)
-
-        logger.debug(f"[connection_suggestions] user_id={current_user.id} excluded_ids_count={len(excluded_ids)}")
-
         # OPTIMIZED: Single 3-way join fetches all candidates with profiles and
         # onboarding at once — replaces 2 per-candidate queries inside the loop.
         candidates_data = (
@@ -243,9 +247,11 @@ def connection_suggestions(current_user):
             .join(StudentProfile, StudentProfile.user_id == User.id)
             .join(OnboardingDetails, OnboardingDetails.user_id == User.id)
             .filter(
-                User.id.notin_(excluded_ids),
+                User.id != current_user.id,
+                _not_related_to(current_user.id),
                 User.status == "approved",
             )
+            .order_by(*_recently_active_first())
             .limit(100)
             .all()
         )
@@ -524,26 +530,14 @@ def _get_generic_user_suggestions(current_user, limit=20, message=None):
         user_profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
         user_onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
         
-        # Get existing connections to exclude
-        existing_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            )
-        ).all()
-        
-        excluded_ids = [current_user.id]
-        for conn in existing_connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            excluded_ids.append(other_id)
-        
         # ========================================
         # QUERY: Get potential candidates
         # ========================================
-        
-        # Start with base query: approved users not in excluded list
+
+        # Base query: approved users with no relationship of any kind to me
         candidates_query = User.query.filter(
-            User.id.notin_(excluded_ids),
+            User.id != current_user.id,
+            _not_related_to(current_user.id),
             User.status == "approved"
         )
         
@@ -1042,19 +1036,6 @@ def connection_suggestions_flat(current_user):
 
         limit = min(int(request.args.get("limit", 20)), 50)
 
-        # Build excluded IDs
-        existing_connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            )
-        ).all()
-
-        excluded_ids = {current_user.id}
-        for conn in existing_connections:
-            other_id = conn.receiver_id if conn.requester_id == current_user.id else conn.requester_id
-            excluded_ids.add(other_id)
-
         # OPTIMIZED: Single 3-way join fetches all candidates with profiles and
         # onboarding at once — replaces 2 per-candidate queries inside the loop.
         candidates_data = (
@@ -1062,9 +1043,11 @@ def connection_suggestions_flat(current_user):
             .join(StudentProfile, StudentProfile.user_id == User.id)
             .outerjoin(OnboardingDetails, OnboardingDetails.user_id == User.id)
             .filter(
-                User.id.notin_(excluded_ids),
+                User.id != current_user.id,
+                _not_related_to(current_user.id),
                 User.status == "approved",
             )
+            .order_by(*_recently_active_first())
             .limit(100)
             .all()
         )
