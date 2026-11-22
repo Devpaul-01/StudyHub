@@ -2,7 +2,7 @@
 
 **Scope:** Backend architecture reference. Covers runtime topology, request lifecycle, data model, AI infrastructure, background processing, caching, and the horizontal-scaling work that took the app from a single-process assumption to a Redis-coordinated multi-instance one.
 
-**A note on currency:** parts of this document describe subsystems (WebSocket presence, distributed scheduler locking, HTTP rate limiting) that a previous version of this project's own README described as future work or single-process-only. That refactor has since shipped in the code. Where it's relevant, this document says so explicitly rather than silently presenting the new state as if it had always been there — see §20 for the specific before/after.
+**A note on currency:** parts of this document describe subsystems (WebSocket presence, distributed scheduler locking, HTTP rate limiting) that a previous version of this project's own README described as future work or single-process-only. That refactor has since shipped in the code. Where it's relevant, this document says so explicitly rather than silently presenting the new state as if it had always been there — see §20 for the specific before/after. The AI layer went through a second, separate migration after that: §11 below describes the current state, where every AI call is routed through a self-hosted [llm-gateway](https://github.com/Devpaul-01/llm-gateway) instance rather than this codebase talking to six vendor SDKs directly.
 
 ---
 
@@ -16,7 +16,7 @@ StudyHub is a Flask monolith — one Python codebase, one PostgreSQL database �
 
 All three can run as one combined process (`start-all.py`, for a single small deployment) or as genuinely separate deployables (`app.py` under Gunicorn + one or more standalone `worker.py` processes) — see §3 for how the code enforces that these two modes don't collide with each other.
 
-It is not a distributed system in the sense of independently-deployable services with their own datastores — there's one Postgres database and one Flask codebase. What makes it more than a typical CRUD monolith is what's layered on top: a self-built multi-provider LLM abstraction with real failover, Redis used for four structurally different purposes (cache, distributed lock, presence tracking, job queue) rather than one, and a horizontal-scaling pass that moved every piece of in-process state that needed to survive multiple instances into Redis, while leaving the state that's safe to keep local exactly where it was.
+It is not a distributed system in the sense of independently-deployable services with their own datastores — there's one Postgres database and one Flask codebase. What makes it more than a typical CRUD monolith is what's layered on top: a classified AI call/retry engine that now talks to exactly one upstream — a separate, self-built [llm-gateway](https://github.com/Devpaul-01/llm-gateway) service that owns real provider failover across a dozen registered providers — Redis used for four structurally different purposes (cache, distributed lock, presence tracking, job queue) rather than one, and a horizontal-scaling pass that moved every piece of in-process state that needed to survive multiple instances into Redis, while leaving the state that's safe to keep local exactly where it was.
 
 ![StudyHub system architecture — client, perimeter, auth chain, application layer, async processing, real-time layer, data layer, and external services](assets/architecture/system-architecture.png)
 
@@ -46,7 +46,7 @@ flowchart TB
     end
 
     subgraph External["External Services"]
-        AI[6 LLM Providers<br/>Gemini · Groq · Cohere · Cloudflare · Mistral · OpenRouter]
+        AI[Self-hosted llm-gateway<br/>OpenAI-compatible endpoint · 12 providers behind it]
         CLOUDINARY[Cloudinary — media storage]
         MAIL[Flask-Mail SMTP]
         FCM[Firebase Cloud Messaging]
@@ -505,7 +505,9 @@ The unread counter itself carries a TTL specifically so it can **self-heal**: on
 
 ## 11. AI architecture
 
-This is the most substantial subsystem in the codebase, so it gets the most space. The short version: **one classified retry/fallback engine, five distinct entry points that all funnel into it, and Redis-shared cross-instance health state with a kill switch back to the old per-process behavior.**
+This is the most substantial subsystem in the codebase, so it gets the most space. The short version: **one classified call engine, five distinct entry points that all funnel into it, and — as of the llm-gateway migration — exactly one upstream: a self-built, self-hostable [llm-gateway](https://github.com/Devpaul-01/llm-gateway) instance that owns the provider/key/model failover this codebase used to do itself.**
+
+That migration moved the hard, infrastructure-shaped part of this subsystem — per-key cooldowns, a provider blacklist, background model discovery, six vendor SDKs — out of StudyHub's own request path and into its own repository. This codebase's job shrank to: build an OpenAI-shaped request (with a ranked `fallback_models` chain attached), send it to the gateway's `POST /v1/chat/completions`, and classify the one HTTP response that comes back. §11.1–11.2 below describe what's still here; §11.3 describes what moved.
 
 ### 11.1 Entry points
 
@@ -517,87 +519,90 @@ flowchart TB
     E4["Standalone Learnora chat<br/>(SSE streaming)"]
     E5["Post-context Q&A<br/>(ask about a specific post)"]
 
-    E1 & E2 & E3 & E5 --> QUEUE["_build_call_queue()<br/>checks Redis-shared health state — cooldown/blacklist per provider,<br/>visible to every app instance"]
-    QUEUE --> FLAT["Flattens to an ordered queue:<br/>[provider1×model1, provider1×model2, provider2×model1, ...]"]
-    FLAT --> CALL["call_ai_response()<br/>walks the queue, attempt N"]
+    E1 & E2 & E3 & E5 --> QUEUE["_build_call_queue()<br/>at most ONE entry now — primary model +<br/>fallback_models chain, gateway walks it server-side"]
+    QUEUE --> CALL["call_ai_response()<br/>one gateway call per attempt"]
     CALL -->|success| CLEAN["clean_ai_response()<br/>strip reasoning blocks, unwrap stray code fences"]
-    CALL -->|failure| CLASSIFY["classify_provider_error()<br/>splits into 4 outcomes"]
+    CALL -->|failure| CLASSIFY["classify_provider_error()<br/>splits into 4 outcomes, against the gateway's error surface"]
 
-    CLASSIFY --> KF["KEY_FAULT (401/402/403/429)<br/>cool THIS key in Redis, advance queue"]
-    CLASSIFY --> PT["PROVIDER_TRANSIENT (5xx/network)<br/>do NOT cool key, advance queue"]
-    CLASSIFY --> BM["BAD_MODEL (400 + bad-model signal)<br/>evict model from shared cache, advance queue"]
-    CLASSIFY --> NR["NON_RETRYABLE<br/>abort immediately, don't burn rest of queue"]
+    CLASSIFY --> KF["KEY_FAULT — unused against the gateway<br/>(single key; 401/403 is NON_RETRYABLE instead)"]
+    CLASSIFY --> PT["PROVIDER_TRANSIENT (429/502/503/504 from gateway)<br/>short client-side cooldown, do NOT rotate — only one key"]
+    CLASSIFY --> BM["BAD_MODEL (400 + bad-model signal)<br/>evict model from this process's fallback_models list"]
+    CLASSIFY --> NR["NON_RETRYABLE<br/>abort immediately — same single gateway would fail identically"]
 
     E4 -->|"needs token-by-token streaming"| STREAM["StudyAssistant.stream_response()<br/>separate SSE path, same classification"]
+
+    CALL -.->|"one HTTPS call, one project key"| GW["llm-gateway<br/>(github.com/Devpaul-01/llm-gateway)<br/>owns failover across 12 registered providers"]
 ```
 
-Five distinct product surfaces — a thread `@mention`, the meeting-notes generator, the per-message AI action menu, the standalone Learnora chat, and post Q&A — used to each hand-roll their own retry loop, with retry counts and timeouts that had quietly drifted apart from each other across the four non-streaming call sites. They now funnel into one consolidated engine.
+Five distinct product surfaces — a thread `@mention`, the meeting-notes generator, the per-message AI action menu, the standalone Learnora chat, and post Q&A — used to each hand-roll their own retry loop, with retry counts and timeouts that had quietly drifted apart from each other across the four non-streaming call sites. They funnel into one consolidated engine, which now makes exactly one outbound call per attempt rather than walking a long provider×model queue itself.
 
-![AI provider routing, classification, and failover — entry points, call queue, and the four-way error classification](assets/architecture/ai-provider-routing.png)
+![AI call routing, classification, and failover — entry points, call queue, and the four-way error classification, now resolved against a single self-hosted gateway](assets/architecture/ai-provider-routing.png)
 
-### 11.2 Failure classification: the actual mechanism
+### 11.2 Failure classification: re-derived against the gateway's own error surface
 
-The core design decision is that **not every provider failure means the same thing, and treating them identically wastes a resource that costs real money and has a real recovery time.** `classify_provider_error()` looks at the real structured failure data — an HTTP status code, the provider's own parsed JSON error body, a network-level exception type — never a re-parsed message string, and sorts every failure into exactly one of four categories:
+The core design decision is unchanged from before the migration: **not every failure means the same thing, and treating them identically wastes a resource that costs real money and has a real recovery time.** `classify_provider_error()` still looks at real structured failure data — an HTTP status code, the gateway's own parsed JSON error body, a network-level exception type — never a re-parsed message string, and still sorts every failure into exactly one of four categories. What changed is which statuses map to which category, because the classification now runs against **llm-gateway's own error surface** (`internal/httpserver/apierror.go` + `internal/providers/errors.go` in that repo), not each vendor's raw API:
 
 | Category | Trigger | Action |
 |---|---|---|
-| `KEY_FAULT` | 401 / 402 / 403 / 429 | Cool *this specific key* for an hour, advance to the next queue entry |
-| `PROVIDER_TRANSIENT` | 5xx / network-level failure | Advance to the next queue entry — **do not** cool the key, since the key did nothing wrong |
-| `BAD_MODEL` | 400 + a structured "model not found/invalid/decommissioned" signal in the error body | Evict just that model from the shared model cache, advance to the next queue entry |
-| `NON_RETRYABLE` | Anything not explicitly matched above | Stop the fallback chain immediately — don't burn through every remaining provider on a request that will never succeed anywhere |
+| `KEY_FAULT` | *(no longer used against the gateway)* | With only one gateway key left, "cool this key and rotate to another" has no working alternative to rotate to — a 401/403 (invalid/revoked gateway key) is now a hard misconfiguration, filed under `NON_RETRYABLE` instead |
+| `PROVIDER_TRANSIENT` | 429 / 500 / 502 / 503 / 504 from the gateway — its own admission control (rate limit / concurrency / daily token budget) and upstream failures once **every** provider/credential it has is exhausted | Short client-side cooldown (`LLM_GATEWAY_COOLDOWN_SECONDS`, default 20s) before the next call — protecting a struggling gateway, not picking a different key |
+| `BAD_MODEL` | 400 + a structured model-not-found signal | Evicted from this process's in-memory `fallback_models` list (`evict_model`), so the same dead model name isn't retried every request until the next deploy |
+| `NON_RETRYABLE` | 400 (malformed request) / 401 / 403 (gateway key missing, invalid, or revoked) / 413 (body too large) | Stop immediately — retrying the identical request against the same single gateway would fail the same way every time |
 
-The distinction that matters most in practice is `KEY_FAULT` vs. `PROVIDER_TRANSIENT`: before this classification existed, a provider-wide outage (a 503) was cooling the API key exactly like a genuinely bad credential would, wasting that key's entire hour-long cooldown window over a failure that had nothing to do with the key itself. Splitting the two means a transient provider outage no longer costs an hour of that key's availability once the provider recovers.
+The distinction that matters most in practice is still `PROVIDER_TRANSIENT` vs. `NON_RETRYABLE`: a gateway-reported rate limit or a transient 503 from *every* provider it has is worth a short retry once the gateway recovers, while a dead or revoked gateway key will never succeed no matter how many times the identical request is retried.
 
-The `BAD_MODEL` detection (`_is_bad_model_signal`) is itself narrow by design — it checks a provider's structured `error.type` / `error.code` / `error.message` fields for a model-related pattern, not an arbitrary substring match against the full response body, which keeps it from misfiring on unrelated 400s that happen to mention the word "model" somewhere in an unrelated context.
+The `BAD_MODEL` detection (`_is_bad_model_signal`) is itself narrow by design — it checks the gateway's structured `error.type` / `error.code` / `error.message` fields for a model-related pattern, not an arbitrary substring match against the full response body, which keeps it from misfiring on unrelated 400s that happen to mention the word "model" somewhere in an unrelated context.
 
-### 11.3 Cross-instance provider health state
+### 11.3 What moved into llm-gateway, and what's left here
 
-Cooldown state, provider-type blacklist status, round-robin rotation index, and the discovered-model cache all live in Redis (`ai_provider_service.MultiProviderManager`), gated behind a fail-open kill switch, `AI_PROVIDER_REDIS_STATE_ENABLED` (default on). This exists because the naive in-process version has a real correctness gap under more than one API instance: if instance A marks a key as failed, instance B has no way to know and keeps sending traffic to a key A already knows is dead.
+Before the migration, this module *was* the failover engine: per-key cooldowns, provider-type blacklisting, a round-robin rotation index, and a background model-discovery thread all lived in `MultiProviderManager`, Redis-shared across instances behind the `AI_PROVIDER_REDIS_STATE_ENABLED` kill switch. All of that bookkeeping across real provider credentials now lives inside [llm-gateway](https://github.com/Devpaul-01/llm-gateway) itself — a separate, self-hostable service StudyHub talks to as a client, not a library this codebase owns:
 
-Every Redis read/write in this path is fail-open — a Redis hiccup degrades to an instance occasionally retrying a key another instance already knows is bad, which is a worse-but-survivable outcome, never a raised exception that breaks an AI call. Flipping the kill switch back to `false` reverts every one of these to the original per-process, in-memory behavior with no code deploy required, which matters because this manager sits behind every AI-touching feature on the platform — it's the highest-value rollback lever available for a change this central.
+- **Provider/key rotation and circuit breaking** — across whichever real providers are configured on the gateway project (its registry supports groq, mistral, openrouter, gemini, openai, deepseek, together, fireworks, cerebras, xai, deepinfra, sambanova; the pre-migration list also included Cohere and Cloudflare Workers AI, which aren't in that registry and currently have no equivalent).
+- **Credential storage** — StudyHub holds exactly one secret for this subsystem now, `LLM_GATEWAY_API_KEY`, a project-scoped gateway key. The real per-provider vendor keys live only on the gateway side.
+- **Model discovery/validity** — the gateway resolves a model by bare name, an explicit `provider` field, or an unambiguous `provider:model` form; this codebase's `GATEWAY_TEXT_MODELS` / `GATEWAY_VISION_MODELS` catalog is written in the explicit `provider:model` form specifically so routing never depends on the gateway's own model→provider inference table staying in sync with it.
 
-Provider-**type** blacklisting is a separate, coarser mechanism from per-key cooldown: if a provider type (not just one key) fails three or more times inside a 5-minute window, the whole provider type is blacklisted platform-wide for 30 minutes, so a genuinely down provider doesn't get hammered with every remaining key across every instance while it's recovering.
+What's left in **this** codebase, by design, is now much smaller:
 
-### 11.4 Model discovery, done once, shared everywhere
+- A short **client-side cooldown** (`MultiProviderManager`, class name kept for backward compatibility with existing imports/tests) that stops this process from hammering a gateway that's currently struggling — still Redis-backed and cross-instance via the same `AI_PROVIDER_REDIS_STATE_ENABLED` kill switch as before, just over one shared cooldown key instead of one key per vendor credential. Every Redis read/write here is still fail-open: a Redis hiccup degrades to an occasional redundant retry, never a raised exception that breaks an AI call.
+- Building the **`fallback_models` chain** attached to every request (`_fallback_models_for`) — so the gateway walks its whole chain server-side, across every provider/credential it has, in one HTTP call, before ever reporting a failure back to StudyHub. `_build_call_queue()` therefore returns **at most one** local queue entry; a second local attempt after that one fails would just be re-asking the same gateway to retry a chain it already exhausted.
+- `warm_model_discovery()` — kept as a call site and method name so `app.py`'s `create_app()` needs no changes, but against a gateway there's no per-provider `/v1/models` crawl left to do. It's now a cheap, synchronous, best-effort log of the resolved configuration (no background thread, no network call).
 
-On startup, a background daemon thread queries each provider's live model catalogue and re-ranks the static priority list, folding in newly-available models the hardcoded config doesn't know about. It checks the shared Redis cache first — on a hit, it applies the cached ranked list with zero HTTP calls, closing a real gap where two instances could otherwise independently discover slightly different model lists from a transiently-inconsistent provider response and route two requests for the same feature to two different underlying models.
-
-This discovery call is deliberately *not* triggered from `MultiProviderManager.__init__`. An earlier version started the discovery thread — which makes live network calls — as a side effect of merely importing the module, which broke running the test suite without network access. It's now an explicit `warm_model_discovery()` call made once from `create_app()`, after blueprint registration.
-
-### 11.5 Response reliability
+### 11.4 Response reliability
 
 Every AI response is sanitized (`clean_ai_response`) before it's stored or shown: stripping leading `<think>`/`<reasoning>` blocks some reasoning models emit, removing stray SSE protocol artifacts, and unwrapping a response a model mistakenly wrapped entirely in a bare code fence — with a heuristic specifically designed to avoid unwrapping *genuine* fenced code the model intended to show, while leaving real markdown formatting untouched since the frontend renderer depends on it surviving.
 
-Vision handling is provider-aware, not one-size-fits-all. Image attachments are base64-encoded and sent as `image_url` parts only when the currently-selected model actually supports vision; otherwise the image is replaced with an explicit text placeholder describing that an image was attached but can't be shown, rather than being silently dropped or causing the request to fail. Several providers — Mistral in particular, and apparently Groq's non-vision models — reject the multimodal array-of-parts message format outright unless a real image is present in it, so the message builder collapses to a plain string body whenever there's no image to embed, which is a provider-compatibility detail that only becomes visible once multiple providers are actually being run against the same code path.
+Vision handling is still model-aware, not one-size-fits-all: image attachments are base64-encoded and sent as `image_url` parts only when the currently-selected model actually supports vision; otherwise the image is replaced with an explicit text placeholder describing that an image was attached but can't be shown, rather than being silently dropped or causing the request to fail. The specific per-vendor multimodal-payload quirks this used to work around (providers that reject the array-of-parts message format outright with no image present) are now the gateway's problem to normalize, since it — not this codebase — is the thing actually dialing each vendor's API.
 
-Conversation history longer than 10 messages is automatically summarized before being sent to a provider — older turns condensed into a short digest, the 5 most recent messages kept verbatim — so prompt size stays bounded without losing all prior context.
+Conversation history longer than 10 messages is automatically summarized before being sent through the gateway — older turns condensed into a short digest, the 5 most recent messages kept verbatim — so prompt size stays bounded without losing all prior context.
 
-### 11.6 Streaming with mid-stream recovery
+### 11.5 Streaming with mid-stream recovery
 
 ```mermaid
 sequenceDiagram
     participant C as Client (SSE)
     participant SA as StudyAssistant.stream_response()
-    participant P1 as Provider A
-    participant P2 as Provider B
+    participant GW as llm-gateway
+    participant P as Real provider(s), server-side
 
     C->>SA: Chat request
-    SA->>P1: Open stream
-    P1-->>C: token, token, token...
-    P1--xSA: Mid-stream 503 (PROVIDER_TRANSIENT)
-    Note over SA: classify_provider_error() —<br/>do not cool key, mark provider exhausted
-    SA->>C: {"type": "provider_switch"}
-    SA->>P2: Open stream on different provider
-    P2-->>C: token, token, token... [DONE]
+    SA->>GW: Open stream (model + fallback_models)
+    GW->>P: Dial primary model
+    P-->>GW: token, token, token...
+    GW-->>C: token, token, token... (relayed)
+    P--xGW: Mid-stream failure
+    Note over GW: Gateway's own failover —<br/>tries next model in fallback_models
+    GW->>C: {"type": "provider_switch"}
+    GW->>P: Open stream on next model
+    P-->>C: token, token, token... [DONE]
 ```
 
-AI chat and connection overviews are all delivered as Server-Sent Event streams, not blocking JSON responses. If a provider fails partway through an already-open stream, the system switches providers **mid-stream** and emits an explicit `provider_switch` event to the client rather than failing the whole request outright — the user never has to notice the failure or resubmit. Header-stage failures (a non-2xx status before any tokens arrive, a timeout) are classified through the same four-category taxonomy described in §11.2, so a `KEY_FAULT` encountered mid-stream cools the key exactly the way a non-streaming `KEY_FAULT` does; a mid-stream error signaled *inside* an already-200 SSE body (some providers report errors this way, after headers are already sent) has no HTTP status to classify against and keeps its own narrower rate-limit/generic-error handling instead.
+AI chat and connection overviews are all delivered as Server-Sent Event streams, not blocking JSON responses. If a provider fails partway through an already-open stream, failover now happens on **the gateway's side of the wire** — StudyHub still relays a `provider_switch` event to the client rather than failing the whole request outright, so the user still never has to notice the failure or resubmit, but the actual model-switching logic is the gateway's, not this codebase's. Header-stage failures StudyHub's own client sees before any tokens arrive (a non-2xx status from the gateway itself, a timeout talking to it) are still classified through the four-category taxonomy in §11.2.
 
-### 11.7 Graceful degradation, not just failover
+### 11.6 Graceful degradation, not just failover
 
-One AI feature — the personalized "why should we connect" overview shown between two users — has a fully-functional, template-based fallback built from the *exact same* compatibility-scoring data the AI prompt itself would have used. If every provider is unavailable simultaneously, the feature still returns a coherent, auditable answer instead of an error screen. This is a deliberate pattern in the codebase rather than a one-off: build the deterministic version first, let AI enhance it when available, and never let the AI layer become a single point of failure for a feature that has a reasonable non-AI answer.
+One AI feature — the personalized "why should we connect" overview shown between two users — has a fully-functional, template-based fallback built from the *exact same* compatibility-scoring data the AI prompt itself would have used. If the gateway is unreachable, the feature still returns a coherent, auditable answer instead of an error screen. This is a deliberate pattern in the codebase rather than a one-off: build the deterministic version first, let AI enhance it when available, and never let the AI layer become a single point of failure for a feature that has a reasonable non-AI answer.
 
-### 11.8 What's still process-local, and why
+### 11.7 What's still process-local, and why
 
 Not everything moved to Redis in the horizontal-scaling pass, and one of the two things left as-is is a genuinely deferred migration, not a "no correctness gap here" case like the other:
 
