@@ -1723,7 +1723,7 @@ paths:
     get:
       tags: [Profile]
       summary: Popular skills across all users
-      security: []
+      description: Cached for 5 minutes and shared by all app instances.
       responses:
         '200':
           description: OK, top 50.

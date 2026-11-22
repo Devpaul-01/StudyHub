@@ -18,6 +18,7 @@ from models import (
 )
 from extensions import db
 from errors import ValidationError
+from services import cache_service
 from services.profile_validation import (
     ProfileValidationError, STUDY_DAYS, STUDY_SLOTS, clean_bio, clean_class_level,
     clean_plain_text, clean_study_schedule, clean_text_list,
@@ -1283,16 +1284,31 @@ def update_study_schedule(current_user):
 # POPULAR SKILLS (public endpoint)
 # ============================================================================
 
+POPULAR_SKILLS_CACHE_KEY = "sh:1:skills:popular"
+POPULAR_SKILLS_CACHE_TTL = 300   # seconds; popularity data tolerates staleness
+
+
 @profile_bp.route("/skills/popular", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
-def get_popular_skills():
-    """Get list of popular skills across all users."""
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+def get_popular_skills(current_user):
+    """Most common skills across all users (for the skill autocomplete).
+
+    The result is the same for everyone and expensive to compute (it reads
+    every user's skill list), so it is cached in Redis for a few minutes
+    and shared by all app instances.
+    """
     try:
-        users = User.query.filter(User.skills.isnot(None)).all()
+        cached = cache_service.get(POPULAR_SKILLS_CACHE_KEY)
+        if cached is not None:
+            return jsonify({"status": "success", "data": cached})
 
         skill_counts = {}
-        for u in users:
-            for skill in (u.skills or []):
+        # Only the skills column, not whole User rows.
+        for (skills,) in db.session.query(User.skills).filter(User.skills.isnot(None)):
+            for skill in (skills or []):
+                if not isinstance(skill, str):
+                    continue
                 key = skill.lower()
                 if key in skill_counts:
                     skill_counts[key]["count"] += 1
@@ -1300,18 +1316,13 @@ def get_popular_skills():
                     skill_counts[key] = {"name": skill, "count": 1}
 
         popular = sorted(skill_counts.values(), key=lambda x: x["count"], reverse=True)[:50]
+        data = {"skills": [s["name"] for s in popular], "detailed": popular}
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "skills":   [s["name"] for s in popular],
-                "detailed": popular,
-            },
-        })
+        cache_service.set(POPULAR_SKILLS_CACHE_KEY, data, ttl_seconds=POPULAR_SKILLS_CACHE_TTL)
+        return jsonify({"status": "success", "data": data})
 
-    except Exception as e:
-        current_app.logger.error(f"Get popular skills error: {str(e)}")
-        return error_response("Failed to load skills")
+    except Exception:
+        return _server_error("Get popular skills error", "Failed to load skills")
 
 
 # ============================================================================

@@ -581,7 +581,8 @@ slots are collapsed.
 onboarding record.
 
 ### `GET /student/skills/popular`
-Top 50 skills across all users, with counts. **Auth:** none.
+Top 50 skills across all users, with counts (used for the skill autocomplete). The result is
+cached for 5 minutes and shared by every app instance. **Auth:** required.
 
 ---
 

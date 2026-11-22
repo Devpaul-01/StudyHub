@@ -665,14 +665,29 @@ class TestStudyScheduleIsTheMatchingSchedule:
 # GET /skills/popular (public-ish, still token_required per blueprint norms)
 # ============================================================================
 
+@pytest.fixture
+def fake_cache(monkeypatch):
+    """In-process stand-in for the shared Redis cache."""
+    from services import cache_service
+    store = {}
+    monkeypatch.setattr(cache_service, "get", lambda key: store.get(key))
+    monkeypatch.setattr(cache_service, "set", lambda key, value, ttl_seconds: store.__setitem__(key, value))
+    return store
+
+
 class TestPopularSkills:
-    def test_returns_skills_sorted_by_frequency(self, client, make_user):
-        make_user(skills=["Python", "SQL"])
+    URL = "/student/skills/popular"
+
+    def test_requires_authentication(self, client):
+        assert client.get(self.URL).status_code == 401
+
+    def test_returns_skills_sorted_by_frequency(self, client, make_user, auth_headers, fake_cache):
+        viewer = make_user(skills=["Python", "SQL"])
         make_user(skills=["Python"])
         make_user(skills=["SQL"])
         make_user(skills=["Python"])
 
-        resp = client.get("/student/skills/popular")
+        resp = client.get(self.URL, headers=auth_headers(viewer))
 
         assert resp.status_code == 200
         data = resp.get_json()["data"]
@@ -680,23 +695,38 @@ class TestPopularSkills:
         assert data["detailed"][0] == {"name": "Python", "count": 3}
         assert data["detailed"][1] == {"name": "SQL", "count": 2}
 
-    def test_counts_are_case_insensitive_but_keep_first_seen_casing(self, client, make_user):
-        make_user(skills=["python"])
+    def test_counts_are_case_insensitive_but_keep_first_seen_casing(
+        self, client, make_user, auth_headers, fake_cache
+    ):
+        viewer = make_user(skills=["python"])
         make_user(skills=["Python"])
 
-        resp = client.get("/student/skills/popular")
+        resp = client.get(self.URL, headers=auth_headers(viewer))
 
         detailed = resp.get_json()["data"]["detailed"]
         assert len(detailed) == 1
         assert detailed[0]["count"] == 2
 
-    def test_empty_when_no_users_have_skills(self, client, make_user):
-        make_user(skills=[])
+    def test_empty_when_no_users_have_skills(self, client, make_user, auth_headers, fake_cache):
+        viewer = make_user(skills=[])
 
-        resp = client.get("/student/skills/popular")
+        resp = client.get(self.URL, headers=auth_headers(viewer))
 
         assert resp.status_code == 200
         assert resp.get_json()["data"]["skills"] == []
+
+    def test_second_request_is_served_from_the_cache(
+        self, client, db_session, make_user, auth_headers, fake_cache
+    ):
+        viewer = make_user(skills=["Python"])
+        first = client.get(self.URL, headers=auth_headers(viewer)).get_json()["data"]
+
+        viewer.skills = ["Rust"]          # would change a fresh computation
+        db_session.commit()
+        second = client.get(self.URL, headers=auth_headers(viewer)).get_json()["data"]
+
+        assert fake_cache, "result should have been stored"
+        assert second == first
 
 
 # ============================================================================
