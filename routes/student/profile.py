@@ -442,17 +442,27 @@ def update_academic_info(current_user):
 # AVATAR
 # ============================================================================
 
+AVATAR_MAX_PIXELS    = 25_000_000   # reject anything bigger before decoding it
+AVATAR_MAX_DIMENSION = 512          # avatars are shown at 28-144 px
+AVATAR_UPLOAD_TIMEOUT = 20          # seconds to wait for Cloudinary
+
+
+def _avatar_public_id(user_id):
+    """Cloudinary public id used by upload_avatar (folder + file name)."""
+    return f"avatars/{user_id}/avatar_{user_id}"
+
+
 @profile_bp.route("/profile/avatar/upload", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def upload_avatar(current_user):
-    """Upload profile picture to Cloudinary (or local fallback)."""
+    """Upload a profile picture to Cloudinary.
+
+    The image is validated, re-encoded by Pillow and shrunk to at most
+    AVATAR_MAX_DIMENSION pixels before it is sent anywhere.
+    """
     try:
-        try:
-            from services.storage import cloudinary_storage, filename_service
-            CLOUD_AVAILABLE = True
-        except ImportError:
-            CLOUD_AVAILABLE = False
+        from services.storage import cloudinary_storage
 
         if "avatar" not in request.files:
             return error_response("No file provided")
@@ -465,56 +475,75 @@ def upload_avatar(current_user):
         allowed  = {"jpg", "jpeg", "png", "gif", "webp"}
         ext      = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         if ext not in allowed:
-            return error_response(f"Invalid file type. Allowed: {', '.join(allowed)}")
+            return error_response(f"Invalid file type. Allowed: {', '.join(sorted(allowed))}")
 
-        # Document 3 §3: cheap extension check above is early rejection
-        # only — validate_and_normalize_image() is what makes an SVG (or
-        # anything else) mislabeled as .jpg structurally impossible to
-        # sneak through, since it only ever hands Cloudinary bytes that
-        # Pillow itself decoded and re-encoded from a genuine raster image.
+        # Cheap extension check above is early rejection only —
+        # validate_and_normalize_image() is what makes an SVG (or anything
+        # else) mislabeled as .jpg structurally impossible to sneak
+        # through, since it only ever hands Cloudinary bytes that Pillow
+        # itself decoded and re-encoded from a genuine raster image.
         from services.upload_validation_service import validate_and_normalize_image
         try:
-            clean_file = validate_and_normalize_image(file)
+            clean_file = validate_and_normalize_image(
+                file, max_pixels=AVATAR_MAX_PIXELS, max_dimension=AVATAR_MAX_DIMENSION)
         except ValidationError as e:
             return error_response(str(e))
 
-        if CLOUD_AVAILABLE:
-            folder             = f"avatars/{current_user.id}"
-            generated_filename = f"avatar_{current_user.id}"
-            result = cloudinary_storage.upload_file(
-                clean_file, folder, generated_filename, resource_type="image"
-            )
-            if not result.get("success"):
-                return error_response(f"Upload failed: {result.get('error', 'Unknown error')}")
-            avatar_url = result["url"]
-        else:
-            avatar_url = save_file(file, "avatars", ALLOWED_IMAGE_EXT)
-            avatar_url = f"/static/upload/avatars/{avatar_url}"
+        user_id = current_user.id
+        # Nothing is pending, so this just ends the read transaction and
+        # gives the pooled DB connection back before the (slow) network
+        # call, so a slow Cloudinary cannot pin connections.
+        db.session.commit()
 
-        current_user.avatar = avatar_url
+        result = cloudinary_storage.upload_file(
+            clean_file, f"avatars/{user_id}", f"avatar_{user_id}",
+            resource_type="image", timeout=AVATAR_UPLOAD_TIMEOUT,
+        )
+        if not result.get("success"):
+            # Provider messages can contain account details; log them, show
+            # the user something generic.
+            current_app.logger.error(
+                "Avatar upload rejected by storage for user %s: %s", user_id, result.get("error"))
+            return error_response("Could not upload the image. Please try again.", 502)
+        avatar_url = result["url"]
+
+        user = User.query.get(user_id)
+        user.avatar = avatar_url
         db.session.commit()
 
         return success_response("Avatar updated successfully", data={"avatar_url": avatar_url})
 
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Avatar upload error: {str(e)}")
-        return error_response("Failed to upload avatar")
+    except Exception:
+        return _server_error("Avatar upload error", "Failed to upload avatar")
 
 
 @profile_bp.route("/profile/avatar", methods=["DELETE"])
 @limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
 def remove_avatar(current_user):
-    """Remove profile picture (reset to default)."""
+    """Remove the profile picture (reset to default) and delete the stored image."""
     try:
+        had_avatar = bool(current_user.avatar)
+        user_id    = current_user.id
         current_user.avatar = None
         db.session.commit()
-        return success_response("Avatar removed")
-    except Exception as e:
-        db.session.rollback()   # FIX: was missing rollback
-        current_app.logger.error(f"Remove avatar error: {str(e)}")
-        return error_response("Failed to remove avatar")
+    except Exception:
+        return _server_error("Remove avatar error", "Failed to remove avatar")
+
+    if had_avatar:
+        # Best effort: the profile is already updated, so a storage hiccup
+        # must not turn this into an error. The image stays reachable by its
+        # URL until it is deleted, hence the attempt.
+        try:
+            from services.storage import cloudinary_storage
+            result = cloudinary_storage.delete_file(_avatar_public_id(user_id), "image")
+            if not result.get("success"):
+                current_app.logger.warning(
+                    "Could not delete avatar asset for user %s: %s", user_id, result.get("error"))
+        except Exception:
+            current_app.logger.exception("Avatar asset deletion failed for user %s", user_id)
+
+    return success_response("Avatar removed")
 
 
 # ============================================================================

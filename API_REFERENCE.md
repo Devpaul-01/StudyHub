@@ -504,12 +504,16 @@ send `""` or `null` to clear it.
 
 ### `POST /student/profile/avatar/upload`
 `multipart/form-data`, field `avatar`. Image is decoded and re-encoded server-side before upload
-(not just extension-checked — see `SECURITY.md` §5). Allowed: jpg/jpeg/png/gif/webp.
+(not just extension-checked — see `SECURITY.md` §5), shrunk so its longest side is at most 512 px
+and rejected if it has more than 25 million pixels. Allowed: jpg/jpeg/png/gif/webp (animated GIFs
+keep only their first frame).
 
-**Auth:** required. **400** on missing file, wrong type, or failed content validation.
+**Auth:** required. **400** on missing file, wrong type, too many pixels, or failed content
+validation. **502** if the storage provider fails (the provider's message is logged, not returned).
 
 ### `DELETE /student/profile/avatar`
-**Auth:** required.
+Clears your avatar and deletes the stored image (best effort - the request succeeds even if the
+storage provider cannot be reached). **Auth:** required.
 
 ### `GET /student/profile/me`
 Serves the HTML app shell opened on the profile tab (the JSON data comes from

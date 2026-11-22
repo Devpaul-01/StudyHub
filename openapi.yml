@@ -1383,7 +1383,7 @@ paths:
                   message: { type: string }
                   data: { type: object, properties: { avatar_url: { type: string } } }
         '400':
-          description: No file, invalid file, unsupported type, or image failed content validation.
+          description: No file, invalid file, unsupported type, too many pixels (over 25 million), or image failed content validation.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
