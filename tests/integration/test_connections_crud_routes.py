@@ -12,7 +12,6 @@ previously entirely untested at any level:
   - POST /connections/reject/<request_id>
   - DELETE /connections/cancel/<request_id>
   - DELETE /connections/remove/<user_id>
-  - GET /connections/status/<user_id>
   - POST /connections/settings
   - GET /connections/list
   - GET /connections/requests/received
@@ -217,66 +216,6 @@ class TestRemoveConnection:
 
 
 # ============================================================================
-# GET /connections/status/<user_id>
-# ============================================================================
-
-class TestConnectionStatus:
-    def test_self_returns_self_status(self, client, make_user, auth_headers):
-        user = make_user()
-
-        resp = client.get(f"/student/connections/status/{user.id}", headers=auth_headers(user))
-
-        body = resp.get_json()
-        assert body["data"]["status"] == "self"
-        assert body["data"]["can_connect"] is False
-
-    def test_no_connection_returns_none_and_can_connect_true(self, client, make_user, auth_headers):
-        a = make_user()
-        b = make_user()
-
-        resp = client.get(f"/student/connections/status/{b.id}", headers=auth_headers(a))
-
-        body = resp.get_json()
-        assert body["data"]["status"] == "none"
-        assert body["data"]["can_connect"] is True
-
-    def test_pending_sent_from_requesters_perspective(
-        self, client, make_user, make_connection, auth_headers
-    ):
-        a = make_user()
-        b = make_user()
-        make_connection(a, b, status="pending", responded_at=None)
-
-        resp = client.get(f"/student/connections/status/{b.id}", headers=auth_headers(a))
-
-        assert resp.get_json()["data"]["status"] == "pending_sent"
-
-    def test_pending_received_from_receivers_perspective(
-        self, client, make_user, make_connection, auth_headers
-    ):
-        a = make_user()
-        b = make_user()
-        make_connection(a, b, status="pending", responded_at=None)
-
-        resp = client.get(f"/student/connections/status/{a.id}", headers=auth_headers(b))
-
-        assert resp.get_json()["data"]["status"] == "pending_received"
-
-    def test_accepted_returns_connected_and_can_message_true(
-        self, client, make_user, make_connection, auth_headers
-    ):
-        a = make_user()
-        b = make_user()
-        make_connection(a, b, status="accepted")
-
-        resp = client.get(f"/student/connections/status/{b.id}", headers=auth_headers(a))
-
-        body = resp.get_json()["data"]
-        assert body["status"] == "connected"
-        assert body["can_message"] is True
-
-
-# ============================================================================
 # POST /connections/settings
 # ============================================================================
 
@@ -309,6 +248,25 @@ class TestConnectionsSettings:
         from models import User
         refreshed = User.query.get(user.id)
         assert refreshed.connection_settings.get("enable_sound") is True
+
+    def test_rejects_non_boolean_and_non_object_bodies(
+        self, client, db_session, make_user, auth_headers, csrf_headers
+    ):
+        """Audit CON-22: validated input instead of storing arbitrary values / crashing."""
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        assert client.post("/student/connections/settings", json={"enable_sound": "yes"},
+                           headers=headers).status_code == 400
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        assert client.post("/student/connections/settings", data="not json",
+                           headers=headers).status_code == 400
+
+    def test_status_endpoint_was_removed(self, client, make_user, auth_headers):
+        """Audit CON-24: GET /connections/status/<id> had no consumers and was removed."""
+        user = make_user()
+        other = make_user()
+        resp = client.get(f"/student/connections/status/{other.id}", headers=auth_headers(user))
+        assert resp.status_code == 404
 
 
 # ============================================================================

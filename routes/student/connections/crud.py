@@ -991,9 +991,9 @@ def find_help_with_subject(current_user):
             }
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Find help error: ", exc_info=True)
-        return error_response("Failed to find help")
+    except Exception:
+        current_app.logger.error("Find help error", exc_info=True)
+        return error_response("Failed to find help", 500)
 
 MAX_PAGE_SIZE = 200
 
@@ -1165,9 +1165,9 @@ def received_connection_requests(current_user):
             **_page_meta(total, offset, len(requests)),
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Received requests error: ", exc_info=True)
-        return error_response("Failed to load received requests")
+    except Exception:
+        current_app.logger.error("Received requests error", exc_info=True)
+        return error_response("Failed to load received requests", 500)
 
 
 # ============================================================================
@@ -1315,9 +1315,9 @@ def sent_connection_requests(current_user):
             **_page_meta(total, offset, len(requests)),
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Sent requests error: ", exc_info=True)
-        return error_response("Failed to load sent requests")
+    except Exception:
+        current_app.logger.error("Sent requests error", exc_info=True)
+        return error_response("Failed to load sent requests", 500)
 
 
 # ============================================================================
@@ -2005,106 +2005,37 @@ def remove_connection(current_user, user_id):
 # form (Document 1 §2.1.1) available for any call site that loops over
 # multiple pairs. Imported at the top of this file under the same names.
 
-@connections_crud_bp.route("/connections/status/<int:user_id>", methods=["GET"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
-@token_required
-def connection_status(current_user, user_id):
-    """
-    Check connection status with a specific user
-    
-    Returns: none, pending_sent, pending_received, connected, blocked
-    """
-    try:
-        if user_id == current_user.id:
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "status": "self",
-                    "can_message": False,
-                    "can_connect": False
-                }
-            })
-        
-        # Check for connection
-        connection = Connection.query.filter(
-            or_(
-                and_(Connection.requester_id == current_user.id, Connection.receiver_id == user_id),
-                and_(Connection.requester_id == user_id, Connection.receiver_id == current_user.id)
-            )
-        ).first()
-        
-        if not connection:
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "status": "none",
-                    "can_message": False,
-                    "can_connect": True
-                }
-            })
-        
-        # Determine status
-        if connection.status == "accepted":
-            conn_status = "connected"
-            can_message = True
-        elif connection.status == "pending":
-            if connection.requester_id == current_user.id:
-                conn_status = "pending_sent"
-            else:
-                conn_status = "pending_received"
-            can_message = False
-        elif connection.status == "blocked":
-            conn_status = "blocked"
-            can_message = False
-        else:
-            conn_status = "rejected"
-            can_message = False
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "status": conn_status,
-                "can_message": can_message,
-                "can_connect": conn_status in ["none", "rejected"],
-                "connection_id": connection.id if connection else None,
-                "connected_at": connection.responded_at.isoformat() if connection and connection.status == "accepted" else None
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Connection status error: ", exc_info=True)
-        return error_response("Failed to check connection status")
-
-
-
-
 # ============================================================================
-# MUTUAL CONNECTIONS
-# =========================================================================
+# SETTINGS
+# ============================================================================
 
 @connections_crud_bp.route("/connections/settings", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def connections_settings(current_user):
+    """
+    Update connection settings. Body: {"enable_sound": true|false}
+    (audit CON-22: validated input, rollback + 500 on failure).
+    """
     try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error_response("Request body must be a JSON object", 400)
+
+        enable_sound = data.get("enable_sound", True)
+        if not isinstance(enable_sound, bool):
+            return error_response("enable_sound must be true or false", 400)
+
         user = User.query.get(current_user.id)
         if not user:
-            return error_response("User not found")
-        data = request.get_json()
-        enable_sound = data.get("enable_sound", True)
-        connection_setting = user.connection_settings
-        connection_setting["enable_sound"] = enable_sound
-        user.connection_settings = connection_setting
+            return error_response("User not found", 404)
+
+        settings = dict(user.connection_settings or {})
+        settings["enable_sound"] = enable_sound
+        user.connection_settings = settings
         db.session.commit()
         return success_response("Settings updated successfully")
-    except Exception as e:
-        current_app.logger.error(f"Connections settings error: ", exc_info=True)
-        return error_response("Failed to update connection settings")
-        
-
-        
-
-    
-
-        
-
+    except Exception:
+        db.session.rollback()
+        current_app.logger.error("Connections settings error", exc_info=True)
+        return error_response("Failed to update connection settings", 500)
