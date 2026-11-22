@@ -336,7 +336,9 @@ class TestCancelHelpRequest:
 
         assert resp.status_code == 200
         from models import HomeworkSubmission
-        assert HomeworkSubmission.query.get(sub.id) is None
+        kept = HomeworkSubmission.query.get(sub.id)
+        assert kept is not None  # soft cancel: the row is retained (F-03)
+        assert str(getattr(kept.status, "value", kept.status)) == "cancelled"
 
     def test_helper_can_cancel_while_pending(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers

@@ -39,6 +39,8 @@ from routes.student.helpers import (
     token_required, success_response, error_response
 )
 from services.online_status_service import get_user_online_status, get_online_status_batch
+from sqlalchemy.exc import IntegrityError
+from services import homework_lifecycle as lifecycle
 from services import homework_service, notification_service
 from services.homework_validation import (
     HomeworkValidationError,
@@ -69,6 +71,39 @@ def _server_error(log_label: str, public_message: str):
     """
     current_app.logger.exception(log_label)
     return error_response(public_message, 500)
+
+
+def _notify_after_commit(send, *args, **kwargs) -> None:
+    """Send a notification AFTER the primary change has been committed.
+
+    notify() bumps the Redis unread counter and pushes over WebSocket
+    immediately, before any commit; sending it inside the main transaction
+    could therefore announce something that then rolls back (audit F-24).
+    Notifications are best-effort: a failure here is logged and must not
+    turn a successful action into an error.
+    """
+    try:
+        send(*args, **kwargs)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Homework notification failed")
+
+
+def _close_pending_offers(assignment) -> list:
+    """Cancel offers where the helper hasn't produced work yet (used when
+    the owner unshares or completes the assignment). Returns the cancelled
+    submissions so the caller can notify them after the commit (F-11)."""
+    return lifecycle.cancel_open_offers(assignment.id)
+
+
+def _notify_offers_closed(owner_name: str, closed: list) -> None:
+    for sub in closed:
+        _notify_after_commit(
+            notification_service.notify_homework_help_cancelled,
+            sub.helper_id, owner_name, sub.title,
+            canceller_is_requester=True, submission_id=sub.id,
+        )
 
 
 def _set_assignment_status(assignment, new_status: str) -> bool:
@@ -155,7 +190,16 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
     atomic with each other despite looking like they should be. Caller
     now owns the single commit that covers both.
     """
-    user = User.query.get(helper_user_id)
+    # SELECT ... FOR UPDATE: two completions for the same helper cannot both
+    # read the same last-updated day and double-increment (audit F-12).
+    # Transaction-scoped, so safe under PgBouncer transaction pooling; a
+    # no-op on SQLite.
+    user = (
+        User.query.filter_by(id=helper_user_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
     if not user:
         return None
 
@@ -208,12 +252,10 @@ def get_assignment_helpers(current_user, assignment_id):
         if assignment.user_id != current_user.id:
             return error_response("Unauthorized. You can only view helpers for your own assignments.", 403)
 
-        if not assignment.is_shared_for_help:
-            return error_response("This assignment is not shared for help.", 400)
-
-        submissions = HomeworkSubmission.query.filter_by(
-            assignment_id=assignment_id,
-            requester_id=current_user.id
+        submissions = HomeworkSubmission.query.filter(
+            HomeworkSubmission.assignment_id == assignment_id,
+            HomeworkSubmission.requester_id == current_user.id,
+            lifecycle.not_cancelled(),
         ).order_by(
             db.case(
                 (HomeworkSubmission.status == 'completed', 1),
@@ -224,6 +266,11 @@ def get_assignment_helpers(current_user, assignment_id):
             ),
             HomeworkSubmission.created_at.desc()
         ).all()
+
+        # Existing helpers stay visible after the owner unshares; only an
+        # assignment that was never shared (and has no helpers) is refused.
+        if not assignment.is_shared_for_help and not submissions:
+            return error_response("This assignment is not shared for help.", 400)
 
         helper_ids = [s.helper_id for s in submissions]
         helpers_map = {u.id: u for u in User.query.filter(User.id.in_(helper_ids)).all()} if helper_ids else {}
@@ -617,8 +664,9 @@ def get_my_assignments(current_user):
                 "created_at": assignment.created_at.isoformat(),
                 "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
                 "is_shared": assignment.is_shared_for_help,
-                "help_requests_count": HomeworkSubmission.query.filter_by(
-                    assignment_id=assignment.id
+                "help_requests_count": HomeworkSubmission.query.filter(
+                    HomeworkSubmission.assignment_id == assignment.id,
+                    lifecycle.not_cancelled(),
                 ).count() if assignment.is_shared_for_help else 0
             })
 
@@ -746,6 +794,9 @@ def update_assignment(current_user, assignment_id):
         # Only on the actual not-completed -> completed transition, and only
         # for shared assignments (see _publish_completion).
         if just_completed:
+            closed = _close_pending_offers(assignment)
+            db.session.commit()
+            _notify_offers_closed(current_user.name, closed)
             _publish_completion(current_user.id, assignment)
 
         return success_response(
@@ -776,10 +827,19 @@ def delete_assignment(current_user, assignment_id):
         if assignment.user_id != current_user.id:
             return error_response("Not authorized", 403)
 
-        HomeworkSubmission.query.filter_by(assignment_id=assignment_id).delete()
+        # Keep help history (audit F-03): offers still in flight are
+        # cancelled (soft) and their helpers told; every submission is
+        # detached from the assignment (assignment_id -> NULL) rather than
+        # deleted, so completed help and feedback survive.
+        closed = lifecycle.cancel_open_offers(
+            assignment_id, statuses=(lifecycle.PENDING, lifecycle.ACCEPTED, lifecycle.SUBMITTED)
+        )
+        lifecycle.detach_from_assignment(assignment_id)
 
         db.session.delete(assignment)
         db.session.commit()
+
+        _notify_offers_closed(current_user.name, closed)
 
         return success_response("Assignment deleted")
 
@@ -809,6 +869,7 @@ def assignment_quick_actions(current_user, assignment_id):
         action = data.get("action") if isinstance(data, dict) else None
 
         just_completed = False
+        closed = []
         if action == "mark_complete":
             just_completed = _set_assignment_status(assignment, "completed")
             message = "Assignment marked as complete! 🎉"
@@ -827,6 +888,9 @@ def assignment_quick_actions(current_user, assignment_id):
         elif action == "unshare":
             if assignment.is_shared_for_help:
                 assignment.is_shared_for_help = False
+                # Offers with no work yet can't continue on a private
+                # assignment: cancel them and tell the helpers (F-11).
+                closed = _close_pending_offers(assignment)
                 message = "Assignment unshared"
             else:
                 return error_response("Assignment is not shared")
@@ -836,6 +900,12 @@ def assignment_quick_actions(current_user, assignment_id):
         # Mutation path: persist the recomputed priority score.
         assignment.priority_score = homework_service.calculate_priority_score(assignment)
         db.session.commit()
+
+        if just_completed:
+            closed = _close_pending_offers(assignment)
+            db.session.commit()
+
+        _notify_offers_closed(current_user.name, closed)
 
         if just_completed:
             _publish_completion(current_user.id, assignment)
@@ -939,6 +1009,7 @@ def get_homework_feed(current_user):
             for eh in HomeworkSubmission.query.filter(
                 HomeworkSubmission.assignment_id.in_(homework_ids_on_page),
                 HomeworkSubmission.helper_id == current_user.id,
+                lifecycle.not_cancelled(),
             ).all()
         } if homework_ids_on_page else {}
 
@@ -946,7 +1017,10 @@ def get_homework_feed(current_user):
             db.session.query(
                 HomeworkSubmission.assignment_id, func.count(HomeworkSubmission.id)
             )
-            .filter(HomeworkSubmission.assignment_id.in_(homework_ids_on_page))
+            .filter(
+                HomeworkSubmission.assignment_id.in_(homework_ids_on_page),
+                lifecycle.not_cancelled(),
+            )
             .group_by(HomeworkSubmission.assignment_id)
             .all()
         ) if homework_ids_on_page else []
@@ -1014,7 +1088,8 @@ def get_homework_feed(current_user):
 def offer_homework_help(current_user, assignment_id):
     """
     Offer to help with an assignment. Creates a HomeworkSubmission record.
-    Body: {"message": "Hey! I can help you with this"}  (optional)
+    No body is needed. Idempotent per (assignment, helper): a second live
+    offer is refused, enforced by a partial unique index (audit F-05).
     """
     try:
         assignment = Assignment.query.get(assignment_id)
@@ -1028,6 +1103,9 @@ def offer_homework_help(current_user, assignment_id):
         if not assignment.is_shared_for_help:
             return error_response("This assignment is not shared for help", 403)
 
+        if assignment.status == "completed":
+            return error_response("This assignment is already completed", 400)
+
         connection = Connection.query.filter(
             or_(
                 and_(Connection.requester_id == current_user.id, Connection.receiver_id == assignment.user_id),
@@ -1039,15 +1117,14 @@ def offer_homework_help(current_user, assignment_id):
         if not connection:
             return error_response("Must be connected to help", 403)
 
-        existing = HomeworkSubmission.query.filter_by(
-            assignment_id=assignment_id,
-            helper_id=current_user.id
+        existing = HomeworkSubmission.query.filter(
+            HomeworkSubmission.assignment_id == assignment_id,
+            HomeworkSubmission.helper_id == current_user.id,
+            lifecycle.not_cancelled(),
         ).first()
 
         if existing:
             return error_response("You're already helping with this assignment", 400)
-
-        data = request.get_json() or {}
 
         submission = HomeworkSubmission(
             requester_id=assignment.user_id,
@@ -1061,14 +1138,19 @@ def offer_homework_help(current_user, assignment_id):
         )
 
         db.session.add(submission)
-        db.session.flush()  # populate submission.id for the notification
+        try:
+            db.session.flush()  # populate submission.id; trips the unique index on a race
+        except IntegrityError:
+            db.session.rollback()
+            return error_response("You're already helping with this assignment", 400)
 
         student = User.query.get(assignment.user_id)
-        notification_service.notify_homework_help_offer(
-            assignment.user_id, current_user.name, assignment.title, submission.id
-        )
-
         db.session.commit()
+
+        _notify_after_commit(
+            notification_service.notify_homework_help_offer,
+            assignment.user_id, current_user.name, assignment.title, submission.id,
+        )
 
         record_live_activity(
             current_user.id,
@@ -1110,6 +1192,8 @@ def get_my_help_requests(current_user):
         status_filter = request.args.get("status", "all")
         if status_filter != "all":
             query = query.filter_by(status=status_filter)
+        else:
+            query = query.filter(lifecycle.not_cancelled())
 
         help_requests = query.order_by(HomeworkSubmission.created_at.desc()).all()
 
@@ -1192,6 +1276,8 @@ def get_homework_im_helping_with(current_user):
         status_filter = request.args.get("status", "all")
         if status_filter != "all":
             query = query.filter_by(status=status_filter)
+        else:
+            query = query.filter(lifecycle.not_cancelled())
 
         helping_with = query.order_by(HomeworkSubmission.created_at.desc()).all()
 
@@ -1346,8 +1432,12 @@ def submit_solution(current_user, submission_id):
         if submission.helper_id != current_user.id:
             return error_response("Only the helper can submit solution", 403)
 
-        if submission.status not in ["pending", "submitted"]:
+        previous_status = lifecycle._value(submission.status)
+        if not lifecycle.can_transition(previous_status, lifecycle.SUBMITTED):
             return error_response("Cannot submit solution for this status", 400)
+
+        if lifecycle.participants_blocked(submission.requester_id, submission.helper_id):
+            return error_response("You can no longer work on this request", 403)
 
         # Validate BEFORE touching the session: nothing below may run (or
         # commit, e.g. via record_live_activity) for a request we reject.
@@ -1358,19 +1448,29 @@ def submit_solution(current_user, submission_id):
 
         now = datetime.utcnow()
         first_response = submission.response_time_seconds is None
+
+        values = {
+            "solution_text": fields["solution_text"],
+            "solution_resources": fields["resources"],
+            "submitted_at": now,
+            "status": lifecycle.SUBMITTED,
+        }
         if first_response:
-            submission.response_time_seconds = int((now - submission.created_at).total_seconds())
+            values["response_time_seconds"] = int((now - submission.created_at).total_seconds())
 
-        submission.solution_text = fields["solution_text"]
-        submission.solution_resources = fields["resources"]
-        submission.submitted_at = now
-        submission.status = "submitted"
-
-        notification_service.notify_homework_solution_submitted(
-            submission.requester_id, current_user.name, submission.title, submission.id
-        )
+        # Conditional on the status we just read: a concurrent cancel (or a
+        # parallel first submission) makes this a no-op instead of
+        # resurrecting/duplicating the submission (audit F-12).
+        if not lifecycle.claim_submission(submission.id, {previous_status}, **values):
+            db.session.rollback()
+            return error_response("This request changed while you were submitting. Refresh and try again.", 409)
 
         db.session.commit()
+
+        _notify_after_commit(
+            notification_service.notify_homework_solution_submitted,
+            submission.requester_id, current_user.name, submission.title, submission.id,
+        )
 
         # Activity feed: only after the commit, and only for the first real
         # submission (record_live_activity commits internally).
@@ -1407,65 +1507,72 @@ def give_feedback(current_user, submission_id):
         if submission.requester_id != current_user.id:
             return error_response("Not authorized", 403)
 
-        if submission.status != "submitted":
+        previous_status = lifecycle._value(submission.status)
+        if previous_status not in (lifecycle.SUBMITTED, lifecycle.REVIEWED):
             return error_response("Cannot give feedback - solution not submitted yet")
+
+        if lifecycle.participants_blocked(submission.requester_id, submission.helper_id):
+            return error_response("You can no longer work on this request", 403)
 
         try:
             fields = validate_feedback(request.get_json(silent=True))
         except HomeworkValidationError as e:
             return error_response(e.message, 400)
 
-        now = datetime.utcnow()
-        submission.feedback_text = fields["feedback_text"]
-        submission.feedback_resources = fields["feedback_resources"]
-        submission.feedback_at = now
-
-        reaction_type = fields["reaction_type"]
-        if reaction_type:
-            submission.reaction_type = reaction_type
-            submission.reaction_at = now
-            submission.is_marked_helpful = True
-
-        rating = fields["rating"]
-        if rating:
-            submission.feedback_rating = rating
-            if rating >= 3:
-                submission.is_marked_helpful = True
-
-        if not submission.is_marked_helpful and fields["is_helpful"] is not False:
-            submission.is_marked_helpful = True
-
-        streak_result = None
-        if fields["mark_complete"]:
-            submission.status = "completed"
-
-            if submission.is_marked_helpful:
-                streak_result = _update_help_streak(submission.helper_id)
-        else:
-            submission.status = "reviewed"
-
-        # AUDIT ENG-8 FIX: single commit now covers the submission's
-        # feedback/status fields, _update_help_streak's mutations (which
-        # no longer commits on its own — see that function's docstring),
-        # and the notification below — previously up to three separate
-        # commits for what is logically one action, with no real
-        # atomicity between the streak update and the feedback it was
-        # triggered by.
-        helper = User.query.get(submission.helper_id)
-        if helper:
-            notification_service.notify_homework_feedback_received(
-                helper.id, current_user.name, submission.title
+        target_status = lifecycle.COMPLETED if fields["mark_complete"] else lifecycle.REVIEWED
+        if not lifecycle.can_transition(previous_status, target_status):
+            return error_response(
+                "This solution already has feedback. Mark it complete or wait for a revision."
             )
 
+        now = datetime.utcnow()
+        is_helpful = bool(submission.is_marked_helpful)
+        values = {
+            "feedback_text": fields["feedback_text"],
+            "feedback_resources": fields["feedback_resources"],
+            "feedback_at": now,
+        }
+
+        if fields["reaction_type"]:
+            values["reaction_type"] = fields["reaction_type"]
+            values["reaction_at"] = now
+            is_helpful = True
+
+        if fields["rating"]:
+            values["feedback_rating"] = fields["rating"]
+            if fields["rating"] >= 3:
+                is_helpful = True
+
+        if not is_helpful and fields["is_helpful"] is not False:
+            is_helpful = True
+
+        values["is_marked_helpful"] = is_helpful
+        values["status"] = target_status
+
+        # Exactly one of N concurrent requests wins this conditional UPDATE;
+        # the others must not repeat the notification/streak side effects
+        # (audit F-12).
+        if not lifecycle.claim_submission(submission.id, {previous_status}, **values):
+            db.session.rollback()
+            return error_response("Feedback was already submitted for this solution.", 409)
+
+        streak_result = None
+        if target_status == lifecycle.COMPLETED and is_helpful:
+            streak_result = _update_help_streak(submission.helper_id)
+
+        # One commit covers the feedback, the streak update (AUDIT ENG-8)...
         db.session.commit()
 
-        # Activity feed: fire after the main commit above, never before —
-        # record_live_activity does its own db.session.commit() internally
-        # (see activity_service.py's module docstring), and this session
-        # still has this route's own uncommitted submission/streak changes
-        # on it up to that point. Calling it earlier would mean this
-        # best-effort side write forces an early, partial commit of the
-        # route's actual primary operation.
+        # ...and the notification goes out only once it is durable (F-24).
+        helper = User.query.get(submission.helper_id)
+        if helper:
+            _notify_after_commit(
+                notification_service.notify_homework_feedback_received,
+                helper.id, current_user.name, submission.title, submission.id,
+            )
+
+        # Activity feed: after the commits above, never before -
+        # record_live_activity commits internally (see activity_service.py).
         if streak_result and streak_result.get('is_new_record'):
             record_live_activity(
                 submission.helper_id,
@@ -1489,9 +1596,11 @@ def give_feedback(current_user, submission_id):
 @token_required
 def cancel_help_request(current_user, submission_id):
     """
-    Cancel a help request.
-    - Requester can cancel at any time.
-    - Helper can cancel if solution not yet submitted.
+    Cancel a help request (soft cancel - the row is kept as history).
+    - Requester can cancel while the help is pending or submitted.
+    - Helper can cancel only while pending (no solution submitted yet).
+    - Reviewed/completed help is a permanent record and cannot be cancelled
+      (audit F-03).
     """
     try:
         submission = HomeworkSubmission.query.get(submission_id)
@@ -1499,24 +1608,34 @@ def cancel_help_request(current_user, submission_id):
         if not submission:
             return error_response("Submission not found", 404)
 
-        if submission.requester_id == current_user.id:
+        previous_status = lifecycle._value(submission.status)
+        canceller_is_requester = submission.requester_id == current_user.id
+
+        if canceller_is_requester:
             pass
         elif submission.helper_id == current_user.id:
-            if submission.status != "pending":
+            if previous_status != lifecycle.PENDING:
                 return error_response("Cannot cancel after submitting solution", 403)
         else:
             return error_response("Not authorized", 403)
 
-        canceller_is_requester = submission.requester_id == current_user.id
-        notify_user_id = submission.helper_id if canceller_is_requester else submission.requester_id
+        if not lifecycle.can_transition(previous_status, lifecycle.CANCELLED):
+            return error_response(
+                "This help has already been completed or cancelled and can't be cancelled.", 409
+            )
 
-        notification_service.notify_homework_help_cancelled(
-            notify_user_id, current_user.name, submission.title,
-            canceller_is_requester=canceller_is_requester,
-        )
+        if not lifecycle.claim_submission(submission.id, {previous_status}, status=lifecycle.CANCELLED):
+            db.session.rollback()
+            return error_response("This request changed. Refresh and try again.", 409)
 
-        db.session.delete(submission)
         db.session.commit()
+
+        notify_user_id = submission.helper_id if canceller_is_requester else submission.requester_id
+        _notify_after_commit(
+            notification_service.notify_homework_help_cancelled,
+            notify_user_id, current_user.name, submission.title,
+            canceller_is_requester=canceller_is_requester, submission_id=submission.id,
+        )
 
         return success_response("Help request cancelled")
 
@@ -1536,8 +1655,12 @@ def get_homework_stats(current_user):
     """Get comprehensive homework statistics for current user."""
     try:
         my_assignments = Assignment.query.filter_by(user_id=current_user.id).all()
-        help_received = HomeworkSubmission.query.filter_by(requester_id=current_user.id).all()
-        help_given = HomeworkSubmission.query.filter_by(helper_id=current_user.id).all()
+        help_received = HomeworkSubmission.query.filter(
+            HomeworkSubmission.requester_id == current_user.id, lifecycle.not_cancelled()
+        ).all()
+        help_given = HomeworkSubmission.query.filter(
+            HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled()
+        ).all()
 
         stats = {
             "my_assignments": {
@@ -1614,7 +1737,9 @@ def get_homework_chart_data(current_user):
 
         daily_activity = [daily_map[day] for day, _ in day_labels]
 
-        all_help_given = HomeworkSubmission.query.filter_by(helper_id=current_user.id).all()
+        all_help_given = HomeworkSubmission.query.filter(
+            HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled()
+        ).all()
 
         subject_map = {}
         for h in all_help_given:

@@ -329,7 +329,7 @@ class TestDeleteAssignment:
         from models import Assignment
         assert Assignment.query.get(assignment_id) is None
 
-    def test_also_deletes_associated_help_requests(
+    def test_cancels_open_offers_and_keeps_them_as_history(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
     ):
         owner = make_user()
@@ -349,7 +349,10 @@ class TestDeleteAssignment:
         resp = client.delete(f"/student/assignments/{assignment.id}", headers=headers)
 
         assert resp.status_code == 200
-        assert HomeworkSubmission.query.get(submission_id) is None
+        kept = HomeworkSubmission.query.get(submission_id)
+        assert kept is not None                      # history is not destroyed (F-03)
+        assert kept.assignment_id is None            # detached
+        assert str(getattr(kept.status, "value", kept.status)) == "cancelled"
 
     def test_non_owner_cannot_delete(
         self, client, make_user, make_assignment, auth_headers, csrf_headers
