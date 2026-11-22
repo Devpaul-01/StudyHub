@@ -11,7 +11,7 @@ that re-exposes all routes under the same paths as before.
 from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context, render_template
 import json
 from werkzeug.utils import secure_filename
-from sqlalchemy import or_, and_, func, desc
+from sqlalchemy import or_, and_, func, desc, case
 from sqlalchemy.orm import aliased
 import datetime
 import re
@@ -1176,7 +1176,13 @@ def create_post(current_user):
         )
         
         # Update user stats
-        current_user.total_posts = (current_user.total_posts or 0) + 1
+        # Atomic in SQL: a Python-side read-modify-write loses increments when
+        # two posts are created at once (two tabs, two app instances).
+        User.query.filter_by(id=current_user.id).update(
+            {User.total_posts: func.coalesce(User.total_posts, 0) + 1},
+            synchronize_session=False,
+        )
+        db.session.expire(current_user, ["total_posts"])  # reload on next read
         
         # Update activity
         update_user_activity(current_user.id, "post")
@@ -1512,8 +1518,11 @@ def delete_post(current_user, post_id):
         db.session.delete(post)
         
         # Update user stats
-        if current_user.total_posts > 0:
-            current_user.total_posts -= 1
+        User.query.filter_by(id=post.student_id).update(
+            {User.total_posts: case((User.total_posts > 0, User.total_posts - 1), else_=0)},
+            synchronize_session=False,
+        )
+        db.session.expire(current_user, ["total_posts"])  # reload on next read
         
         db.session.commit()
         
