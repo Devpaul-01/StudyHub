@@ -39,12 +39,8 @@ with app.app_context():
 
         profile = StudentProfile(
             user_id=user.id,
-            pin="unused",
-            username=username,
-            full_name=name,
             department=department,
             class_name=class_name,
-            status="active",
         )
         db.session.add(profile)
         db.session.commit()

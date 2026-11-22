@@ -74,7 +74,7 @@ def init_app(app) -> bool:
             # default and is kept explicit here. This app authenticates
             # via JWT cookies (access_token/refresh_token/csrf_token —
             # see helpers.py::set_auth_cookies) and stores password
-            # hashes in User.pin / StudentProfile.pin. Do not flip this to
+            # hashes in User.pin. Do not flip this to
             # True without adding a before_send scrubber for those cookie
             # names and the `pin` field name specifically.
             send_default_pii=False,
@@ -103,8 +103,8 @@ def _scrub_event(event, hint):
 
     Deliberately name-based and narrow rather than a generic PII regex —
     this app's exact sensitive fields are known (see helpers.py::
-    set_auth_cookies for the three cookie names; models.py::User.pin /
-    StudentProfile.pin for the password hash field). A broad scrubber
+    set_auth_cookies for the three cookie names; models.py::User.pin for
+    the password hash field). A broad scrubber
     risks either missing something this narrow one catches by name, or
     stripping legitimate debugging data this one leaves alone.
     """

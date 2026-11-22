@@ -970,7 +970,6 @@ def update_profile(current_user):
 
         if new_name is not None and new_name != current_user.name:
             current_user.name = new_name
-            profile.full_name = new_name
             changes.append("name")
 
         if new_bio is not None and new_bio != (current_user.bio or ""):

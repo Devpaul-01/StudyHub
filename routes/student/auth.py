@@ -405,7 +405,6 @@ def google_callback():
 
         student_profile = StudentProfile(
             user_id=new_user.id,
-            full_name=name,
             department="",
             class_name="",
         )
@@ -521,8 +520,6 @@ def onboard(email):
 
         if cleaned["name"]:
             user.name = cleaned["name"]
-            if student_profile:
-                student_profile.full_name = cleaned["name"]
 
         # Department / class are mirrored on StudentProfile (used by profile
         # and discovery pages) and OnboardingDetails (used by matching).
@@ -667,7 +664,6 @@ def register():
 
         db.session.add(StudentProfile(
             user_id=new_user.id,
-            full_name=full_name,
             department="",
             class_name="",
         ))

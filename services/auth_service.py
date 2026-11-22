@@ -27,7 +27,7 @@ import secrets
 from werkzeug.security import generate_password_hash
 from sqlalchemy.exc import IntegrityError
 
-from models import User, StudentProfile, UserActivity
+from models import User, UserActivity
 from extensions import db
 
 logger = logging.getLogger(__name__)

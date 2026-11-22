@@ -406,8 +406,6 @@ class User(UserMixin, db.Model):
     # index added below in __table_args__.
     skills         = db.Column(MutableList.as_mutable(JSONB_VARIANT), default=list)
     learning_goals = db.Column(MutableList.as_mutable(db.JSON), default=list)
-    study_schedule = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
-
     privacy_settings      = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
     notification_settings = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
     connection_settings   = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
@@ -510,14 +508,10 @@ class StudentProfile(db.Model):
 
     id      = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
-    # Credentials live on User only (pin, username, status). StudentProfile used
-    # to keep a second copy of each; the copies were never read.
-
-    full_name  = db.Column(db.String(120), nullable=False)
+    # Identity (name, username, password hash) lives on User only; this table
+    # holds the student-specific fields below.
     department = db.Column(db.String(100), nullable=True, index=True)
     class_name = db.Column(db.String(50),  nullable=True, index=True)
-
-    registered_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
     __table_args__ = (
         db.Index("idx_student_profiles_dept_user", "department", "user_id"),
@@ -1701,24 +1695,6 @@ class MessageReport(db.Model):
 
     def __repr__(self):
         return f"<MessageReport {self.id}: Message {self.message_id} - {self.reason} [{self.status}]>"
-
-
-class ProfileChangeHistory(db.Model):
-    """Audit trail for profile changes."""
-    __tablename__ = "profile_change_history"
-
-    id            = db.Column(db.Integer, primary_key=True)
-    user_id       = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    field_changed = db.Column(db.String(100), nullable=False)
-    old_value     = db.Column(db.String(500))
-    new_value     = db.Column(db.String(500))
-    change_type   = db.Column(db.String(50), index=True)
-    ip_address    = db.Column(db.String(50))
-    user_agent    = db.Column(db.String(200))
-    changed_at    = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-    def __repr__(self):
-        return f"<ProfileChange: User {self.user_id} - {self.field_changed} [{self.change_type}]>"
 
 
 class PasswordResetToken(db.Model):
