@@ -260,6 +260,7 @@ async function populatePrivacyModal() {
   setChecked('p-privacy-show-active',         data.show_active_status);
   setChecked('p-privacy-weekly-notification', data.send_weekly_notification);
   setChecked('p-privacy-activity-feed',       data.show_in_activity_feed);
+  setChecked('p-privacy-connections-activity', data.show_connections_in_activity_feed);
   // NOTE: set_dark_mode is a field the backend's visibility-settings
   // GET/POST already supports but this modal has never had a checkbox
   // for (no #p-privacy-dark-mode element exists anywhere in
@@ -575,6 +576,7 @@ export const ProfileHandlers = {
       show_active_status:       !!$id('p-privacy-show-active')?.checked,
       send_weekly_notification: !!$id('p-privacy-weekly-notification')?.checked,
       show_in_activity_feed:    !!$id('p-privacy-activity-feed')?.checked,
+      show_connections_in_activity_feed: !!$id('p-privacy-connections-activity')?.checked,
     };
     const res = await profileApi.saveVisibilitySettings(settings);
     if (res?.status === 'success') {

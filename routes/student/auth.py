@@ -93,6 +93,7 @@ privacy_settings = {
     "set_dark_mode": False,
     "send_weekly_notification": True,   # FIX: was "send_weeekly_notifications" (typo + wrong key)
     "show_in_activity_feed": True,      # opt-out for the Live Activity feed (services/activity_service.py)
+    "show_connections_in_activity_feed": False,  # opt-IN: "A connected with B" events (audit CON-25)
 }
 
 # ============================================================================

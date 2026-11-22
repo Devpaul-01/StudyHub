@@ -1874,16 +1874,18 @@ def accept_connection(current_user, request_id):
 
         requester = User.query.get(requester_id)
 
-        # Activity feed: single row from the acceptor's side (fans out to the
-        # acceptor's own connections). record_live_activity swallows errors.
-        record_live_activity(
-            current_user.id,
-            'connection_accepted',
-            {
-                'other_user_id': requester.id,
-                'other_user_name': requester.name,
-            }
-        )
+        # Activity feed (fans out to the acceptor's own connections).
+        # Audit CON-25: "A connected with B" is OPT-IN - it used to be
+        # broadcast to all of A's connections by default.
+        if (current_user.privacy_settings or {}).get("show_connections_in_activity_feed", False):
+            record_live_activity(
+                current_user.id,
+                'connection_accepted',
+                {
+                    'other_user_id': requester.id,
+                    'other_user_name': requester.name,
+                }
+            )
 
         return success_response(
             "Connection accepted",
