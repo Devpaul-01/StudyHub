@@ -93,3 +93,46 @@ class TestGetConnectionOverview:
 
         data = resp.get_json()["data"]
         assert data["already_connected"] is True
+
+
+# ============================================================================
+# Audit CON-21: block check, caching, no error leakage
+# ============================================================================
+
+class TestOverviewAudit:
+    def test_blocked_pair_gets_404_either_direction(self, client, make_user, make_connection, auth_headers):
+        a, b = make_user(), make_user()
+        make_connection(a, b, status="blocked", blocked_by_id=a.id)
+
+        blocker = client.get(f"/student/connections/overview/{b.id}", headers=auth_headers(a))
+        blocked = client.get(f"/student/connections/overview/{a.id}", headers=auth_headers(b))
+
+        assert blocker.status_code == 404 and blocked.status_code == 404
+
+    def test_cached_overview_skips_the_ai_provider(self, client, make_user, auth_headers, monkeypatch):
+        import routes.student.connections.compatibility as comp
+        me, target = make_user(), make_user()
+        store = {}
+        monkeypatch.setattr(comp.cache_service, "get", lambda k: store.get(k))
+        monkeypatch.setattr(comp.cache_service, "set", lambda k, v, ttl_seconds: store.__setitem__(k, v))
+        store[f"sh:1:conn:overview:{me.id}:{target.id}"] = "Cached overview text"
+
+        def boom(*a, **k):
+            raise AssertionError("AI provider must not be called on a cache hit")
+        monkeypatch.setattr(comp.provider_manager, "get_working_provider", boom)
+
+        resp = client.get(f"/student/connections/overview/{target.id}", headers=auth_headers(me))
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Cached overview text" in body and '"type": "done"' in body
+
+    def test_internal_errors_are_not_echoed_to_the_client(self, client, make_user, auth_headers, monkeypatch):
+        import routes.student.connections.compatibility as comp
+        me, target = make_user(), make_user()
+        monkeypatch.setattr(comp, "gather_user_data", lambda u: (_ for _ in ()).throw(RuntimeError("secret internals")))
+
+        resp = client.get(f"/student/connections/overview/{target.id}", headers=auth_headers(me))
+
+        assert resp.status_code == 500
+        assert "secret internals" not in resp.get_data(as_text=True)

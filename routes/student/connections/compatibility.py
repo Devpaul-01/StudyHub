@@ -30,6 +30,7 @@ from routes.student.helpers import (
 
 from services.online_status_service import get_user_online_status
 from services.ai_provider_service import provider_manager, StudyAssistant
+from services import cache_service
 from services.connection_service import (
     calculate_compatibility_score,
     calculate_schedule_overlap,
@@ -85,7 +86,12 @@ def get_connection_overview(current_user, user_id):
             )
         ).first()
         
-        already_connected = existing and existing.status == 'accepted'
+        # Audit CON-21: a blocked pair (either direction) gets the same 404 as
+        # an unknown user - no AI summary of the blocker's profile.
+        if existing and existing.status == 'blocked':
+            return error_response("User not found", 404)
+
+        already_connected = bool(existing and existing.status == 'accepted')
         
         # Gather data
         logger.info(f"💬 Connection overview: user={current_user.id} → target={user_id}")
@@ -108,6 +114,47 @@ def get_connection_overview(current_user, user_id):
         
         # Calculate compatibility score
         compatibility_score = calculate_compatibility_score(compatibility_data)
+
+        # Plain-data payload so the streaming generator never touches ORM
+        # objects (and the DB connection can be released before streaming).
+        target_user_payload = {
+            'id': target_user.id,
+            'name': target_user.name,
+            'username': target_user.username,
+            'avatar': target_user.avatar,
+            'bio': target_user.bio,
+            'reputation_level': target_user.reputation_level,
+            'department': target_user_data['department']
+        }
+        compatibility_payload = {
+            'score': compatibility_score,
+            'shared_subjects': compatibility_data['shared_subjects'],
+            'mutual_help': compatibility_data['complementary_skills'],
+            'schedule_overlap': compatibility_data['schedule_overlap'],
+            'same_department': compatibility_data['department_match']
+        }
+        overview_cache_key = f"sh:1:conn:overview:{current_user.id}:{target_user.id}"
+
+        # Audit CON-21: serve a recently generated successful overview from
+        # cache instead of paying the AI provider again for every view.
+        cached_overview = cache_service.get(overview_cache_key)
+        if cached_overview:
+            db.session.commit()  # release the DB connection before streaming
+
+            def replay():
+                yield f"data: {json.dumps({'type': 'start', 'compatibility_score': compatibility_score})}\n\n"
+                yield f"data: {json.dumps({'type': 'compatibility', 'data': compatibility_payload})}\n\n"
+                yield f"data: {json.dumps({'type': 'target_user', 'data': target_user_payload})}\n\n"
+                yield f"data: {json.dumps({'type': 'activity', 'data': context_data})}\n\n"
+                yield f"data: {json.dumps({'type': 'ai_start', 'provider': 'cache'})}\n\n"
+                yield f"data: {json.dumps({'content': cached_overview})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'success': True, 'already_connected': already_connected, 'overview': cached_overview})}\n\n"
+
+            return Response(
+                stream_with_context(replay()),
+                mimetype='text/event-stream',
+                headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+            )
         
         # ========================================================================
         # Multi-provider AI system (services/ai_provider_service.py) —
@@ -129,22 +176,8 @@ def get_connection_overview(current_user, user_id):
             return jsonify({
                 "status": "success",
                 "data": {
-                    "target_user": {
-                        "id": target_user.id,
-                        "name": target_user.name,
-                        "username": target_user.username,
-                        "avatar": target_user.avatar,
-                        "bio": target_user.bio,
-                        "reputation_level": target_user.reputation_level,
-                        "department": target_user_data['department']
-                    },
-                    "compatibility": {
-                        "score": compatibility_score,
-                        "shared_subjects": compatibility_data['shared_subjects'],
-                        "mutual_help": compatibility_data['complementary_skills'],
-                        "schedule_overlap": compatibility_data['schedule_overlap'],
-                        "same_department": compatibility_data['department_match']
-                    },
+                    "target_user": target_user_payload,
+                    "compatibility": compatibility_payload,
                     "ai_overview": fallback,
                     "activity": context_data,
                     "already_connected": already_connected,
@@ -187,24 +220,8 @@ def get_connection_overview(current_user, user_id):
             # Send initial data
             yield f"data: {json.dumps({'type': 'start', 'compatibility_score': compatibility_score})}\n\n"
             
-            compatibility_payload = {
-                'score': compatibility_score,
-                'shared_subjects': compatibility_data['shared_subjects'],
-                'mutual_help': compatibility_data['complementary_skills'],
-                'schedule_overlap': compatibility_data['schedule_overlap'],
-                'same_department': compatibility_data['department_match']
-            }
             yield f"data: {json.dumps({'type': 'compatibility', 'data': compatibility_payload})}\n\n"
 
-            target_user_payload = {
-                'id': target_user.id,
-                'name': target_user.name,
-                'username': target_user.username,
-                'avatar': target_user.avatar,
-                'bio': target_user.bio,
-                'reputation_level': target_user.reputation_level,
-                'department': target_user_data['department']
-            }
             yield f"data: {json.dumps({'type': 'target_user', 'data': target_user_payload})}\n\n"
             
             yield f"data: {json.dumps({'type': 'activity', 'data': context_data})}\n\n"
@@ -213,7 +230,7 @@ def get_connection_overview(current_user, user_id):
             
             # Stream AI response with retry logic
             while retries < max_retries:
-                current_app.logger.error("Streaming response")
+                current_app.logger.debug("Streaming overview response")
                 error_in_stream = False
                 
                 for chunk in assistant.stream_response(messages):
@@ -266,8 +283,15 @@ def get_connection_overview(current_user, user_id):
                 )
                 full_response = fallback
             
+            # Cache only genuine, successful AI output (never the fallback).
+            if full_response and not error_occurred:
+                try:
+                    cache_service.set(overview_cache_key, full_response, ttl_seconds=600)
+                except Exception:
+                    logger.warning("Overview cache write failed (non-critical)", exc_info=True)
+
             # Send completion
-            current_app.logger.error("Done streaming response")
+            current_app.logger.debug("Done streaming overview response")
             done_payload = {
                 'type': 'done',
                 'success': not error_occurred,
@@ -276,6 +300,10 @@ def get_connection_overview(current_user, user_id):
             }
             yield f"data: {json.dumps(done_payload)}\n\n"
         
+        # The stream below only uses plain data: end the transaction so this
+        # worker does not hold a DB connection for the whole AI stream.
+        db.session.commit()
+
         return Response(
             stream_with_context(generate()),
             mimetype='text/event-stream',
@@ -285,9 +313,10 @@ def get_connection_overview(current_user, user_id):
             }
         )
         
-    except Exception as e:
-        logger.error(f"❌ Connection overview error: {str(e)}", exc_info=True)
-        return error_response(f"Failed to generate overview: {str(e)}", 500)
+    except Exception:
+        logger.error("Connection overview error", exc_info=True)
+        # Audit CON-21/CON-22: never echo exception text to the client.
+        return error_response("Failed to generate overview", 500)
 
 
 # ============================================================================
