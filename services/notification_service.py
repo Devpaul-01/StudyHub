@@ -268,17 +268,29 @@ def notify_homework_solution_submitted(user_id: int, helper_name: str, assignmen
     )
 
 
-def notify_homework_feedback_received(user_id: int, requester_name: str, assignment_title: str) -> Notification:
-    """Feedback given on a submitted solution. Extracted from homework_system.py."""
+def notify_homework_feedback_received(
+    user_id: int, requester_name: str, assignment_title: str, submission_id: int | None = None
+) -> Notification:
+    """Feedback given on a submitted solution. Extracted from homework_system.py.
+    ``submission_id`` makes the notification open the submission (audit F-24)."""
     return notify(
         user_id=user_id,
         title="Feedback received! 🎉",
         body=f"{requester_name} reviewed your solution for '{assignment_title}'",
         notification_type="homework_feedback_received",
+        related_type="homework_submission" if submission_id else None,
+        related_id=submission_id,
     )
 
 
-def notify_homework_help_cancelled(user_id: int, canceller_name: str, assignment_title: str, *, canceller_is_requester: bool) -> Notification:
+def notify_homework_help_cancelled(
+    user_id: int,
+    canceller_name: str,
+    assignment_title: str,
+    *,
+    canceller_is_requester: bool,
+    submission_id: int | None = None,
+) -> Notification:
     """
     Help request cancelled/withdrawn. Extracted from
     homework_system.py::cancel_help_request — body text differs depending
@@ -294,6 +306,10 @@ def notify_homework_help_cancelled(user_id: int, canceller_name: str, assignment
         title="Help request cancelled",
         body=body,
         notification_type="homework_help_cancelled",
+        # Cancelled submissions are soft-cancelled (kept), so this link
+        # stays valid (audit F-03/F-24).
+        related_type="homework_submission" if submission_id else None,
+        related_id=submission_id,
     )
 
 
