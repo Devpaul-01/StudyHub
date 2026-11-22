@@ -7,6 +7,17 @@
  * ============================================================================
  */
 
+/**
+ * Shape returned by the write helpers when a request fails. core/api.js
+ * throws Error(<server message>) on any non-2xx response; surfacing that
+ * message lets callers show "Name must be at least 3 characters" instead of
+ * a generic "Could not save". Callers already test `res?.status === 'success'`
+ * and fall back to `res?.message`.
+ */
+function failure(e) {
+  return { status: 'error', message: (e && e.message) || null };
+}
+
 // ── Profile overview ─────────────────────────────────────────────────────────
 
 export async function fetchProfileData() {
@@ -113,7 +124,7 @@ export async function saveProfileEdit(payload) {
     return res;
   } catch (e) {
     console.error('[profile.api] saveProfileEdit:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -122,7 +133,7 @@ export async function addLearningGoal(goal) {
     return await api.post('/profile/learning-goals', { goal });
   } catch (e) {
     console.error('[profile.api] addLearningGoal:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -131,7 +142,7 @@ export async function removeLearningGoal(goal) {
     return await api.delete('/profile/learning-goals', { goal });
   } catch (e) {
     console.error('[profile.api] removeLearningGoal:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -154,7 +165,7 @@ export async function saveVisibilitySettings(settings) {
     return await api.post('/profile/visibility-settings', settings);
   } catch (e) {
     console.error('[profile.api] saveVisibilitySettings:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -167,7 +178,7 @@ export async function addSkill(skill) {
     return await api.post('/profile/skills', { skill });
   } catch (e) {
     console.error('[profile.api] addSkill:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -176,7 +187,7 @@ export async function removeSkill(skillName) {
     return await api.delete('/profile/skills', { skill: skillName });
   } catch (e) {
     console.error('[profile.api] removeSkill:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -210,7 +221,7 @@ export async function saveStudySchedule(schedule) {
     return await api.post('/profile/study-schedule', schedule);
   } catch (e) {
     console.error('[profile.api] saveStudySchedule:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -254,7 +265,7 @@ export async function toggleFeatureBadge(badgeId) {
     return await api.post(`/badges/feature/${badgeId}`);
   } catch (e) {
     console.error('[profile.api] toggleFeatureBadge:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -290,7 +301,7 @@ export async function uploadAvatar(file) {
     return await api.post('/profile/avatar/upload', formData, true);
   } catch (e) {
     console.error('[profile.api] uploadAvatar:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -299,7 +310,7 @@ export async function removeAvatar() {
     return await api.delete('/profile/avatar');
   } catch (e) {
     console.error('[profile.api] removeAvatar:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -320,7 +331,7 @@ export async function saveAcademicInfo(payload) {
     return await api.put('/profile/academic-info', payload);
   } catch (e) {
     console.error('[profile.api] saveAcademicInfo:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -331,7 +342,7 @@ export async function pinPost(postId) {
     return await api.post(`/profile/pin-post/${postId}`);
   } catch (e) {
     console.error('[profile.api] pinPost:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -340,7 +351,7 @@ export async function unpinPost(postId) {
     return await api.post(`/profile/unpin-post/${postId}`);
   } catch (e) {
     console.error('[profile.api] unpinPost:', e);
-    return null;
+    return failure(e);
   }
 }
 
@@ -349,6 +360,6 @@ export async function deletePost(postId) {
     return await api.delete(`/posts/${postId}`);
   } catch (e) {
     console.error('[profile.api] deletePost:', e);
-    return null;
+    return failure(e);
   }
 }
