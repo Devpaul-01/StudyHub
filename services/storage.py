@@ -331,7 +331,7 @@ class CloudinaryStorage:
         self.api_key = API_KEY
         self.api_secret = API_SECRET
     
-    def upload_file(self, file, folder, filename, resource_type="auto"):
+    def upload_file(self, file, folder, filename, resource_type="auto", timeout=None):
         """
         Upload file to Cloudinary
         
@@ -340,6 +340,8 @@ class CloudinaryStorage:
             folder: Cloudinary folder path
             filename: Filename with extension
             resource_type: "image", "video", "raw", or "auto"
+            timeout: optional seconds to wait for Cloudinary before giving up
+                (defaults to the SDK's own default)
         
         Returns:
             dict: {"success": bool, "url": str, "error": str}
@@ -353,7 +355,8 @@ class CloudinaryStorage:
                 public_id=name,
                 resource_type=resource_type,
                 invalidate=True,
-                timestamp=get_corrected_timestamp()
+                timestamp=get_corrected_timestamp(),
+                **({"timeout": timeout} if timeout else {})
             )
             
             if result and "secure_url" in result:

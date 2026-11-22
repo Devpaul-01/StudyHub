@@ -264,3 +264,46 @@ def test_validate_document_mime_no_checkable_mimes_in_allowed_set_short_circuits
     """
     fs = _fs(b"\xff\xd8\xff\xe0 looks like a jpeg header", filename="weird.txt")
     validate_document_mime(fs, {"text/plain"})  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Optional size limits (used for avatars)
+# ---------------------------------------------------------------------------
+
+def _png_upload(width, height, color=(10, 20, 30)):
+    buf = BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, "PNG")
+    buf.seek(0)
+    return FileStorage(stream=buf, filename="img.png")
+
+
+class TestImageSizeLimits:
+    def test_no_limits_keeps_the_original_size(self):
+        out = validate_and_normalize_image(_png_upload(600, 300))
+
+        assert Image.open(out).size == (600, 300)
+
+    def test_max_dimension_shrinks_keeping_aspect_ratio(self):
+        out = validate_and_normalize_image(_png_upload(1000, 500), max_dimension=200)
+
+        assert Image.open(out).size == (200, 100)
+
+    def test_max_dimension_never_enlarges_small_images(self):
+        out = validate_and_normalize_image(_png_upload(50, 40), max_dimension=512)
+
+        assert Image.open(out).size == (50, 40)
+
+    def test_max_pixels_rejects_before_decoding(self):
+        with pytest.raises(ValidationError, match="too large"):
+            validate_and_normalize_image(_png_upload(3000, 3000), max_pixels=1_000_000)
+
+    def test_max_pixels_allows_images_at_the_limit(self):
+        out = validate_and_normalize_image(_png_upload(1000, 1000), max_pixels=1_000_000)
+
+        assert Image.open(out).size == (1000, 1000)
+
+    def test_decompression_bomb_is_a_validation_error(self, monkeypatch):
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+
+        with pytest.raises(ValidationError, match="too large"):
+            validate_and_normalize_image(_png_upload(200, 200))
