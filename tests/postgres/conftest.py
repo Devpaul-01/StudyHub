@@ -47,3 +47,26 @@ def pg_db(pg_app):
     from extensions import db
     with pg_app.app_context():
         yield db
+
+
+@pytest.fixture()
+def make_pg_user(pg_db):
+    """Create and commit an approved student; returns the new user id."""
+    import datetime
+    import itertools
+    import uuid
+    from models import User
+
+    counter = itertools.count(1)
+    tag = uuid.uuid4().hex[:8]
+
+    def _make(reputation=0):
+        n = next(counter)
+        u = User(username=f"pg{tag}{n}", email=f"pg{tag}{n}@x.com", pin="x", name="User",
+                 role="student", status="approved", email_verified=True,
+                 reputation=reputation, joined_at=datetime.datetime.utcnow())
+        pg_db.session.add(u)
+        pg_db.session.commit()
+        return u.id
+
+    return _make

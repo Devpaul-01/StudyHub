@@ -4,24 +4,12 @@ from unittest.mock import patch
 from sqlalchemy import text
 
 
-def _make_user(db, reputation):
-    import datetime
-    from models import User
-    n = _make_user.n = getattr(_make_user, "n", 0) + 1
-    u = User(username=f"pg{n}", email=f"pg{n}@x.com", pin="x", name="User", role="student",
-             status="approved", email_verified=True, reputation=reputation,
-             joined_at=datetime.datetime.utcnow())
-    db.session.add(u)
-    db.session.commit()
-    return u.id
-
-
-def test_concurrent_awards_to_one_user_are_not_lost(pg_app, pg_db):
+def test_concurrent_awards_to_one_user_are_not_lost(pg_app, pg_db, make_pg_user):
     """Two transactions award the same user at the same time. Before the row
     lock, both read 100 and the later UPDATE overwrote the earlier one."""
     from services import reputation_service as rs
 
-    uid = _make_user(pg_db, 100)
+    uid = make_pg_user(reputation=100)
     both_have_awarded = threading.Barrier(2, timeout=10)
     errors = []
 
