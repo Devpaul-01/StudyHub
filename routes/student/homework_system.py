@@ -47,7 +47,11 @@ from services.homework_validation import (
     validate_feedback,
     validate_solution_submit,
 )
-from services.activity_service import record_live_activity
+from services.activity_service import (
+    record_live_activity,
+    ACTIVITY_FEED_WINDOW_HOURS,
+    ACTIVITY_PULSE_WINDOW_MINUTES,
+)
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
 # request create/update/delete/offer-help/submit-solution/give-feedback
 # routes.
@@ -65,6 +69,45 @@ def _server_error(log_label: str, public_message: str):
     """
     current_app.logger.exception(log_label)
     return error_response(public_message, 500)
+
+
+def _set_assignment_status(assignment, new_status: str) -> bool:
+    """Single place that changes an assignment's status.
+
+    Keeps ``completed_at`` consistent (set on the transition into
+    "completed", cleared on any move out of it) and returns True only when
+    this call is the not-completed -> completed transition, so callers can
+    publish completion exactly once. Used by both PUT /assignments/<id> and
+    the quick-actions endpoint so the two paths cannot diverge (audit F-02,
+    F-11).
+    """
+    old_status = assignment.status
+    assignment.status = new_status
+    if new_status == "completed":
+        if old_status != "completed":
+            assignment.completed_at = datetime.utcnow()
+            return True
+        return False
+    assignment.completed_at = None
+    return False
+
+
+def _publish_completion(user_id: int, assignment) -> None:
+    """Announce a completed assignment to the owner's connections - but only
+    if the owner shared it. A private assignment's title/subject must never
+    reach the activity feed (audit F-02). Call AFTER the commit:
+    record_live_activity commits internally."""
+    if not assignment.is_shared_for_help:
+        return
+    record_live_activity(
+        user_id,
+        'completed_homework',
+        {
+            'assignment_id': assignment.id,
+            'assignment_title': assignment.title,
+            'subject': assignment.subject,
+        }
+    )
 
 
 
@@ -255,7 +298,7 @@ def get_activity_feed(current_user):
             else:
                 connection_ids.append(conn.requester_id)
 
-        cutoff_time = datetime.utcnow() - timedelta(hours=2)
+        cutoff_time = datetime.utcnow() - timedelta(hours=ACTIVITY_FEED_WINDOW_HOURS)
 
         activities = ActivityFeed.query.filter(
             ActivityFeed.user_id.in_(connection_ids),
@@ -345,7 +388,7 @@ def get_activity_pulse(current_user):
         from models import ActivityFeed
         from services.activity_service import anonymize_for_global
 
-        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+        cutoff_time = datetime.utcnow() - timedelta(minutes=ACTIVITY_PULSE_WINDOW_MINUTES)
 
         activities = ActivityFeed.query.filter(
             ActivityFeed.created_at >= cutoff_time,
@@ -693,34 +736,17 @@ def update_assignment(current_user, assignment_id):
                 setattr(assignment, column, fields[column])
         just_completed = False
         if "status" in fields:
-            old_status = assignment.status
-            assignment.status = fields["status"]
-
-            if assignment.status == "completed" and old_status != "completed":
-                assignment.completed_at = datetime.utcnow()
-                just_completed = True
-            elif assignment.status != "completed":
-                assignment.completed_at = None
+            just_completed = _set_assignment_status(assignment, fields["status"])
 
         # Mutation path: persist the recomputed priority score.
         assignment.priority_score = homework_service.calculate_priority_score(assignment)
 
         db.session.commit()
 
-        # Activity feed: only on the actual not-completed -> completed
-        # transition (just_completed), same guard as completed_at above —
-        # a PUT that re-sends status="completed" on an already-completed
-        # assignment, or touches unrelated fields, must not re-fire this.
+        # Only on the actual not-completed -> completed transition, and only
+        # for shared assignments (see _publish_completion).
         if just_completed:
-            record_live_activity(
-                current_user.id,
-                'completed_homework',
-                {
-                    'assignment_id': assignment.id,
-                    'assignment_title': assignment.title,
-                    'subject': assignment.subject,
-                }
-            )
+            _publish_completion(current_user.id, assignment)
 
         return success_response(
             "Assignment updated",
@@ -779,16 +805,16 @@ def assignment_quick_actions(current_user, assignment_id):
         if assignment.user_id != current_user.id:
             return error_response("Not authorized", 403)
 
-        data = request.get_json()
-        action = data.get("action")
+        data = request.get_json(silent=True)
+        action = data.get("action") if isinstance(data, dict) else None
 
+        just_completed = False
         if action == "mark_complete":
-            assignment.status = "completed"
-            assignment.completed_at = datetime.utcnow()
+            just_completed = _set_assignment_status(assignment, "completed")
             message = "Assignment marked as complete! 🎉"
 
         elif action == "start_working":
-            assignment.status = "in_progress"
+            _set_assignment_status(assignment, "in_progress")
             message = "Good luck! 💪"
 
         elif action == "share_for_help":
@@ -810,6 +836,9 @@ def assignment_quick_actions(current_user, assignment_id):
         # Mutation path: persist the recomputed priority score.
         assignment.priority_score = homework_service.calculate_priority_score(assignment)
         db.session.commit()
+
+        if just_completed:
+            _publish_completion(current_user.id, assignment)
 
         return success_response(message, data={"status": assignment.status})
 
@@ -1044,13 +1073,10 @@ def offer_homework_help(current_user, assignment_id):
         record_live_activity(
             current_user.id,
             'offered_help',
-            {
-                'assignment_id': assignment.id,
-                'assignment_title': assignment.title,
-                'subject': assignment.subject,
-                'requester_name': student.name if student else None,
-                'requester_id': assignment.user_id,
-            }
+            # Audience is the HELPER's connections, who may not know the
+            # requester: publish subject-level information only, never the
+            # requester's identity or the assignment title (audit F-08).
+            {'subject': assignment.subject}
         )
 
         return success_response(
@@ -1347,20 +1373,14 @@ def submit_solution(current_user, submission_id):
         db.session.commit()
 
         # Activity feed: only after the commit, and only for the first real
-        # submission (record_live_activity commits internally). The event is
-        # about the *requester's* assignment, so it names the requester, not
-        # the helper who is acting.
+        # submission (record_live_activity commits internally).
         if first_response:
-            requester = User.query.get(submission.requester_id)
             record_live_activity(
                 current_user.id,
                 'submitted_solution',
-                {
-                    'assignment_title': submission.title,
-                    'subject': submission.subject,
-                    'requester_name': requester.name if requester else None,
-                    'requester_id': submission.requester_id,
-                }
+                # Subject-level only: the helper's connections must not
+                # learn who asked or what the assignment is (audit F-08).
+                {'subject': submission.subject}
             )
 
         return success_response(

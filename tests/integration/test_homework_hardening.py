@@ -77,12 +77,13 @@ class TestSubmitSolutionOrdering:
         assert fresh.status == "pending"
         assert fresh.solution_text is None
 
-    def test_valid_submit_creates_one_event_naming_the_requester(
+    def test_valid_submit_creates_exactly_one_event_without_requester_identity(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
     ):
         owner = make_user(name="Olivia Owner")
         helper = make_user(name="Henry Helper")
-        assignment = make_assignment(owner, is_shared_for_help=True)
+        assignment = make_assignment(owner, title="Private Title", subject="Physics",
+                                     is_shared_for_help=True)
         sub = _submission(db_session, assignment, owner, helper)
 
         resp = _submit(
@@ -93,7 +94,8 @@ class TestSubmitSolutionOrdering:
         rows = _activity_rows("submitted_solution")
         assert len(rows) == 1
         assert rows[0].user_id == helper.id
-        assert rows[0].activity_data["requester_name"] == "Olivia Owner"
+        # F-08: subject-level only
+        assert rows[0].activity_data == {"subject": "Physics"}
 
     def test_resubmitting_does_not_duplicate_the_event(
         self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
@@ -291,3 +293,142 @@ class TestServerFaultHandling:
             app.logger.removeHandler(handler)
 
         assert any(r.exc_info and self.SECRET in str(r.exc_info[1]) for r in records)
+
+
+# ============================================================================
+# F-02: completion events only for shared assignments, identical on both paths
+# ============================================================================
+
+class TestCompletionPrivacy:
+    def _complete_via_put(self, client, user, a, auth_headers, csrf_headers):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        return client.put(f"/student/assignments/{a.id}", json={"status": "completed"}, headers=headers)
+
+    def _complete_via_quick(self, client, user, a, auth_headers, csrf_headers):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        return client.post(
+            f"/student/assignments/{a.id}/quick-actions", json={"action": "mark_complete"},
+            headers=headers,
+        )
+
+    @pytest.mark.parametrize("path", ["_complete_via_put", "_complete_via_quick"])
+    def test_private_assignment_completion_publishes_nothing(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers, path
+    ):
+        user = make_user()
+        a = make_assignment(user, title="Secret therapy homework", is_shared_for_help=False)
+
+        resp = getattr(self, path)(client, user, a, auth_headers, csrf_headers)
+
+        assert resp.status_code == 200
+        assert _activity_rows("completed_homework") == []
+
+    @pytest.mark.parametrize("path", ["_complete_via_put", "_complete_via_quick"])
+    def test_shared_assignment_completion_publishes_once(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers, path
+    ):
+        user = make_user()
+        a = make_assignment(user, title="Shared one", is_shared_for_help=True)
+
+        getattr(self, path)(client, user, a, auth_headers, csrf_headers)
+        getattr(self, path)(client, user, a, auth_headers, csrf_headers)  # re-send: no duplicate
+
+        rows = _activity_rows("completed_homework")
+        assert len(rows) == 1
+        assert rows[0].activity_data["assignment_title"] == "Shared one"
+
+    def test_start_working_clears_completed_at(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        from models import Assignment
+
+        user = make_user()
+        a = make_assignment(user)
+        self._complete_via_quick(client, user, a, auth_headers, csrf_headers)
+        assert Assignment.query.get(a.id).completed_at is not None
+
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        client.post(
+            f"/student/assignments/{a.id}/quick-actions", json={"action": "start_working"},
+            headers=headers,
+        )
+
+        fresh = Assignment.query.get(a.id)
+        assert fresh.status == "in_progress"
+        assert fresh.completed_at is None
+
+    def test_quick_action_non_json_is_400(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        a = make_assignment(user)
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post(
+            f"/student/assignments/{a.id}/quick-actions",
+            data="x", content_type="text/plain", headers=headers,
+        )
+
+        assert resp.status_code == 400
+
+
+# ============================================================================
+# F-08: offered_help must not reveal the requester to the helper's connections
+# ============================================================================
+
+class TestOfferedHelpPrivacy:
+    def test_helper_only_connection_sees_no_requester_identity(
+        self, client, db_session, make_user, make_assignment, make_connection,
+        auth_headers, csrf_headers,
+    ):
+        requester = make_user(name="Rita Requester")
+        helper = make_user(name="Henry Helper")
+        bystander = make_user(name="Bob Bystander")
+        make_connection(requester, helper)
+        make_connection(helper, bystander)  # bystander knows only the helper
+        a = make_assignment(requester, title="Rita's Secret Title", subject="Chemistry",
+                            is_shared_for_help=True)
+
+        headers = {**auth_headers(helper), **csrf_headers(client)}
+        resp = client.post(f"/student/homework/{a.id}/offer-help", json={}, headers=headers)
+        assert resp.status_code == 201
+
+        feed = client.get("/student/activity/feed", headers=auth_headers(bystander))
+        body = feed.get_data(as_text=True)
+
+        assert feed.status_code == 200
+        assert "Henry Helper" in body          # the actor is still visible
+        assert "Chemistry" in body             # subject-level info is kept
+        assert "Rita Requester" not in body
+        assert "Rita's Secret Title" not in body
+
+
+# ============================================================================
+# F-28: feed window matches retention
+# ============================================================================
+
+class TestFeedWindow:
+    def test_feed_includes_events_older_than_two_hours_but_not_expired(
+        self, client, make_user, make_connection, make_activity_feed_row, auth_headers
+    ):
+        me, friend = make_user(), make_user()
+        make_connection(me, friend)
+        now = datetime.datetime.utcnow()
+        make_activity_feed_row(
+            friend, activity_type="completed_homework",
+            activity_data={"assignment_title": "Five hours ago", "subject": "Math"},
+            created_at=now - datetime.timedelta(hours=5),
+            expires_at=now + datetime.timedelta(hours=19),
+        )
+        make_activity_feed_row(
+            friend, activity_type="completed_homework",
+            activity_data={"assignment_title": "Expired", "subject": "Math"},
+            created_at=now - datetime.timedelta(hours=30),
+            expires_at=now - datetime.timedelta(hours=6),
+        )
+
+        resp = client.get("/student/activity/feed", headers=auth_headers(me))
+        body = resp.get_data(as_text=True)
+
+        assert "Five hours ago" in body
+        assert "Expired" not in body

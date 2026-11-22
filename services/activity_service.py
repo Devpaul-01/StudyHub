@@ -58,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 ACTIVITY_EXPIRY_HOURS = 24
 
+# Read windows (audit F-28). Retention and what the API serves were
+# previously unrelated magic numbers (24h stored, 2h / 30min read).
+# The connections feed shows everything that is still retained; the global
+# pulse is intentionally a short "happening right now" window.
+ACTIVITY_FEED_WINDOW_HOURS = ACTIVITY_EXPIRY_HOURS
+ACTIVITY_PULSE_WINDOW_MINUTES = 30
+
 
 # Activity types whose feed card needs the actor's real identity even on
 # the global/campus-pulse scope — e.g. user_signed_up's "Connect" button
