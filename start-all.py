@@ -76,7 +76,7 @@ def _run_worker_thread(app):
     """
     from rq import SimpleWorker
     from extensions import redis_client
-    from services.job_queue import email_queue, maintenance_queue
+    from services.job_queue import email_queue, badge_queue, maintenance_queue
 
     class _ThreadSafeSimpleWorker(SimpleWorker):
         """
@@ -107,11 +107,11 @@ def _run_worker_thread(app):
 
     with app.app_context():
         worker = _ThreadSafeSimpleWorker(
-            [email_queue, maintenance_queue], connection=redis_client
+            [email_queue, badge_queue, maintenance_queue], connection=redis_client
         )
         logger.info(
             "[START_ALL_WORKER_THREAD_STARTED] queues=%s",
-            [q.name for q in [email_queue, maintenance_queue]],
+            [q.name for q in [email_queue, badge_queue, maintenance_queue]],
         )
         try:
             # burst=False: keep processing jobs as they arrive, for the

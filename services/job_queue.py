@@ -7,10 +7,13 @@ pattern. This is the ONLY file that constructs rq.Queue instances;
 every job-enqueuing call site imports the named queues from here,
 never constructs its own Queue(...).
 
-Two named queues, matching the two job categories this phase
-introduces (see BACKGROUND_JOBS.md §3):
+Three named queues (email, badges, maintenance), matching the job
+categories this phase introduces (see BACKGROUND_JOBS.md §3):
   - email_queue:       password reset / verification / waitlist /
                         referral-milestone email sends
+  - badge_queue:        per-user badge evaluation, enqueued after the
+                        events that change badge inputs
+                        (services/badge_triggers.py)
   - maintenance_queue:  scheduled cleanup/alert jobs enqueued by
                         scheduler.py
 
@@ -35,6 +38,7 @@ from extensions import redis_client
 # job that queue is expected to run — see BACKGROUND_JOBS.md §3 for why
 # each number was picked.
 EMAIL_JOB_TIMEOUT_SECONDS = 30          # SMTP send, generous vs. realistic send time
+BADGE_JOB_TIMEOUT_SECONDS = 60           # one user's badge evaluation (~tens of cheap queries)
 MAINTENANCE_JOB_TIMEOUT_SECONDS = 600   # batched DB scan/delete, see BACKGROUND_JOBS.md §3.2 batch sizing
 
 # FIX: extensions.redis_client is None whenever Redis is unreachable at
@@ -80,6 +84,12 @@ email_queue = Queue(
     "sh:1:rq:email",
     connection=_queue_connection,
     default_timeout=EMAIL_JOB_TIMEOUT_SECONDS,
+)
+
+badge_queue = Queue(
+    "sh:1:rq:badges",
+    connection=_queue_connection,
+    default_timeout=BADGE_JOB_TIMEOUT_SECONDS,
 )
 
 maintenance_queue = Queue(

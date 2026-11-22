@@ -40,7 +40,7 @@ from rq import Worker
 
 from app import create_app
 from extensions import redis_client
-from services.job_queue import email_queue, maintenance_queue
+from services.job_queue import email_queue, badge_queue, maintenance_queue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def main() -> int:
     app, _socketio = create_app()
 
     with app.app_context():
-        queues = [email_queue, maintenance_queue]
+        queues = [email_queue, badge_queue, maintenance_queue]
         worker = Worker(queues, connection=redis_client)
         _install_signal_handlers(worker)
 

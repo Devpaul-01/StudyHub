@@ -31,3 +31,9 @@ ACTIVITY_FEED_CLEANUP_RETRY = Retry(max=3, interval=[30, 300])
 # over-engineering retry policy for a job whose worst-case failure is
 # "one log line is late."
 STALE_CONVERSATION_ALERT_RETRY = Retry(max=2, interval=[60])
+
+# check_badges_job: 3 attempts (10s, 60s backoff). The job is idempotent
+# (already-earned badges are skipped, duplicates are absorbed by the
+# UNIQUE(user_id, badge_id) constraint), so retrying after a transient DB
+# or Redis blip is always safe.
+BADGE_CHECK_RETRY = Retry(max=3, interval=[10, 60])
