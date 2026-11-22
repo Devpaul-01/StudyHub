@@ -40,7 +40,7 @@ export function renderPrivateProfile(data, isOwnProfile) {
   const u = data.user;
   return `
     <div class="pv-header">
-      <img class="pv-avatar" src="${u.avatar || '/static/default-avatar.png'}" alt="${escapeHtml(u.name)}">
+      <img class="pv-avatar" src="${escapeHtml(u.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(u.name)}">
       <div>
         <h1 class="pv-name">${escapeHtml(u.name)}</h1>
         <div class="pv-username">@${escapeHtml(u.username)}</div>
@@ -81,14 +81,14 @@ export function renderPublicProfile(data, isOwnProfile) {
 
   return `
     <div class="pv-header">
-      <img class="pv-avatar" src="${u.avatar || '/static/default-avatar.png'}" alt="${escapeHtml(u.name)}">
+      <img class="pv-avatar" src="${escapeHtml(u.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(u.name)}">
       <div>
         <h1 class="pv-name">${escapeHtml(u.name)}</h1>
         <div class="pv-username">@${escapeHtml(u.username)}</div>
         <div class="pv-meta">
           ${escapeHtml(u.department || '')}${u.class_level ? ` • ${escapeHtml(u.class_level)}` : ''}
           • ⭐ ${u.reputation ?? 0} (${escapeHtml(u.reputation_level || '')})
-          ${u.active_status && u.last_active ? ` • Active ${timeAgo(u.last_active)}` : ''}
+          ${u.active_status && u.last_active ? ` • Last signed in ${timeAgo(u.last_active)}` : ''}
         </div>
         ${u.bio ? `<div class="pv-bio">${escapeHtml(u.bio)}</div>` : ''}
         <div class="pv-actions">${connectionActionButton(data.connection_status, isOwnProfile)}</div>
