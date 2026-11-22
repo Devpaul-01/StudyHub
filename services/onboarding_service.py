@@ -267,6 +267,11 @@ MAX_SUBJECTS = 30
 MAX_SUBJECT_LENGTH = 100
 
 
+def _has_markup(text):
+    """True if ``text`` contains an HTML angle bracket (names and subjects are plain text)."""
+    return "<" in text or ">" in text
+
+
 def _clean_string_list(value, field, errors, *, limit, item_length):
     if value is None or value == "":
         return []
@@ -286,6 +291,9 @@ def _clean_string_list(value, field, errors, *, limit, item_length):
             continue
         if len(item) > item_length:
             errors[field] = f"Each entry in {field} must be at most {item_length} characters"
+            return []
+        if _has_markup(item):
+            errors[field] = f"Entries in {field} cannot contain '<' or '>'"
             return []
         if item not in cleaned:
             cleaned.append(item)
@@ -323,6 +331,8 @@ def validate_onboarding_payload(data):
     name = name.strip()
     if len(name) > MAX_NAME_LENGTH:
         errors["name"] = f"name must be at most {MAX_NAME_LENGTH} characters"
+    elif _has_markup(name):
+        errors["name"] = "name cannot contain '<' or '>'"
 
     department = data.get("department", "")
     if department is None:
@@ -333,6 +343,8 @@ def validate_onboarding_payload(data):
     department = department.strip()
     if len(department) > MAX_DEPARTMENT_LENGTH:
         errors["department"] = f"department must be at most {MAX_DEPARTMENT_LENGTH} characters"
+    elif _has_markup(department):
+        errors["department"] = "department cannot contain '<' or '>'"
 
     schedule_raw = data.get("study_schedule", {})
     schedule = {}

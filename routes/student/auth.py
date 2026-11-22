@@ -38,7 +38,9 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key, allow_ac
 # goes through services/notification_service.py (Document 2 §3.9).
 from services import auth_service, notification_service, onboarding_service
 from services.activity_service import record_live_activity
-from services.profile_validation import is_reserved_username
+from services.profile_validation import (
+    ProfileValidationError, clean_plain_text, is_reserved_username, strip_markup_chars,
+)
 from errors import ValidationError
 
 auth_bp = Blueprint("student_auth", __name__)
@@ -263,7 +265,8 @@ def google_callback():
 
         google_info = resp.json()
         email = google_info.get("email", "").lower().strip()
-        name  = google_info.get("name", "")
+        # Display names come from a third party: never let markup through.
+        name  = strip_markup_chars(google_info.get("name") or "")[:80].strip()
         # Auth-flow-audit fix (Finding #2, Critical): Google's stable,
         # per-account subject identifier ("id" on the v2 userinfo
         # endpoint — equivalent to the "sub" claim on the OIDC id_token).
@@ -620,7 +623,10 @@ def register():
         email = data.get("email", "")
         if not isinstance(full_name, str) or not isinstance(email, str):
             return error_response("Invalid data")
-        full_name = full_name.strip()
+        try:
+            full_name = clean_plain_text(full_name, "Full name", max_len=100, allow_empty=True)
+        except ProfileValidationError as e:
+            return error_response(str(e))
         email = _normalize_email(email)
 
         if not all([full_name, email]):
