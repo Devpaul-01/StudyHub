@@ -30,8 +30,6 @@ class ConnectionState {
     };
 
     this.currentTab = 'received';
-    this.connectedCurrentPage = 1;
-    this.hasMoreConnected = true;
     this.currentConnect = {};
   }
 
@@ -90,28 +88,6 @@ class ConnectionState {
     return this.badges;
   }
 
-  // Pagination (Connected only)
-  getConnectedCurrentPage() {
-    return this.connectedCurrentPage;
-  }
-
-  incrementConnectedPage() {
-    this.connectedCurrentPage++;
-  }
-
-  resetConnectedPage() {
-    this.connectedCurrentPage = 1;
-    this.hasMoreConnected = true;
-  }
-
-  setHasMoreConnected(value) {
-    this.hasMoreConnected = value;
-  }
-
-  getHasMoreConnected() {
-    return this.hasMoreConnected;
-  }
-
   // Reset All
   reset() {
     this.connections = {
@@ -128,7 +104,6 @@ class ConnectionState {
       suggestions: false,
       discovery: false
     };
-    this.resetConnectedPage();
   }
 }
 

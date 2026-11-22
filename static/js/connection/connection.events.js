@@ -55,13 +55,12 @@ export async function sendConnectionRequest(userId, message = null, button = nul
         }
         showToast("Request sent");
         
-        // Move to sent tab
-        const card = button?.closest('.connection-card');
+        // Move to sent tab. (Audit CON-12: this branch referenced an
+        // undefined `target`, which threw a ReferenceError AFTER the request
+        // had succeeded - the catch then reset the button and skipped the
+        // refresh below.)
+        const card = button?.closest('.connection-card') || button?.closest('.user-card');
         if (card) {
-          setTimeout(() => card.remove(), 1500);
-        }
-        const card2 = target.closest('.user-card')
-        if (card2) {
           setTimeout(() => card.remove(), 1500);
         }
       }
@@ -84,15 +83,17 @@ export async function sendConnectionRequest(userId, message = null, button = nul
       return response;
     }
   } catch (error) {
-    
-    
+    console.error('Send connection request error:', error);
+    // Audit CON-12: failures used to be swallowed silently.
+    showToast(error?.message || 'Failed to send request', 'error');
+
     // Restore button state
     if (button) {
       button.disabled = false;
       button.textContent = originalText;
     }
-    
-  
+
+    return null;
   }
 }
 
@@ -225,26 +226,37 @@ export async function removeConnectionRequest(userId, target) {
   }
 }
 
+// Audit CON-12: guard against double-clicks / duplicate in-flight block calls.
+const blockInFlight = new Set();
+
 export async function blockRequest(userId, target) {
+  if (blockInFlight.has(userId)) return;
   if (!confirm('Are you sure you want to block this user?')) return;
-  
+
+  blockInFlight.add(userId);
+  if (target) target.disabled = true;
+
   try {
     const response = await ConnectionAPI.blockUser(userId);
     
     if (response.status === 'success') {
       showToast('User blocked', 'success');
       
-      const card = target.closest('.connection-card');
+      const card = target?.closest('.connection-card');
       if (card) {
         card.style.opacity = '0';
         setTimeout(() => card.remove(), 300);
       }
     } else {
       showToast(response.message || 'Failed to block user', 'error');
+      if (target) target.disabled = false;
     }
   } catch (error) {
     console.error('Block user error:', error);
     showToast('Failed to block user', 'error');
+    if (target) target.disabled = false;
+  } finally {
+    blockInFlight.delete(userId);
   }
 }
 

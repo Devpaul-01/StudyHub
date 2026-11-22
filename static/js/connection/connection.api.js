@@ -6,28 +6,52 @@ import { CONNECTION_ENDPOINTS } from './connection.constants.js';
 
 export const ConnectionAPI = {
   
+  // Fetch every page of a paginated list endpoint (?limit/?cursor).
+  // Audit CON-15: the list endpoints now paginate and report has_more /
+  // next_cursor; the UI still shows full lists, so follow the cursor
+  // (bounded, so a bug can never loop forever).
+  async fetchAllPages(endpoint, maxPages = 10) {
+    const sep = endpoint.includes('?') ? '&' : '?';
+    let cursor = null;
+    let items = [];
+    for (let page = 0; page < maxPages; page++) {
+      const response = await api.get(cursor ? `${endpoint}${sep}cursor=${encodeURIComponent(cursor)}` : endpoint);
+      items = items.concat(response?.data || []);
+      if (!response?.has_more || !response?.next_cursor) break;
+      cursor = response.next_cursor;
+    }
+    return { data: items };
+  },
+
   // Load all connection data at once
   async loadAllConnectionData() {
-    try {
-      const [received, sent, suggestions, connected, discovery] = await Promise.all([
-        api.get(CONNECTION_ENDPOINTS.RECEIVED),
-        api.get(CONNECTION_ENDPOINTS.SENT),
-        api.get(CONNECTION_ENDPOINTS.SUGGESTIONS),
-        api.get(CONNECTION_ENDPOINTS.CONNECTED),
-        api.get(CONNECTION_ENDPOINTS.DISCOVERY)
-      ]);
+    // allSettled: one failing/rate-limited section must not blank the whole
+    // page; only fail if EVERYTHING failed.
+    const results = await Promise.allSettled([
+      this.fetchAllPages(CONNECTION_ENDPOINTS.RECEIVED),
+      this.fetchAllPages(CONNECTION_ENDPOINTS.SENT),
+      api.get(CONNECTION_ENDPOINTS.SUGGESTIONS),
+      this.fetchAllPages(CONNECTION_ENDPOINTS.CONNECTED),
+      api.get(CONNECTION_ENDPOINTS.DISCOVERY)
+    ]);
 
-      return {
-        received: received?.data || [],
-        sent: sent?.data || [],
-        suggestions: suggestions?.data || {},
-        connected: connected?.data || [],
-        discovery: discovery?.data.discoveries || []
-      };
-    } catch (error) {
-      console.error('Load all connection data error:', error);
-      throw error;
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') console.error(`Load connection data (section ${i}) failed:`, r.reason);
+    });
+    if (results.every(r => r.status === 'rejected')) {
+      throw results[0].reason;
     }
+
+    const value = (i) => (results[i].status === 'fulfilled' ? results[i].value : null);
+    const [received, sent, suggestions, connected, discovery] = [0, 1, 2, 3, 4].map(value);
+
+    return {
+      received: received?.data || [],
+      sent: sent?.data || [],
+      suggestions: suggestions?.data || {},
+      connected: connected?.data || [],
+      discovery: discovery?.data?.discoveries || []
+    };
   },
   async broadcastHelpRequest(subject, message = '') {
     const response = await api.post('/connections/help/broadcast', { subject, message });
@@ -155,7 +179,9 @@ export const ConnectionAPI = {
 
   async getBlockedUsers() {
     const response = await api.get(CONNECTION_ENDPOINTS.BLOCKED_LIST);
-    return response?.data || [];
+    // Audit CON-13: the endpoint returns {blocked_users: [...], total}, not an
+    // array - returning response.data made the modal always fail to render.
+    return response?.data?.blocked_users || [];
   },
 
   // Search
@@ -188,7 +214,7 @@ export const ConnectionAPI = {
   // Connection notes
   async getConnectionNotes(connectionId) {
     const response = await api.get(`/connections/${connectionId}/notes`);
-    return response?.data.notes || null;
+    return response?.data?.notes ?? null;
   },
 
   async createConnectionNote(connectionId, notes) {
