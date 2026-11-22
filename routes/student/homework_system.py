@@ -44,6 +44,8 @@ from services.homework_validation import (
     HomeworkValidationError,
     validate_assignment_create,
     validate_assignment_update,
+    validate_feedback,
+    validate_solution_submit,
 )
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
@@ -52,6 +54,18 @@ from services.activity_service import record_live_activity
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 homework_bp = Blueprint("student_homework", __name__)
+
+
+def _server_error(log_label: str, public_message: str):
+    """Log the active exception WITH its traceback and return a 500.
+
+    Unexpected faults (DB down, constraint errors, bugs) must not look like
+    client mistakes (HTTP 400) and must never echo exception text to the
+    caller (audit F-22). Call from inside an ``except`` block.
+    """
+    current_app.logger.exception(log_label)
+    return error_response(public_message, 500)
+
 
 
 # ============================================================================
@@ -214,11 +228,8 @@ def get_assignment_helpers(current_user, assignment_id):
             'total_helpers': len(helpers_data)
         })
 
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f'Error fetching helpers: {str(e)}'
-        }), 500
+    except Exception:
+        return _server_error("Get assignment helpers error", "Failed to load helpers")
 
 
 @homework_bp.route("/activity/feed", methods=["GET"])
@@ -303,8 +314,7 @@ def get_activity_feed(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get activity feed error: {str(e)}")
-        return error_response("Failed to load activity feed")
+        return _server_error("Get activity feed error", "Failed to load activity feed")
 
 
 @homework_bp.route("/activity/pulse", methods=["GET"])
@@ -375,8 +385,7 @@ def get_activity_pulse(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get activity pulse error: {str(e)}")
-        return error_response("Failed to load activity pulse")
+        return _server_error("Get activity pulse error", "Failed to load activity pulse")
 
 
 @homework_bp.route("/homework/my-streak", methods=["GET"])
@@ -405,8 +414,7 @@ def get_my_streak(current_user):
             }
         })
     except Exception as e:
-        current_app.logger.error(f"Get streak error: {str(e)}")
-        return error_response("Failed to load streak")
+        return _server_error("Get streak error", "Failed to load streak")
 
 
 @homework_bp.route("/homework/champions", methods=["GET"])
@@ -492,8 +500,7 @@ def get_current_champions(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get champions error: {str(e)}")
-        return error_response("Failed to load champions")
+        return _server_error("Get champions error", "Failed to load champions")
 
 
 @homework_bp.route("/assignments", methods=["GET"])
@@ -593,8 +600,7 @@ def get_my_assignments(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get assignments error: {str(e)}")
-        return error_response("Failed to load assignments")
+        return _server_error("Get assignments error", "Failed to load assignments")
 
 
 @homework_bp.route("/assignments", methods=["POST"])
@@ -659,8 +665,7 @@ def create_assignment(current_user):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Create assignment error: {str(e)}")
-        return error_response("Failed to create assignment")
+        return _server_error("Create assignment error", "Failed to create assignment")
 
 
 @homework_bp.route("/assignments/<int:assignment_id>", methods=["PUT"])
@@ -728,8 +733,7 @@ def update_assignment(current_user, assignment_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Update assignment error: {str(e)}")
-        return error_response("Failed to update assignment")
+        return _server_error("Update assignment error", "Failed to update assignment")
 
 
 @homework_bp.route("/assignments/<int:assignment_id>", methods=["DELETE"])
@@ -755,8 +759,7 @@ def delete_assignment(current_user, assignment_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Delete assignment error: {str(e)}")
-        return error_response("Failed to delete assignment")
+        return _server_error("Delete assignment error", "Failed to delete assignment")
 
 
 @homework_bp.route("/assignments/<int:assignment_id>/quick-actions", methods=["POST"])
@@ -812,8 +815,7 @@ def assignment_quick_actions(current_user, assignment_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Quick action error: {str(e)}")
-        return error_response("Failed to perform action")
+        return _server_error("Quick action error", "Failed to perform action")
 
 
 # ============================================================================
@@ -974,8 +976,7 @@ def get_homework_feed(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get homework feed error: {str(e)}")
-        return error_response("Failed to load homework feed")
+        return _server_error("Get homework feed error", "Failed to load homework feed")
 
 
 @homework_bp.route("/homework/<int:assignment_id>/offer-help", methods=["POST"])
@@ -1066,8 +1067,7 @@ def offer_homework_help(current_user, assignment_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Offer help error: {str(e)}")
-        return error_response("Failed to offer help")
+        return _server_error("Offer help error", "Failed to offer help")
 
 
 @homework_bp.route("/homework/my-help-requests", methods=["GET"])
@@ -1149,8 +1149,7 @@ def get_my_help_requests(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get help requests error: {str(e)}")
-        return error_response("Failed to load help requests")
+        return _server_error("Get help requests error", "Failed to load help requests")
 
 
 @homework_bp.route("/homework/helping", methods=["GET"])
@@ -1233,8 +1232,7 @@ def get_homework_im_helping_with(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get helping with error: {str(e)}")
-        return error_response("Failed to load homework you're helping with")
+        return _server_error("Get helping with error", "Failed to load homework you're helping with")
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>", methods=["GET"])
@@ -1302,8 +1300,7 @@ def get_submission_details(current_user, submission_id):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Get submission details error: {str(e)}")
-        return error_response("Failed to load submission details")
+        return _server_error("Get submission details error", "Failed to load submission details")
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/submit-solution", methods=["POST"])
@@ -1326,29 +1323,21 @@ def submit_solution(current_user, submission_id):
         if submission.status not in ["pending", "submitted"]:
             return error_response("Cannot submit solution for this status", 400)
 
-        if not submission.response_time_seconds:
-            time_diff = (datetime.utcnow() - submission.created_at).total_seconds()
-            submission.response_time_seconds = int(time_diff)
-            record_live_activity(
-                current_user.id,
-                'submitted_solution',
-                {
-                    'assignment_title': submission.title,
-                    'subject': submission.subject,
-                    'requester_name': current_user.name,
-                    'requester_id': submission.requester_id
-                }
-            )
+        # Validate BEFORE touching the session: nothing below may run (or
+        # commit, e.g. via record_live_activity) for a request we reject.
+        try:
+            fields = validate_solution_submit(request.get_json(silent=True))
+        except HomeworkValidationError as e:
+            return error_response(e.message, 400)
 
-        data = request.get_json()
+        now = datetime.utcnow()
+        first_response = submission.response_time_seconds is None
+        if first_response:
+            submission.response_time_seconds = int((now - submission.created_at).total_seconds())
 
-        solution_text = data.get("solution_text", "").strip()
-        if not solution_text:
-            return error_response("Solution text is required")
-
-        submission.solution_text = solution_text
-        submission.solution_resources = data.get("resources", [])
-        submission.submitted_at = datetime.utcnow()
+        submission.solution_text = fields["solution_text"]
+        submission.solution_resources = fields["resources"]
+        submission.submitted_at = now
         submission.status = "submitted"
 
         notification_service.notify_homework_solution_submitted(
@@ -1357,6 +1346,23 @@ def submit_solution(current_user, submission_id):
 
         db.session.commit()
 
+        # Activity feed: only after the commit, and only for the first real
+        # submission (record_live_activity commits internally). The event is
+        # about the *requester's* assignment, so it names the requester, not
+        # the helper who is acting.
+        if first_response:
+            requester = User.query.get(submission.requester_id)
+            record_live_activity(
+                current_user.id,
+                'submitted_solution',
+                {
+                    'assignment_title': submission.title,
+                    'subject': submission.subject,
+                    'requester_name': requester.name if requester else None,
+                    'requester_id': submission.requester_id,
+                }
+            )
+
         return success_response(
             "Solution submitted! The student will review it soon.",
             data={"submission_id": submission.id, "status": submission.status}
@@ -1364,8 +1370,7 @@ def submit_solution(current_user, submission_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Submit solution error: {str(e)}")
-        return error_response("Failed to submit solution")
+        return _server_error("Submit solution error", "Failed to submit solution")
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/give-feedback", methods=["POST"])
@@ -1374,7 +1379,6 @@ def submit_solution(current_user, submission_id):
 def give_feedback(current_user, submission_id):
     """Give feedback on homework solution with quick reactions."""
     try:
-        data = request.get_json()
         submission = HomeworkSubmission.query.get(submission_id)
 
         if not submission:
@@ -1386,33 +1390,33 @@ def give_feedback(current_user, submission_id):
         if submission.status != "submitted":
             return error_response("Cannot give feedback - solution not submitted yet")
 
-        submission.feedback_text = data.get("feedback_text", "").strip()
-        submission.feedback_resources = data.get("feedback_resources", [])
-        submission.feedback_at = datetime.utcnow()
+        try:
+            fields = validate_feedback(request.get_json(silent=True))
+        except HomeworkValidationError as e:
+            return error_response(e.message, 400)
 
-        reaction_type = data.get("reaction_type")
-        if reaction_type in ['thanks', 'lifesaver', 'mindblown', 'perfect']:
+        now = datetime.utcnow()
+        submission.feedback_text = fields["feedback_text"]
+        submission.feedback_resources = fields["feedback_resources"]
+        submission.feedback_at = now
+
+        reaction_type = fields["reaction_type"]
+        if reaction_type:
             submission.reaction_type = reaction_type
-            submission.reaction_at = datetime.utcnow()
+            submission.reaction_at = now
             submission.is_marked_helpful = True
 
-        rating = data.get("rating")
-        if rating is not None:
-            try:
-                rating = int(rating)
-            except (TypeError, ValueError):
-                rating = None
-        if rating and 1 <= rating <= 5:
+        rating = fields["rating"]
+        if rating:
             submission.feedback_rating = rating
             if rating >= 3:
                 submission.is_marked_helpful = True
 
-        if not submission.is_marked_helpful and data.get("is_helpful", True):
+        if not submission.is_marked_helpful and fields["is_helpful"] is not False:
             submission.is_marked_helpful = True
 
-        mark_complete = data.get("mark_complete", True)
         streak_result = None
-        if mark_complete:
+        if fields["mark_complete"]:
             submission.status = "completed"
 
             if submission.is_marked_helpful:
@@ -1457,8 +1461,7 @@ def give_feedback(current_user, submission_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Give feedback error: {str(e)}")
-        return error_response("Failed to submit feedback")
+        return _server_error("Give feedback error", "Failed to submit feedback")
 
 
 @homework_bp.route("/homework/submission/<int:submission_id>/cancel", methods=["DELETE"])
@@ -1499,8 +1502,7 @@ def cancel_help_request(current_user, submission_id):
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Cancel help request error: {str(e)}")
-        return error_response("Failed to cancel help request")
+        return _server_error("Cancel help request error", "Failed to cancel help request")
 
 
 # ============================================================================
@@ -1549,8 +1551,7 @@ def get_homework_stats(current_user):
         return jsonify({"status": "success", "data": stats})
 
     except Exception as e:
-        current_app.logger.error(f"Get homework stats error: {str(e)}")
-        return error_response("Failed to load statistics")
+        return _server_error("Get homework stats error", "Failed to load statistics")
 
 
 @homework_bp.route("/homework/stats/charts", methods=["GET"])
@@ -1669,5 +1670,4 @@ def get_homework_chart_data(current_user):
                 "response_time": response_time
             }})
     except Exception as e:
-        current_app.logger.error(f"Get chart data error: {str(e)}")
-        return error_response("Failed to load chart data")
+        return _server_error("Get chart data error", "Failed to load chart data")
