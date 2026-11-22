@@ -469,167 +469,159 @@ def onboard_connect_all(email):
 
 # ADD TO connections.py (after other endpoints)
 
+HELP_REQUEST_SUBJECT_MAX_LEN = 100   # HelpRequest.subject is String(100)
+HELP_REQUEST_MESSAGE_MAX_LEN = 300   # HelpRequest.message is String(300)
+HELP_REQUEST_MAX_TARGETS = 10
+HELP_REQUEST_TTL_HOURS = 2
+
+
+def _score_help_targets(partner_ids, subject_lower):
+    """
+    Relevance of each connection for `subject_lower`, using batch-loaded users
+    and onboarding rows (2 queries instead of 2 per connection - CON-15).
+    Returns [(user, score)] for score > 0 only, best first, ties broken by id
+    so the result is deterministic.
+    """
+    if not partner_ids:
+        return []
+    users = {u.id: u for u in User.query.filter(User.id.in_(partner_ids)).all()}
+    onboarding = {
+        o.user_id: o
+        for o in OnboardingDetails.query.filter(OnboardingDetails.user_id.in_(partner_ids)).all()
+    }
+    scored = []
+    for uid in partner_ids:
+        user, ob = users.get(uid), onboarding.get(uid)
+        if not user or not ob:
+            continue
+        score = 0
+        if any(subject_lower in subj.lower() for subj in (ob.subjects or [])):
+            score += 30
+        if any(subject_lower in subj.lower() for subj in (ob.strong_subjects or [])):
+            score += 50
+        if score > 0:   # irrelevant connections are not pinged (CON-17)
+            scored.append((user, score))
+    scored.sort(key=lambda x: (-x[1], x[0].id))
+    return scored
+
+
 @connections_crud_bp.route("/connections/help/broadcast", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def broadcast_help_request(current_user):
     """
-    Create a help request and broadcast to relevant connections via
-    push notification + in-app notification.
+    Create a help request and notify the most relevant connections via push +
+    in-app notification.
+
+    Audit CON-17:
+      * input is validated (type, length vs the String(100)/String(300)
+        columns) and sanitized to plain text;
+      * the database allows only ONE active request per user (partial unique
+        index), so two concurrent broadcasts can't both stay active;
+      * the request is COMMITTED first; push and in-app notifications run
+        afterwards, so a failed commit can no longer leave irrevocable pushes;
+      * only connections with relevance > 0 are notified (the old code padded
+        the top 10 with irrelevant people);
+      * users/onboarding rows are batch-loaded (CON-15).
     """
     try:
-        data = request.get_json()
-        subject = data.get('subject', '').strip()
-        message = data.get('message', '').strip()
+        data = request.get_json(silent=True) or {}
+        try:
+            subject = clean_user_text(data.get('subject'), HELP_REQUEST_SUBJECT_MAX_LEN, field="Subject")
+            message = clean_user_text(data.get('message'), HELP_REQUEST_MESSAGE_MAX_LEN, field="Message")
+        except ValueError as exc:
+            return error_response(str(exc), 400)
 
         if not subject:
             return error_response("Subject is required", 400)
 
-        # Expire any previous active request from this user
-        old_requests = HelpRequest.query.filter_by(
-            requester_id=current_user.id,
-            status='active'
-        ).all()
-        for old in old_requests:
-            old.status = 'expired'
+        # Expire the previous active request, then insert the new one. The
+        # UPDATE is emitted immediately; the partial unique index settles any
+        # race between two concurrent broadcasts.
+        HelpRequest.query.filter_by(
+            requester_id=current_user.id, status='active'
+        ).update({"status": "expired"}, synchronize_session=False)
 
-        # Create the new help request
         help_request = HelpRequest(
             requester_id=current_user.id,
             subject=subject,
-            message=message or None,
+            message=message,
             status='active',
-            expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=2)
+            expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=HELP_REQUEST_TTL_HOURS)
         )
         db.session.add(help_request)
-        db.session.flush()  # Get the ID before commit
-
-        # Get user's accepted connections
-        connections = Connection.query.filter(
-            or_(
-                Connection.requester_id == current_user.id,
-                Connection.receiver_id == current_user.id
-            ),
-            Connection.status == 'accepted'
-        ).all()
-
-        connection_ids = [
-            c.receiver_id if c.requester_id == current_user.id else c.requester_id
-            for c in connections
-        ]
-
-        if not connection_ids:
+        try:
             db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return error_response("You already have an active help request, please retry", 409)
 
-            record_live_activity(
-                current_user.id,
-                'help_request_broadcast',
-                {
-                    'help_request_id': help_request.id,
-                    'subject': subject,
-                }
-            )
+        help_request_id = help_request.id
+        expires_at = help_request.expires_at
 
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "help_request_id": help_request.id,
-                    "notified_count": 0,
-                    "message": "Request created but you have no connections to notify"
-                }
-            })
+        partner_ids = sorted(get_accepted_partner_ids(current_user.id))
+        targets = [u for u, _ in _score_help_targets(partner_ids, subject.lower())[:HELP_REQUEST_MAX_TARGETS]]
 
-        # Score connections by subject relevance (reuse your existing logic)
-        subject_lower = subject.lower()
-        scored = []
+        if targets:
+            notif_title = f"{current_user.name} needs help!"
+            notif_body = f"Help needed with {subject}"
+            fcm_tokens = [u.fcm_token for u in targets if u.fcm_token]
+            target_ids = [u.id for u in targets]
 
-        for user_id in connection_ids:
-            user = User.query.get(user_id)
-            if not user:
-                continue
-            onboarding = OnboardingDetails.query.filter_by(user_id=user_id).first()
-            if not onboarding:
-                continue
+            def _notify_targets():
+                if fcm_tokens:
+                    try:
+                        from services.push_notifications import PushNotificationService
+                        PushNotificationService.send_multicast(
+                            fcm_tokens, notif_title, notif_body,
+                            {
+                                'type': 'help_request',
+                                'help_request_id': str(help_request_id),
+                                'requester_id': str(current_user.id),
+                                'requester_name': current_user.name,
+                                'subject': subject,
+                            }
+                        )
+                    except Exception as push_err:
+                        current_app.logger.warning(f"Push failed (non-critical): {push_err}")
+                for uid in target_ids:
+                    notification_service.notify(
+                        user_id=uid,
+                        title=notif_title,
+                        body=notif_body,
+                        notification_type='help_request',
+                        related_type='help_request',
+                        related_id=help_request_id,
+                        link=HELP_REQUEST_LINK.format(id=help_request_id),
+                    )
 
-            score = 0
-            for subj in (onboarding.subjects or []):
-                if subject_lower in subj.lower():
-                    score += 30
-                    break
-            for subj in (onboarding.strong_subjects or []):
-                if subject_lower in subj.lower():
-                    score += 50
-                    break
+            notify_after_commit(_notify_targets)
 
-            # Include everyone who has any relevance, plus a small group of others
-            scored.append((user, score))
-
-        # Sort by relevance — top 10 most relevant connections get notified
-        scored.sort(key=lambda x: x[1], reverse=True)
-        targets = [u for u, s in scored[:10]]
-
-        # Collect FCM tokens for multicast push
-        fcm_tokens = [u.fcm_token for u in targets if u.fcm_token]
-
-        notif_title = f"{current_user.name} needs help!"
-        notif_body = f"Help needed with {subject}"
-        notif_data = {
-            'type': 'help_request',
-            'help_request_id': str(help_request.id),
-            'requester_id': str(current_user.id),
-            'requester_name': current_user.name,
-            'subject': subject
-        }
-
-        # Send push notifications
-        if fcm_tokens:
-            from services.push_notifications import PushNotificationService
-            PushNotificationService.send_multicast(
-                fcm_tokens,
-                notif_title,
-                notif_body,
-                notif_data
-            )
-
-        # Create in-app notifications
-        for user in targets:
-            notification_service.notify(
-                user_id=user.id,
-                title=notif_title,
-                body=notif_body,
-                notification_type='help_request',
-                related_type='help_request',
-                related_id=help_request.id,
-                link=f'/help-request/{help_request.id}',
-            )
-
-        help_request.broadcast_sent = True
-        db.session.commit()
-
+        # The feed card carries the Volunteer button for every accepted
+        # connection (volunteering requires an accepted connection - CON-06).
         record_live_activity(
             current_user.id,
             'help_request_broadcast',
             {
-                'help_request_id': help_request.id,
+                'help_request_id': help_request_id,
                 'subject': subject,
             }
         )
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "help_request_id": help_request.id,
-                "notified_count": len(targets),
-                "expires_at": help_request.expires_at.isoformat()
-            }
-        })
+        payload = {
+            "help_request_id": help_request_id,
+            "notified_count": len(targets),
+            "expires_at": expires_at.isoformat(),
+        }
+        if not partner_ids:
+            payload["message"] = "Request created but you have no connections to notify"
+        return jsonify({"status": "success", "data": payload})
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Broadcast help error: ", exc_info=True)
-        return error_response("Failed to broadcast help request")
+        current_app.logger.error("Broadcast help error", exc_info=True)
+        return error_response("Failed to broadcast help request", 500)
 
-  
 
 def _help_request_visible_to(help_request, user_id):
     """The requester and their ACCEPTED connections may see/volunteer for a request."""
@@ -863,13 +855,26 @@ def get_help_volunteers(current_user, request_id):
 def find_help_with_subject(current_user):
     """Find users who can help with a specific subject"""
     try:
-        data = request.get_json()
-        subject = data.get('subject', '').strip()
-        
+        data = request.get_json(silent=True) or {}
+        try:
+            subject = clean_user_text(data.get('subject'), HELP_REQUEST_SUBJECT_MAX_LEN, field="Subject")
+        except ValueError as exc:
+            return error_response(str(exc), 400)
+
         if not subject:
             return error_response("Please provide a subject", 400)
         
         subject_lower = subject.lower()
+
+        # Never surface users with a block between us (either direction).
+        blocked_ids = {
+            (c.receiver_id if c.requester_id == current_user.id else c.requester_id)
+            for c in Connection.query.filter(
+                or_(Connection.requester_id == current_user.id,
+                    Connection.receiver_id == current_user.id),
+                Connection.status == "blocked",
+            ).all()
+        }
         # AUDIT ENG-7c FIX: previously no .limit() at all — on a large
         # user base this loaded every approved user into memory and
         # issued 2 queries per user inside the loop below (StudentProfile
@@ -877,10 +882,15 @@ def find_help_with_subject(current_user):
         # matching the same "scan then score" candidate-cap pattern
         # get_recommended_threads (threads/discovery.py) already uses for
         # the analogous case.
-        all_users = User.query.filter(
+        # Audit CON-15: deterministic scan (most reputable first, id tiebreak)
+        # instead of an arbitrary first-200 in physical row order.
+        candidate_q = User.query.filter(
             User.id != current_user.id,
             User.status == "approved"
-        ).limit(200).all()
+        )
+        if blocked_ids:
+            candidate_q = candidate_q.filter(~User.id.in_(blocked_ids))
+        all_users = candidate_q.order_by(User.reputation.desc(), User.id.asc()).limit(200).all()
 
         # AUDIT ENG-7c FIX: batch-load StudentProfile/OnboardingDetails for
         # the whole capped candidate set — 2 queries total instead of 2
