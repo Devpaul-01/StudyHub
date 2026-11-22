@@ -1293,6 +1293,7 @@ def logout():
         # so a stale-but-connected socket surviving a logout is a gap this
         # closes. Best-effort: any failure here must never block logout
         # itself from succeeding.
+        user_id = None
         try:
             access_token = request.cookies.get("access_token")
             if access_token:
@@ -1303,6 +1304,17 @@ def logout():
                     message_ws_manager.disconnect_user(user_id)
         except Exception:
             pass
+
+        # Stop push notifications for this account reaching the device it
+        # just logged out of (it may be shared, or used by someone else
+        # next). Best-effort: never blocks logout.
+        try:
+            if user_id:
+                User.query.filter_by(id=user_id).update(
+                    {User.fcm_token: None}, synchronize_session=False)
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
 
         # Auth-flow-audit fix (Finding #6 side effect): previously logout
         # only cleared cookies client-side — the refresh token itself
