@@ -146,7 +146,7 @@ class ActivityFeed(db.Model):
     __tablename__ = 'activity_feed'
 
     id            = db.Column(db.Integer, primary_key=True)
-    user_id       = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id       = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     activity_type = db.Column(db.String(50), nullable=False)
     activity_data = db.Column(db.JSON, nullable=True)
     created_at    = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -187,7 +187,7 @@ class WeeklyChampion(db.Model):
     __tablename__ = 'weekly_champions'
 
     id                        = db.Column(db.Integer, primary_key=True)
-    user_id                   = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id                   = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     subject                   = db.Column(db.String(100), nullable=True)
     help_count                = db.Column(db.Integer, nullable=False, default=0)
     week_start                = db.Column(db.Date, nullable=False)
@@ -286,7 +286,7 @@ class Assignment(db.Model):
     __tablename__ = "assignments"
 
     id        = db.Column(db.Integer, primary_key=True)
-    user_id   = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     resources = db.Column(db.JSON, default=list)
 
     title       = db.Column(db.String(200), nullable=False)
@@ -308,6 +308,19 @@ class Assignment(db.Model):
 
     user = db.relationship("User", backref="assignments")
 
+    __table_args__ = (
+        # Hot read paths: "my assignments by status" and the shared-for-help
+        # feed (audit F-26). Single-column indexes above are kept.
+        db.Index("ix_assignments_user_status", "user_id", "status"),
+        db.Index("ix_assignments_shared_status_user", "is_shared_for_help", "status", "user_id"),
+        db.CheckConstraint(
+            "status IN ('not_started', 'in_progress', 'completed')", name="ck_assignments_status"
+        ),
+        db.CheckConstraint(
+            "difficulty IN ('easy', 'medium', 'hard')", name="ck_assignments_difficulty"
+        ),
+    )
+
     # calculate_priority() removed — dead code, fully superseded by
     # services/homework_service.py::calculate_priority_score(), the sole
     # call site used across every route (get_my_assignments/
@@ -328,9 +341,12 @@ class HomeworkSubmission(db.Model):
     __tablename__ = "homework_submissions"
 
     id            = db.Column(db.Integer, primary_key=True)
-    assignment_id = db.Column(db.Integer, db.ForeignKey("assignments.id"), nullable=True, index=True)
-    requester_id  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    helper_id     = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    # SET NULL: deleting an assignment detaches (never destroys) the help
+    # history; title/description/subject below are denormalised copies so a
+    # detached row stays readable (audit F-03, F-19).
+    assignment_id = db.Column(db.Integer, db.ForeignKey("assignments.id", ondelete="SET NULL"), nullable=True, index=True)
+    requester_id  = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    helper_id     = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     title       = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
@@ -353,12 +369,37 @@ class HomeworkSubmission(db.Model):
     created_at        = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
     is_marked_helpful = db.Column(db.Boolean, default=False)
 
-    # MIGRATION-001: missing columns
+    # Added by migration d3a7c5e91b24 (was MIGRATION-001: the column existed
+    # in the model with no migration creating it - audit F-04).
     feedback_rating = db.Column(db.Integer, nullable=True)
 
     requester  = db.relationship("User", foreign_keys=[requester_id])
     helper     = db.relationship("User", foreign_keys=[helper_id])
     assignment = db.relationship("Assignment", backref="help_submissions")
+
+    __table_args__ = (
+        # One live offer per (assignment, helper). Cancelled rows are kept
+        # for history and do not block a fresh offer (audit F-03, F-05).
+        # NULL assignment_id (detached history) never conflicts.
+        db.Index(
+            "uq_hw_sub_active_assignment_helper", "assignment_id", "helper_id",
+            unique=True,
+            postgresql_where=db.text("status <> 'cancelled'"),
+            sqlite_where=db.text("status <> 'cancelled'"),
+        ),
+        db.Index("ix_hw_sub_helper_status", "helper_id", "status"),
+        db.Index("ix_hw_sub_requester_status", "requester_id", "status"),
+        db.CheckConstraint(
+            "difficulty IN ('easy', 'medium', 'hard')", name="ck_hw_submissions_difficulty"
+        ),
+        db.CheckConstraint(
+            "reaction_type IN ('thanks', 'lifesaver', 'mindblown', 'perfect')",
+            name="ck_hw_submissions_reaction",
+        ),
+        db.CheckConstraint(
+            "feedback_rating BETWEEN 1 AND 5", name="ck_hw_submissions_rating"
+        ),
+    )
 
     def __repr__(self):
         return f"<HomeworkSubmission {self.id}: {self.title} - {self.status}>"
