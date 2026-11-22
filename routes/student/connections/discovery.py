@@ -28,7 +28,7 @@ from routes.student.helpers import (
     block_connection, unblock_connection,
 )
 
-from services.online_status_service import get_user_online_status
+from services.online_status_service import get_user_online_status, get_online_status_batch
 from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
     calculate_compatibility_score,
@@ -1291,7 +1291,13 @@ def get_available_connections(current_user):
         }
 
         now = datetime.datetime.utcnow()
-        day_name = now.strftime("%A").lower()
+        # Audit CON-14: schedules are stored with CAPITALISED day keys
+        # ("Monday") and only the slots morning/afternoon/evening (see the
+        # onboarding form and calculate_schedule_overlap). The old code looked
+        # up "monday" and invented a "night" slot, so schedule_available could
+        # never be true. Slotting is in UTC (documented: per-user timezones
+        # are not stored yet); outside the three slots there is no slot.
+        day_name = now.strftime("%A")
         current_hour = now.hour
 
         if 6 <= current_hour < 12:
@@ -1301,7 +1307,11 @@ def get_available_connections(current_user):
         elif 18 <= current_hour < 22:
             time_slot = "evening"
         else:
-            time_slot = "night"
+            time_slot = None
+
+        # One definition of "online" for every connections endpoint
+        # (online_status_service also honours in_study_session).
+        online_map = get_online_status_batch(other_ids)
 
         available_users = []
 
@@ -1327,13 +1337,11 @@ def get_available_connections(current_user):
             else:
                 onboarding_details = {}
 
-            # Check 1: Active recently (last 30 minutes)
+            # Check 1: online per the shared online-status service
             minutes_ago = None
             if user.last_active:
                 minutes_ago = (now - user.last_active).total_seconds() / 60
-                is_online = minutes_ago < 30
-            else:
-                is_online = False
+            is_online = bool((online_map.get(other_id) or {}).get("is_online"))
 
             # Check 2: Can help with subject
             can_help = False
@@ -1345,7 +1353,7 @@ def get_available_connections(current_user):
 
             # Check 3: Available now according to schedule
             schedule_available = False
-            if onboarding and onboarding.study_schedule:
+            if onboarding and onboarding.study_schedule and time_slot:
                 day_slots = onboarding.study_schedule.get(day_name, [])
                 schedule_available = time_slot in day_slots
 
@@ -1389,9 +1397,9 @@ def get_available_connections(current_user):
             }
         })
 
-    except Exception as e:
+    except Exception:
         current_app.logger.error("Available connections error", exc_info=True)
-        return error_response("Failed to find available connections")
+        return error_response("Failed to find available connections", 500)
         
 
 """
