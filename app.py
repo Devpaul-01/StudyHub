@@ -88,6 +88,22 @@ migrate = Migrate()
 # Application Factory
 # ============================================================================
 
+DEFAULT_CSP_REPORT_ONLY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:",
+    "font-src 'self' data: https://fonts.gstatic.com https:",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' blob: https:",
+    "connect-src 'self' https: wss:",
+    "frame-src 'self' https:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+
 def create_app(config_class=None):
     """Create and configure the Flask application"""
     config_class = config_class or get_config()
@@ -351,6 +367,16 @@ def create_app(config_class=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+
+        # Defence-in-depth against XSS (audit F-01). REPORT-ONLY: the browser
+        # logs violations to the console but blocks nothing, so this cannot
+        # break existing pages. Tighten (drop 'unsafe-inline', switch to the
+        # enforcing header) once the report is clean. Override or disable with
+        # the CSP_REPORT_ONLY_POLICY config key ('' disables).
+        if (response.mimetype or '') == 'text/html':
+            csp = app.config.get('CSP_REPORT_ONLY_POLICY', DEFAULT_CSP_REPORT_ONLY)
+            if csp:
+                response.headers['Content-Security-Policy-Report-Only'] = csp
         
         # Only set HSTS in production with HTTPS
         if not app.debug and app.config.get('SESSION_COOKIE_SECURE'):
