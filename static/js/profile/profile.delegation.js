@@ -39,6 +39,13 @@ function setTabContent(html) {
   if (el) el.innerHTML = html;
 }
 
+// Paint a tab's content only if that tab is still the one on screen. Tab data
+// is fetched asynchronously; a slow response for tab A must not overwrite the
+// content of tab B the user has switched to in the meantime. (The fetched data
+// is still stored, so tab A renders instantly when the user returns to it.)
+function setTabContentIfCurrent(tab, html) {
+  if (profileState.getCurrentTab() === tab) setTabContent(html);
+}
 function setHeaderContent(html) {
   const el = $id('profile-header-container');
   if (el) el.innerHTML = html;
@@ -61,7 +68,13 @@ async function renderHeaderIfNeeded() {
   if (profileState.isLoaded('profile')) return;
   setHeaderContent(buildSkeleton(1));
   const data = await profileApi.fetchProfileData();
-  if (!data) { setHeaderContent('<div style="padding:1rem;color:var(--text-secondary);">Failed to load profile</div>'); return; }
+  if (!data) {
+    setHeaderContent(
+      '<div style="padding:1rem;color:var(--text-secondary);">Failed to load profile ' +
+      '<button class="p-btn" data-action="profile-retry-header" style="margin-left:0.5rem;">Retry</button></div>'
+    );
+    return;
+  }
   profileState.profileData = data;
   profileState.markLoaded('profile');
   setHeaderContent(buildProfileHeader(data));
@@ -70,10 +83,15 @@ async function renderHeaderIfNeeded() {
 async function renderPostsTab(forceReload = false) {
   if (!profileState.isLoaded('posts') || forceReload) {
     setTabContent(buildSkeleton());
-    profileState.posts = await profileApi.fetchMyPosts(profileState.postsFilter);
+    const filter = profileState.postsFilter;
+    const posts  = await profileApi.fetchMyPosts(filter);
+    // The user picked another filter while this request was in flight: the
+    // newer request owns the list, so drop this (older) response.
+    if (filter !== profileState.postsFilter) return;
+    profileState.posts = posts;
     profileState.markLoaded('posts');
   }
-  setTabContent(buildPostsTab(profileState.posts, profileState.postsFilter));
+  setTabContentIfCurrent('posts', buildPostsTab(profileState.posts, profileState.postsFilter));
 }
 
 async function renderStatsTab() {
@@ -85,7 +103,7 @@ async function renderStatsTab() {
     ]);
     profileState.markLoaded('stats');
   }
-  setTabContent(buildStatsTab(profileState.stats, profileState.heatmap));
+  setTabContentIfCurrent('stats', buildStatsTab(profileState.stats, profileState.heatmap));
 }
 
 async function renderConnectionsTab() {
@@ -94,7 +112,7 @@ async function renderConnectionsTab() {
     profileState.connections = await profileApi.fetchMyConnections();
     profileState.markLoaded('connections');
   }
-  setTabContent(buildConnectionsTab(profileState.connections));
+  setTabContentIfCurrent('connections', buildConnectionsTab(profileState.connections));
 }
 
 async function renderReputationTab() {
@@ -108,7 +126,7 @@ async function renderReputationTab() {
     ]);
     profileState.markLoaded('reputation');
   }
-  setTabContent(buildReputationTab(profileState.reputation, profileState.repHistory, profileState.rankHistory));
+  setTabContentIfCurrent('reputation', buildReputationTab(profileState.reputation, profileState.repHistory, profileState.rankHistory));
 }
 
 // Batch 3
@@ -121,7 +139,7 @@ async function renderBadgesTab() {
     ]);
     profileState.markLoaded('badges');
   }
-  setTabContent(buildBadgesTab(profileState.myBadges, profileState.badgeProgress));
+  setTabContentIfCurrent('badges', buildBadgesTab(profileState.myBadges, profileState.badgeProgress));
 }
 
 async function renderCurrentTab() {
@@ -296,12 +314,13 @@ export async function initProfile() {
   profileState.setInitialized(true);
   console.log('[profile] Initializing...');
 
-  await renderHeaderIfNeeded();
-
-  // Default to posts tab
+  // Default to posts tab. Set BEFORE awaiting anything, so a tab the user
+  // clicks while the header is still loading is not reset afterwards.
   syncTabButtons('posts');
   profileState.setCurrentTab('posts');
-  await renderPostsTab();
+
+  // Header and first tab load in parallel; neither blocks the other.
+  await Promise.all([renderHeaderIfNeeded(), renderPostsTab()]);
 
   console.log('[profile] ✅ Initialized');
 }
@@ -326,6 +345,13 @@ export const ProfileHandlers = {
     else if (tab === 'connections') await renderConnectionsTab();
     else if (tab === 'reputation')  await renderReputationTab();
     else if (tab === 'badges')      await renderBadgesTab();
+  },
+
+  // ── Retry a failed header load ─────────────────────────────────────────────
+
+  'profile-retry-header': async () => {
+    profileState.invalidate('profile');
+    await renderHeaderIfNeeded();
   },
 
   // ── Post filter ───────────────────────────────────────────────────────────
