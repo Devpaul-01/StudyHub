@@ -370,3 +370,155 @@ class TestDeleteAssignment:
         resp = client.delete("/student/assignments/999999", headers=headers)
 
         assert resp.status_code == 404
+
+
+# ============================================================================
+# Server-side validation (audit F-01 / F-09 / F-10)
+# ============================================================================
+
+class TestAssignmentValidation:
+    def _post(self, client, user, auth_headers, csrf_headers, body):
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        return client.post("/student/assignments", json=body, headers=headers)
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"title": "   "},
+            {"difficulty": "banana"},
+            {"estimated_hours": -5},
+            {"estimated_hours": "abc"},
+            {"title": "x" * 300},
+            {"resources": [{"url": "javascript:alert(1)", "type": "image"}]},
+            {"resources": [{"url": "data:text/html,x", "type": "document"}]},
+            {"resources": [{"url": "https://x.test/a", "type": "exe"}]},
+        ],
+    )
+    def test_create_rejects_bad_input_with_400(
+        self, client, make_user, auth_headers, csrf_headers, patch
+    ):
+        user = make_user()
+        body = {"title": "X", "due_date": _future_iso(), **patch}
+
+        resp = self._post(client, user, auth_headers, csrf_headers, body)
+
+        assert resp.status_code == 400
+
+    def test_create_non_json_body_is_400_not_500(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.post(
+            "/student/assignments", data="not json", content_type="text/plain", headers=headers
+        )
+
+        assert resp.status_code == 400
+
+    def test_create_accepts_z_timestamp_and_stores_naive_utc(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        from models import Assignment
+
+        user = make_user()
+        due = datetime.datetime.utcnow().replace(microsecond=0) + datetime.timedelta(days=2)
+
+        resp = self._post(
+            client, user, auth_headers, csrf_headers,
+            {"title": "Z", "due_date": due.isoformat() + "Z"},
+        )
+
+        assert resp.status_code == 201
+        stored = Assignment.query.get(resp.get_json()["data"]["id"])
+        assert stored.due_date == due
+
+    def test_create_offset_timestamp_converted_to_utc(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        from models import Assignment
+
+        user = make_user()
+        due_utc = datetime.datetime.utcnow().replace(microsecond=0) + datetime.timedelta(days=2)
+        offset_str = (due_utc + datetime.timedelta(hours=5)).isoformat() + "+05:00"
+
+        resp = self._post(
+            client, user, auth_headers, csrf_headers, {"title": "Off", "due_date": offset_str}
+        )
+
+        assert resp.status_code == 201
+        assert Assignment.query.get(resp.get_json()["data"]["id"]).due_date == due_utc
+
+    def test_create_strips_unknown_resource_keys(
+        self, client, make_user, auth_headers, csrf_headers
+    ):
+        from models import Assignment
+
+        user = make_user()
+        resp = self._post(
+            client, user, auth_headers, csrf_headers,
+            {
+                "title": "R", "due_date": _future_iso(),
+                "resources": [{"url": "https://x.test/a.png", "type": "image", "x": "<b>"}],
+            },
+        )
+
+        assert resp.status_code == 201
+        stored = Assignment.query.get(resp.get_json()["data"]["id"])
+        assert stored.resources == [{"url": "https://x.test/a.png", "type": "image", "filename": ""}]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"status": "banana"},
+            {"title": ""},
+            {"estimated_hours": -1},
+            {"difficulty": "nope"},
+            {"resources": [{"url": "javascript:alert(1)", "type": "image"}]},
+        ],
+    )
+    def test_update_rejects_bad_input_and_changes_nothing(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers, body
+    ):
+        from models import Assignment
+
+        user = make_user()
+        a = make_assignment(user, title="Keep me", status="not_started")
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.put(f"/student/assignments/{a.id}", json=body, headers=headers)
+
+        assert resp.status_code == 400
+        fresh = Assignment.query.get(a.id)
+        assert fresh.title == "Keep me"
+        assert fresh.status == "not_started"
+
+    def test_update_non_json_body_is_400(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        a = make_assignment(user)
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.put(
+            f"/student/assignments/{a.id}", data="nope", content_type="text/plain", headers=headers
+        )
+
+        assert resp.status_code == 400
+
+    def test_update_accepts_z_due_date(
+        self, client, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        from models import Assignment
+
+        user = make_user()
+        a = make_assignment(user)
+        due = datetime.datetime.utcnow().replace(microsecond=0) + datetime.timedelta(days=9)
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        resp = client.put(
+            f"/student/assignments/{a.id}", json={"due_date": due.isoformat() + "Z"}, headers=headers
+        )
+
+        assert resp.status_code == 200
+        assert Assignment.query.get(a.id).due_date == due

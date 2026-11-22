@@ -40,6 +40,11 @@ from routes.student.helpers import (
 )
 from services.online_status_service import get_user_online_status, get_online_status_batch
 from services import homework_service, notification_service
+from services.homework_validation import (
+    HomeworkValidationError,
+    validate_assignment_create,
+    validate_assignment_update,
+)
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
 # request create/update/delete/offer-help/submit-solution/give-feedback
@@ -603,53 +608,22 @@ def create_assignment(current_user):
         "title": "Calculus Problem Set 5",
         "subject": "Calculus",
         "description": "Problems 1-20 from chapter 5",
-        "due_date": "2024-12-20T08:00:00",
-        "difficulty": "hard",
+        "due_date": "2024-12-20T08:00:00Z",   (ISO 8601 instant; bare values are read as UTC)
+        "difficulty": "easy|medium|hard",
         "estimated_hours": 3,
         "share_for_help": false
     }
     """
     try:
-        data = request.get_json()
-
-        title = data.get("title", "").strip()
-        if not title:
-            return error_response("Title is required")
-
-        due_date_str = data.get("due_date")
-        if not due_date_str:
-            return error_response("Due date is required")
-
         try:
-            due_date = datetime.fromisoformat(due_date_str.replace('Z', '+00:00'))
-        except ValueError:
-            return error_response("Invalid due date format (use ISO 8601)")
-
-        if due_date < datetime.utcnow():
-            return error_response("Due date must be in the future")
-
-        resources = data.get('resources', [])
-        if resources and not isinstance(resources, list):
-            return error_response("Resources must be an array", 400)
-        for resource in resources:
-            if not isinstance(resource, dict):
-                return error_response("Each resource must be an object", 400)
-            if not resource.get('url'):
-                return error_response("Each resource must have a url", 400)
-            if not resource.get('type'):
-                return error_response("Each resource must have a type", 400)
+            fields = validate_assignment_create(request.get_json(silent=True))
+        except HomeworkValidationError as e:
+            return error_response(e.message, 400)
 
         assignment = Assignment(
             user_id=current_user.id,
-            title=title,
-            subject=data.get("subject", "").strip(),
-            description=data.get("description", "").strip(),
-            due_date=due_date,
-            difficulty=data.get("difficulty", "medium"),
-            resources=resources,
-            estimated_hours=data.get("estimated_hours"),
             status="not_started",
-            is_shared_for_help=data.get("share_for_help", False)
+            **fields,
         )
 
         # Mutation path: persist the computed priority score.
@@ -703,28 +677,19 @@ def update_assignment(current_user, assignment_id):
         if assignment.user_id != current_user.id:
             return error_response("Not authorized", 403)
 
-        data = request.get_json()
+        try:
+            fields = validate_assignment_update(request.get_json(silent=True))
+        except HomeworkValidationError as e:
+            return error_response(e.message, 400)
 
-        if "title" in data:
-            assignment.title = data["title"].strip()
-        if "subject" in data:
-            assignment.subject = data["subject"].strip()
-        if "description" in data:
-            assignment.description = data["description"].strip()
-        if "due_date" in data:
-            assignment.due_date = datetime.fromisoformat(data["due_date"].replace('Z', '+00:00'))
-        if "difficulty" in data:
-            assignment.difficulty = data["difficulty"]
-        if "estimated_hours" in data:
-            assignment.estimated_hours = data["estimated_hours"]
-        if 'resources' in data:
-            if not isinstance(data['resources'], list):
-                return error_response("Resources must be an array", 400)
-            assignment.resources = data['resources']
+        for column in ("title", "subject", "description", "due_date",
+                       "difficulty", "estimated_hours", "resources"):
+            if column in fields:
+                setattr(assignment, column, fields[column])
         just_completed = False
-        if "status" in data:
+        if "status" in fields:
             old_status = assignment.status
-            assignment.status = data["status"]
+            assignment.status = fields["status"]
 
             if assignment.status == "completed" and old_status != "completed":
                 assignment.completed_at = datetime.utcnow()
