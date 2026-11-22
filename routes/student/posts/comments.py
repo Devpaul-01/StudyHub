@@ -18,7 +18,6 @@ import re
 import os
 import time
 import traceback
-from routes.student.reputation import check_and_award_milestone
 
 import mimetypes
 from datetime import date, timedelta
@@ -47,6 +46,7 @@ from services.post_service import (
     update_user_activity,
 )
 from services import notification_service
+from services.reputation_service import award_reputation, reverse_reputation, action_points
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): like_comment/mark_comment_helpful -> BURST_OK
 # (low-risk, high-frequency); create/edit/delete comment, mark/unmark
@@ -98,11 +98,22 @@ def unmark_solution(current_user, post_id):  # Changed from mark_solution
         if not comment or comment.post_id != post_id:
             return error_response("Comment not found or doesn't belong to this post", 404)
         
-        # Unmark solution
+        # Serialize concurrent mark/unmark calls on the same post.
+        post = Post.query.filter_by(id=post_id).with_for_update().populate_existing().first()
+
+        if not comment.is_solution:
+            # Idempotent: already unmarked (double-click / retry).
+            return success_response("Comment unmarked as solution successfully")
+
         comment.is_solution = False
         post.is_solved = False
-        post.solved_at = None  # Add this
-        
+        post.solved_at = None
+
+        # Take back the reward paid when this comment was marked (appends a
+        # compensating ledger row; a no-op if there is nothing to reverse).
+        if comment.student_id != current_user.id:
+            reverse_reputation(comment.student_id, "comment_marked_solution", "comment", comment.id)
+
         db.session.commit()
         return success_response("Comment unmarked as solution successfully")
     except Exception as e:
@@ -141,73 +152,87 @@ def mark_solution(current_user, post_id):
         if not comment or comment.post_id != post_id:
             return error_response("Comment not found or doesn't belong to this post", 404)
         
-        # ✅ UNMARK old solution (if exists)
-        old_solution = Comment.query.filter_by(
-            post_id=post_id,
-            is_solution=True
-        ).first()
-        
-        if old_solution and old_solution.id != comment_id:
+        # Serialize concurrent mark-solution calls on the same post so two
+        # requests cannot both observe "no solution yet" and both pay out.
+        post = Post.query.filter_by(id=post_id).with_for_update().populate_existing().first()
+
+        # Idempotent: this comment is already the accepted solution. A
+        # repeated call (double-click, retry, replay) changes and pays
+        # nothing.
+        if comment.is_solution and post.is_solved:
+            return success_response(
+                "Post marked as solved",
+                data={
+                    "solved_at": post.solved_at.isoformat() if post.solved_at else None,
+                    "solution_comment_id": comment_id,
+                },
+            )
+
+        # UNMARK the previous solution (if any) and take back its reward.
+        for old_solution in Comment.query.filter(
+            Comment.post_id == post_id,
+            Comment.is_solution.is_(True),
+            Comment.id != comment_id,
+        ).all():
             old_solution.is_solution = False
+            if old_solution.student_id != current_user.id:
+                reverse_reputation(
+                    old_solution.student_id, "comment_marked_solution",
+                    "comment", old_solution.id,
+                )
             logger.info(f"Unmarked old solution: Comment {old_solution.id}")
-        
+
         # Mark new solution
         comment.is_solution = True
         post.is_solved = True
         post.solved_at = datetime.datetime.utcnow()
-        
-        
+
         commenter = User.query.get(comment.student_id)
         reputation_result = None
+        earned_badges = []
         if commenter and commenter.id != current_user.id:
-            from routes.student.reputation import award_reputation
-            # Document 2 §5: award_reputation() no longer commits internally.
-            # Safe here without an immediate commit — this route's own
-            # db.session.commit() a few lines below covers this change too,
-            # as one transaction alongside the solution-marking and
-            # notification writes.
-            reputation_result = award_reputation(commenter.id, "comment_marked_solution", "comment", comment_id)
-            
-            # ✅ Check badge milestones
-            # check_and_award_badge commits internally (commit=True default,
-            # a deliberate exception to the "services don't commit"
-            # convention — see its own docstring), so each of these is
-            # already a separate, already-committed transaction by the time
-            # it returns. badge_earned activities fire right after each
-            # call below, not batched with the solution-marking activity
-            # after this route's own later commit — that matches the
-            # already-committed state each call leaves behind instead of
-            # pretending they're still part of one pending transaction.
+            # One reward per marking event: the key carries solved_at, so a
+            # genuine re-mark after an unmark pays again (the unmark
+            # reversed the first payment) but a replay of the same request
+            # cannot. Everything below shares THIS route's single commit.
+            reputation_result = award_reputation(
+                commenter.id, "comment_marked_solution", "comment", comment_id,
+                idempotency_key=(
+                    f"comment_marked_solution:comment:{comment_id}:"
+                    f"{post.solved_at.isoformat()}"
+                ),
+            )
+
             from services import badge_service
             for badge_name in ("Problem Solver", "Genius"):
                 awarded_badge = badge_service.check_and_award_badge(commenter.id, badge_name)
                 if awarded_badge is not None:
-                    record_live_activity(
-                        commenter.id,
-                        'badge_earned',
-                        {
-                            'badge_id': awarded_badge.badge_id,
-                            'badge_name': badge_name,
-                        },
-                        scope='global',
-                    )
-            
-            # Notify commenter
-            # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
-            # construction to notification_service.notify() — same
-            # fields, same values, unchanged behavior otherwise.
-            notification_service.notify(
-                user_id=commenter.id,
-                title="Your answer was marked as the solution!",
-                body=f'"{post.title}" (+15 reputation)',
-                notification_type="solution_accepted",
-                related_type="post",
-                related_id=post_id,
-            )
-        
+                    earned_badges.append((awarded_badge.badge_id, badge_name))
+
+            if reputation_result is not None and not reputation_result.duplicate:
+                notification_service.notify(
+                    user_id=commenter.id,
+                    title="Your answer was marked as the solution!",
+                    body=(
+                        f'"{post.title}" '
+                        f'(+{action_points("comment_marked_solution")} reputation)'
+                    ),
+                    notification_type="solution_accepted",
+                    related_type="post",
+                    related_id=post_id,
+                )
+
         db.session.commit()
 
         if commenter and commenter.id != current_user.id:
+            for badge_id, badge_name in earned_badges:
+                record_live_activity(
+                    commenter.id,
+                    'badge_earned',
+                    {'badge_id': badge_id, 'badge_name': badge_name},
+                    scope='global',
+                )
+
             record_live_activity(
                 commenter.id,
                 'answer_marked_solution',
@@ -744,8 +769,8 @@ def post_comments(current_user, post_id):
             ).first() is not None
             
             comment_marked_helpful = CommentHelpfulMark.query.filter_by(
-                user_id=current_user.id, 
-                comment_id=c.id
+                user_id=current_user.id,
+                comment_id=c.id,
             ).first() is not None
 
             replies_data = []
@@ -758,8 +783,8 @@ def post_comments(current_user, post_id):
                 ).first() is not None
                 
                 reply_marked_helpful = CommentHelpfulMark.query.filter_by(
-                    user_id=current_user.id, 
-                    comment_id=r.id
+                    user_id=current_user.id,
+                    comment_id=r.id,
                 ).first() is not None
                 
                 replies_data.append({
