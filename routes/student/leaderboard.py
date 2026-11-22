@@ -37,6 +37,14 @@ DEFAULT_NEARBY_RANGE = leaderboard_service.DEFAULT_NEARBY_RANGE
 MAX_NEARBY_RANGE = leaderboard_service.MAX_NEARBY_RANGE
 
 
+def _department_or_error(department):
+    """Resolve a ?department= value to its canonical form, or a 400 response."""
+    try:
+        return leaderboard_service.resolve_department(department), None
+    except ValueError:
+        return None, error_response("Unknown department", 400)
+
+
 def _validate_period_or_error(period: str):
     """Route-layer wrapper: converts the service's (period, error_message)
     tuple into a Flask error_response(...) when invalid."""
@@ -66,8 +74,8 @@ def get_global_leaderboard(current_user):
     try:
         period = request.args.get("period", "all_time").strip()
         department = request.args.get("department", "").strip() or None
-        page = max(request.args.get("page", 1, type=int), 1)
-        limit = min(request.args.get("limit", DEFAULT_LIMIT, type=int), MAX_LIMIT)
+        page = leaderboard_service.clamp(request.args.get("page", 1, type=int), 1, leaderboard_service.MAX_PAGE)
+        limit = leaderboard_service.clamp(request.args.get("limit", DEFAULT_LIMIT, type=int), 1, MAX_LIMIT)
 
         period, err = _validate_period_or_error(period)
         if err:
@@ -97,8 +105,8 @@ def get_department_leaderboard(current_user):
     """
     try:
         period = request.args.get("period", "all_time").strip()
-        page = max(request.args.get("page", 1, type=int), 1)
-        limit = min(request.args.get("limit", DEFAULT_LIMIT, type=int), MAX_LIMIT)
+        page = leaderboard_service.clamp(request.args.get("page", 1, type=int), 1, leaderboard_service.MAX_PAGE)
+        limit = leaderboard_service.clamp(request.args.get("limit", DEFAULT_LIMIT, type=int), 1, MAX_LIMIT)
 
         period, err = _validate_period_or_error(period)
         if err:
@@ -138,7 +146,9 @@ def get_my_rank(current_user):
     """Full rank card: rank, score breakdown, nearby users, streaks, progress."""
     try:
         period = request.args.get("period", "weekly").strip()
-        department = request.args.get("department", "").strip() or None
+        department, err = _department_or_error(request.args.get("department", "").strip() or None)
+        if err:
+            return err
 
         period, err = _validate_period_or_error(period)
         if err:
@@ -174,8 +184,10 @@ def get_nearby_users(current_user):
     """
     try:
         period = request.args.get("period", "weekly").strip()
-        n_range = min(request.args.get("range", DEFAULT_NEARBY_RANGE, type=int), MAX_NEARBY_RANGE)
-        department = request.args.get("department", "").strip() or None
+        n_range = leaderboard_service.clamp(request.args.get("range", DEFAULT_NEARBY_RANGE, type=int), 1, MAX_NEARBY_RANGE)
+        department, err = _department_or_error(request.args.get("department", "").strip() or None)
+        if err:
+            return err
 
         period, err = _validate_period_or_error(period)
         if err:
@@ -236,8 +248,10 @@ def get_connections_leaderboard(current_user):
 def get_rising_stars(current_user):
     """Users with the biggest reputation gain in the past 7 days."""
     try:
-        limit = min(request.args.get("limit", 10, type=int), 30)
-        department = request.args.get("department", "").strip() or None
+        limit = leaderboard_service.clamp(request.args.get("limit", 10, type=int), 1, leaderboard_service.MAX_RISING_LIMIT)
+        department, err = _department_or_error(request.args.get("department", "").strip() or None)
+        if err:
+            return err
 
         data = leaderboard_service.get_rising_stars(limit, department, viewer_id=current_user.id)
         return jsonify({"status": "success", "data": data})
@@ -292,7 +306,7 @@ def get_leaderboard_filters(current_user):
 def get_rank_history(current_user):
     """Returns current user's rank over the last N weekly snapshots."""
     try:
-        weeks = min(request.args.get("weeks", 8, type=int), 26)
+        weeks = leaderboard_service.clamp(request.args.get("weeks", 8, type=int), 1, leaderboard_service.MAX_HISTORY_WEEKS)
         data = leaderboard_service.get_rank_history(current_user.id, weeks)
         return jsonify({"status": "success", "data": data})
 

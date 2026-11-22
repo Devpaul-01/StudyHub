@@ -52,6 +52,9 @@ DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
 DEFAULT_NEARBY_RANGE = 3
 MAX_NEARBY_RANGE = 10
+MAX_PAGE = 1000
+MAX_RISING_LIMIT = 30
+MAX_HISTORY_WEEKS = 26
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +104,35 @@ def _period_start(period: str):
 def rep_level(reputation: int) -> dict:
     """Thin alias over the shared get_reputation_level(), kept for call-site brevity."""
     return get_reputation_level(reputation)
+
+
+def clamp(value, lo: int, hi: int) -> int:
+    """Clamp a possibly-missing query-string integer into [lo, hi].
+
+    min() alone let 0 and negative values through: PostgreSQL rejects a
+    negative LIMIT (HTTP 500) while SQLite treats it as "no limit", which
+    bypassed the page-size cap. Values also end up in cache keys, so an
+    unbounded range meant unbounded key cardinality.
+    """
+    if value is None:
+        return lo
+    return max(lo, min(int(value), hi))
+
+
+def resolve_department(department: str | None) -> str | None:
+    """Return the canonical department for a user-supplied filter value.
+
+    Matches case-insensitively against the departments that actually exist
+    (the cached filter list). Raises ValueError for anything else, so a
+    free-text query parameter can never mint new cache keys or reach a query.
+    """
+    if not department:
+        return None
+    wanted = " ".join(str(department).split()).casefold()
+    for known in _get_leaderboard_filters_shared()["departments"]:
+        if known.casefold() == wanted:
+            return known
+    raise ValueError("Unknown department")
 
 
 def validate_period(period: str) -> tuple[str, str | None]:
@@ -442,6 +474,19 @@ def _get_global_leaderboard_page(
     }
 
 
+def _empty_page(period, department, page, limit, viewer_id) -> dict:
+    return LeaderboardPage(
+        entries=[],
+        period=period,
+        department=department,
+        pagination={"page": page, "limit": limit, "total": 0, "has_more": False},
+        your_position={
+            "rank": None, "score": _user_period_score(viewer_id, period),
+            "percentile": 0.0, "total_users": 0,
+        },
+    ).to_dict()
+
+
 def get_global_leaderboard(
     period: str, department: str | None, page: int, limit: int, *, viewer_id: int
 ) -> dict:
@@ -457,6 +502,13 @@ def get_global_leaderboard(
     entry, plus your_position, computed live on every call regardless of
     whether the shared page was a cache hit or miss.
     """
+    try:
+        department = resolve_department(department)
+    except ValueError:
+        # A department nobody belongs to is an empty board, not an error. It is
+        # answered here, uncached, so arbitrary strings cannot mint cache keys.
+        return _empty_page(period, department, page, limit, viewer_id)
+
     page_data = _get_global_leaderboard_page(period, _dept_key(department), page, limit)
 
     limit = page_data["pagination"]["limit"]
