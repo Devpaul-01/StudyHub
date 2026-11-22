@@ -568,14 +568,9 @@ def save_fcm_token(current_user):
 
     Body: { "token": "<fcm token string>" }
 
-    One column, one token: this only supports a single device per
-    account, the same limitation the column itself already had (it's a
-    single db.Column, not a related table) — saving a new token from a
-    second device silently replaces the first device's token, the same
-    way logging into any single-session system elsewhere in this app
-    already works. A real multi-device upgrade would need a separate
-    table and is out of scope here; this fixes the "nothing writes this
-    at all" gap, not the one-token-per-account design.
+    One column, one token per account (the column's own design), and a
+    token belongs to one account: registering it detaches it from any
+    other account that held it.
     """
     try:
         data = request.get_json(silent=True) or {}
@@ -586,13 +581,19 @@ def save_fcm_token(current_user):
         if len(token) > 500:  # matches User.fcm_token's db.String(500)
             return error_response("Token is too long")
 
+        # A device token belongs to exactly one account. If another account
+        # on this device registered it earlier (shared computer, switching
+        # accounts), detach it from them so their notifications stop
+        # arriving here.
+        User.query.filter(
+            User.fcm_token == token, User.id != current_user.id,
+        ).update({User.fcm_token: None}, synchronize_session=False)
+
         current_user.fcm_token = token
         db.session.commit()
         return success_response("Push notification token saved")
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Save FCM token error: {str(e)}")
-        return error_response("Failed to save push notification token")
+    except Exception:
+        return _server_error("Save FCM token error", "Failed to save push notification token")
 
 
 @profile_bp.route("/profile/fcm-token", methods=["DELETE"])
@@ -604,10 +605,8 @@ def clear_fcm_token(current_user):
         current_user.fcm_token = None
         db.session.commit()
         return success_response("Push notification token cleared")
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Clear FCM token error: {str(e)}")
-        return error_response("Failed to clear push notification token")
+    except Exception:
+        return _server_error("Clear FCM token error", "Failed to clear push notification token")
 
 
 # ============================================================================
