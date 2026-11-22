@@ -1258,27 +1258,14 @@ paths:
                       reputation: { type: integer }
                       reputation_level: { type: string }
                       login_streak: { type: integer }
-                      joined_at: { type: string, format: date-time }
-                      last_active: { type: string, format: date-time, nullable: true }
                       stats:
                         type: object
                         properties:
-                          total_posts: { type: integer }
+                          total_posts: { type: integer, description: Live count of the user's posts. }
                           total_helpful: { type: integer }
-                          total_helps_given: { type: integer }
                           connections_count: { type: integer }
+                      skills: { type: array, items: { type: string } }
                       learning_goals: { type: array, items: { type: string } }
-                      help_streak: { type: object, properties: { current: { type: integer }, longest: { type: integer } } }
-                      onboarding:
-                        type: object
-                        nullable: true
-                        properties:
-                          subjects: { type: array, items: { type: string } }
-                          strong_subjects: { type: array, items: { type: string } }
-                          help_subjects: { type: array, items: { type: string } }
-                          learning_style: { type: string, nullable: true }
-                          study_preferences: { type: array, items: { type: string } }
-                          class_level: { type: string, nullable: true }
 
   /student/profile/my-posts:
     get:

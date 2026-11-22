@@ -467,8 +467,9 @@ integers, more than 25, or a non-object body.
 ## Profile
 
 ### `GET /student/profile/me/data`
-Your own profile summary: stats, onboarding details, learning goals, help streak. **Auth:**
-required.
+Your own profile summary: identity, department/class, reputation, `login_streak`, `stats`
+(`total_posts` is a live count, `total_helpful`, `connections_count`), `skills` and
+`learning_goals`. Academic details come from `GET /profile/academic-info`. **Auth:** required.
 
 ### `GET /student/profile/my-posts`
 Your own posts. **Auth:** required.

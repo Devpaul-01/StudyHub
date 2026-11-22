@@ -918,3 +918,51 @@ class TestAcademicInfoValidation:
         assert resp.status_code == 200
         assert resp.get_json()["data"]["changes"] == []
         assert OnboardingDetails.query.filter_by(user_id=user.id).first().last_updated == before
+
+
+# ============================================================================
+# GET /profile/me/data — contract
+# ============================================================================
+
+class TestMyProfileData:
+    @pytest.fixture
+    def user(self, db_session, make_user, make_student_profile):
+        user = make_user(skills=["Python", "C/C++"], learning_goals=["Learn ML"])
+        make_student_profile(user)
+        return user
+
+    def test_includes_skills_for_the_edit_modal(self, client, auth_headers, user):
+        """Regression: the edit modal read `skills` from a payload that had none."""
+        data = client.get("/student/profile/me/data", headers=auth_headers(user)).get_json()["data"]
+
+        assert data["skills"] == ["Python", "C/C++"]
+        assert data["learning_goals"] == ["Learn ML"]
+
+    def test_post_count_is_live_not_the_cached_counter(
+        self, client, db_session, auth_headers, make_post, user
+    ):
+        make_post(user)
+        make_post(user)
+        user.total_posts = 99          # drifted counter
+        db_session.commit()
+
+        data = client.get("/student/profile/me/data", headers=auth_headers(user)).get_json()["data"]
+        stats = client.get("/student/profile/my-stats", headers=auth_headers(user)).get_json()["data"]
+
+        assert data["stats"]["total_posts"] == 2
+        assert stats["posts"]["total"] == 2
+
+    def test_only_fields_the_page_uses_are_returned(self, client, auth_headers, user):
+        data = client.get("/student/profile/me/data", headers=auth_headers(user)).get_json()["data"]
+
+        assert set(data) == {
+            "id", "name", "username", "bio", "avatar", "department", "class_level",
+            "reputation", "reputation_level", "login_streak", "stats", "skills", "learning_goals",
+        }
+        assert set(data["stats"]) == {"total_posts", "total_helpful", "connections_count"}
+
+    def test_null_last_active_is_fine(self, client, db_session, auth_headers, user):
+        user.last_active = None
+        db_session.commit()
+
+        assert client.get("/student/profile/me/data", headers=auth_headers(user)).status_code == 200

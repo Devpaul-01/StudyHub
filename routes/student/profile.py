@@ -68,8 +68,7 @@ def _server_error(log_label, message="Something went wrong. Please try again."):
 def get_my_profile_data(current_user):
     """Return full profile data for the logged-in user's own profile view."""
     try:
-        profile    = StudentProfile.query.filter_by(user_id=current_user.id).first()
-        onboarding = OnboardingDetails.query.filter_by(user_id=current_user.id).first()
+        profile = StudentProfile.query.filter_by(user_id=current_user.id).first()
 
         connections_count = Connection.query.filter(
             or_(
@@ -78,6 +77,8 @@ def get_my_profile_data(current_user):
             ),
             Connection.status == "accepted",
         ).count()
+
+        total_posts = Post.query.filter_by(student_id=current_user.id).count()
 
         return jsonify({
             "status": "success",
@@ -92,36 +93,20 @@ def get_my_profile_data(current_user):
                 "reputation":       current_user.reputation,
                 "reputation_level": current_user.reputation_level,
                 "login_streak":     current_user.login_streak,
-                "joined_at":        current_user.joined_at.isoformat(),
-                "last_active": (
-                    current_user.last_active.isoformat()
-                    if current_user.last_active else None
-                ),
                 "stats": {
-                    "total_posts":       current_user.total_posts,
+                    # Live count, same source as the public profile, so the
+                    # two can never disagree.
+                    "total_posts":       total_posts,
                     "total_helpful":     current_user.total_helpful,
-                    "total_helps_given": current_user.total_helps_given,
                     "connections_count": connections_count,
                 },
+                "skills":         current_user.skills or [],
                 "learning_goals": current_user.learning_goals or [],
-                "help_streak": {
-                    "current": current_user.help_streak_current,
-                    "longest": current_user.help_streak_longest,
-                },
-                "onboarding": {
-                    "subjects":           onboarding.subjects          if onboarding else [],
-                    "strong_subjects":    onboarding.strong_subjects   if onboarding else [],
-                    "help_subjects":      onboarding.help_subjects     if onboarding else [],
-                    "learning_style":     onboarding.learning_style    if onboarding else None,
-                    "study_preferences":  onboarding.study_preferences if onboarding else [],
-                    "class_level":        onboarding.class_level       if onboarding else None,
-                } if onboarding else None,
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Get my profile data error: {str(e)}")
-        return error_response("Failed to load profile data")
+    except Exception:
+        return _server_error("Get my profile data error", "Failed to load profile data")
 
 
 # ============================================================================
@@ -310,7 +295,7 @@ def get_my_stats(current_user):
             "status": "success",
             "data": {
                 "posts": {
-                    "total":           current_user.total_posts,
+                    "total":           Post.query.filter_by(student_id=current_user.id).count(),
                     "resources_shared": resources_shared,
                 },
                 "engagement": {
