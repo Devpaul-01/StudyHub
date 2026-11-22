@@ -5,10 +5,23 @@ Badge definitions, awarding logic, and progress calculation.
 Extracted from routes/student/badges.py (Document 1 §2, Document 2 §3.2).
 
 Per Document 2 §2's layering rule: no Flask imports, no request/session/g.
-The one deliberate exception to the "services never commit" convention
-(Document 2 §5) is check_and_award_badge's `commit` parameter — kept
-exactly as it was, for exactly the same reason: check_all_badges_for_user
-needs to evaluate up to 18 badges without 18 separate round-trips.
+
+Transaction convention: nothing on the request path commits here (there used to be a
+``commit=True`` default on check_and_award_badge that committed the
+caller's half-finished transaction). The caller -- a route or the
+badge-check job -- owns the single commit. Everything that must only
+happen after a successful commit (cache invalidation, notification
+delivery) goes through services.after_commit.
+
+Concurrency: a badge insert happens inside a SAVEPOINT; if a concurrent
+request already awarded the same badge the UNIQUE(user_id, badge_id)
+constraint rejects the insert, only the savepoint is rolled back, and the
+duplicate is simply reported as "not newly awarded" -- it no longer
+poisons the whole transaction. Badge.awarded_count is incremented with an
+atomic SQL expression, never a Python read-modify-write.
+
+Revocation policy: badges are permanent achievements and are never
+revoked when the underlying numbers later fall.
 
 Consumers:
   - routes/student/badges.py — the primary owner, every route becomes a
@@ -17,18 +30,19 @@ Consumers:
     calculate_badge_progress directly today (imported at module level
     there to avoid a circular-import/repeated-lookup cost); switches to
     importing from here instead of from badges.py.
-  - Anywhere check_all_badges_for_user needs to run after a significant
-    user action (post created, streak updated, etc.) — homework_system.py
-    and others may call this once wired up.
+  - services/badge_triggers.py — schedules check_all_badges_for_user as a
+    background job after the events that change badge inputs.
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
+import os
 from dataclasses import dataclass, asdict
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
 from models import (
     User, Badge, UserBadge, Comment, Connection, Thread, StudentProfile,
@@ -36,6 +50,7 @@ from models import (
 from extensions import db
 from services import notification_service
 from services import cache_service
+from services.after_commit import run_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +68,6 @@ BADGE_DEFINITIONS = [
         "category": "engagement",
         "rarity": "common",
         "criteria": {"posts_count": 1},
-        "color": "#6B7280",
     },
     {
         "name": "Prolific Writer",
@@ -62,7 +76,6 @@ BADGE_DEFINITIONS = [
         "category": "engagement",
         "rarity": "rare",
         "criteria": {"posts_count": 50},
-        "color": "#3B82F6",
     },
     {
         "name": "Content Creator",
@@ -71,7 +84,6 @@ BADGE_DEFINITIONS = [
         "category": "engagement",
         "rarity": "epic",
         "criteria": {"posts_count": 100},
-        "color": "#8B5CF6",
     },
     {
         "name": "Helpful Contributor",
@@ -80,7 +92,6 @@ BADGE_DEFINITIONS = [
         "category": "quality",
         "rarity": "rare",
         "criteria": {"helpful_count": 10},
-        "color": "#3B82F6",
     },
 
     # QUALITY BADGES
@@ -91,7 +102,6 @@ BADGE_DEFINITIONS = [
         "category": "quality",
         "rarity": "rare",
         "criteria": {"helpful_count": 50},
-        "color": "#3B82F6",
     },
     {
         "name": "Problem Solver",
@@ -100,7 +110,6 @@ BADGE_DEFINITIONS = [
         "category": "quality",
         "rarity": "epic",
         "criteria": {"solutions_count": 10},
-        "color": "#8B5CF6",
     },
     {
         "name": "Genius",
@@ -109,7 +118,6 @@ BADGE_DEFINITIONS = [
         "category": "quality",
         "rarity": "legendary",
         "criteria": {"solutions_count": 50},
-        "color": "#EF4444",
     },
 
     # CONSISTENCY BADGES
@@ -120,7 +128,6 @@ BADGE_DEFINITIONS = [
         "category": "consistency",
         "rarity": "rare",
         "criteria": {"login_streak": 7},
-        "color": "#F59E0B",
     },
     {
         "name": "30-Day Warrior",
@@ -129,7 +136,6 @@ BADGE_DEFINITIONS = [
         "category": "consistency",
         "rarity": "epic",
         "criteria": {"login_streak": 30},
-        "color": "#8B5CF6",
     },
     {
         "name": "Unstoppable",
@@ -138,7 +144,6 @@ BADGE_DEFINITIONS = [
         "category": "consistency",
         "rarity": "legendary",
         "criteria": {"login_streak": 100},
-        "color": "#EF4444",
     },
 
     # SOCIAL BADGES
@@ -149,7 +154,6 @@ BADGE_DEFINITIONS = [
         "category": "social",
         "rarity": "common",
         "criteria": {"connections_count": 10},
-        "color": "#6B7280",
     },
     {
         "name": "Networker",
@@ -158,7 +162,6 @@ BADGE_DEFINITIONS = [
         "category": "social",
         "rarity": "rare",
         "criteria": {"connections_count": 50},
-        "color": "#3B82F6",
     },
     {
         "name": "Thread Starter",
@@ -167,7 +170,6 @@ BADGE_DEFINITIONS = [
         "category": "social",
         "rarity": "rare",
         "criteria": {"threads_created": 5},
-        "color": "#3B82F6",
     },
     {
         "name": "Thread Leader",
@@ -176,7 +178,6 @@ BADGE_DEFINITIONS = [
         "category": "social",
         "rarity": "epic",
         "criteria": {"thread_leader": True},
-        "color": "#8B5CF6",
     },
     {
         "name": "Community Builder",
@@ -185,7 +186,6 @@ BADGE_DEFINITIONS = [
         "category": "social",
         "rarity": "legendary",
         "criteria": {"threads_large": 10},
-        "color": "#EF4444",
     },
 
     # MILESTONE BADGES
@@ -196,16 +196,16 @@ BADGE_DEFINITIONS = [
         "category": "milestone",
         "rarity": "epic",
         "criteria": {"early_adopter": True},
-        "color": "#8B5CF6",
     },
     {
         "name": "Reputation Master",
-        "description": "Reached 1000 reputation points",
+        # 1001 == the start of the "Master" tier in services/reputation_levels
+        # (1000 is still "Expert"), so the badge name matches the tier.
+        "description": "Reached the Master level (1001+ reputation points)",
         "icon": "⭐",
         "category": "milestone",
         "rarity": "legendary",
-        "criteria": {"reputation": 1000},
-        "color": "#EF4444",
+        "criteria": {"reputation": 1001},
     },
     {
         "name": "Department Hero",
@@ -214,7 +214,6 @@ BADGE_DEFINITIONS = [
         "category": "milestone",
         "rarity": "legendary",
         "criteria": {"department_rank": 3},
-        "color": "#EF4444",
     },
 ]
 
@@ -247,35 +246,82 @@ class BadgeProgress:
 # SEEDING
 # ============================================================================
 
-def seed_badges() -> None:
-    """
-    Seed initial badges into the database. Run once during setup.
+_SEEDED_FIELDS = ("description", "icon", "category", "rarity", "criteria")
 
-    Does commit (setup/CLI-only function, not part of the request path —
-    no transaction-boundary conflict with Document 2 §5's convention).
-    """
-    for badge_data in BADGE_DEFINITIONS:
-        existing = Badge.query.filter_by(name=badge_data["name"]).first()
-        if not existing:
-            badge = Badge(
-                name=badge_data["name"],
-                description=badge_data["description"],
-                icon=badge_data["icon"],
-                category=badge_data["category"],
-                rarity=badge_data["rarity"],
-                criteria=badge_data["criteria"],
-            )
-            db.session.add(badge)
 
-    db.session.commit()
-    logger.info("Badges seeded successfully")
+def seed_badges() -> dict:
+    """
+    Idempotent upsert of BADGE_DEFINITIONS (safe to run on every deploy and
+    from several workers booting at once).
+
+    Missing badges are inserted; existing ones have their description/
+    icon/category/rarity/criteria refreshed to the current definition
+    (``awarded_count`` and ``is_active`` are left alone), so a changed
+    definition actually reaches the database. Commits -- this is a
+    setup/CLI function, not part of the request path.
+
+    Returns ``{"created": n, "updated": n, "unchanged": n}``.
+    """
+    for attempt in (1, 2):
+        counts = {"created": 0, "updated": 0, "unchanged": 0}
+        for badge_data in BADGE_DEFINITIONS:
+            existing = Badge.query.filter_by(name=badge_data["name"]).first()
+            if not existing:
+                db.session.add(Badge(**{k: badge_data[k] for k in ("name",) + _SEEDED_FIELDS}))
+                counts["created"] += 1
+                continue
+            changed = False
+            for field in _SEEDED_FIELDS:
+                if getattr(existing, field) != badge_data[field]:
+                    setattr(existing, field, badge_data[field])
+                    changed = True
+            counts["updated" if changed else "unchanged"] += 1
+        try:
+            db.session.commit()
+            logger.info("Badges seeded: %s", counts)
+            return counts
+        except IntegrityError:
+            # Another process seeded the same rows between our SELECT and
+            # INSERT; retry once -- the second pass sees them as existing.
+            db.session.rollback()
+            if attempt == 2:
+                raise
+    return counts  # pragma: no cover
 
 
 # ============================================================================
 # CRITERIA EVALUATION  (pure-ish — one query per criteria type, no writes)
 # ============================================================================
 
-def _user_qualifies(user: User, criteria: dict) -> bool:
+def _early_adopter_cutoff(ctx: dict | None = None) -> datetime.datetime | None:
+    """
+    End of the early-adopter window: PLATFORM_LAUNCH_DATE (ISO date/time,
+    env) + 30 days when configured, otherwise the earliest recorded
+    ``joined_at`` + 30 days. Memoized in ``ctx`` for one evaluation pass.
+    """
+    if ctx is not None and "early_cutoff" in ctx:
+        return ctx["early_cutoff"]
+    cutoff = None
+    launch = os.environ.get("PLATFORM_LAUNCH_DATE")
+    if launch:
+        try:
+            cutoff = datetime.datetime.fromisoformat(launch) + datetime.timedelta(days=30)
+        except ValueError:
+            logger.warning("PLATFORM_LAUNCH_DATE=%r is not an ISO date; ignoring", launch)
+    if cutoff is None:
+        first_joined = (
+            db.session.query(func.min(User.joined_at))
+            .filter(User.joined_at.isnot(None))
+            .scalar()
+        )
+        if first_joined is not None:
+            cutoff = first_joined + datetime.timedelta(days=30)
+    if ctx is not None:
+        ctx["early_cutoff"] = cutoff
+    return cutoff
+
+
+def _user_qualifies(user: User, criteria: dict, ctx: dict | None = None) -> bool:
     """Evaluate a single badge's criteria dict against a user. Read-only."""
     user_id = user.id
 
@@ -319,15 +365,16 @@ def _user_qualifies(user: User, criteria: dict) -> bool:
         return user.reputation >= criteria["reputation"]
 
     if "early_adopter" in criteria:
-        first_user = User.query.order_by(User.joined_at.asc()).first()
-        if not first_user:
+        cutoff = _early_adopter_cutoff(ctx)
+        if cutoff is None or user.joined_at is None:
             return False
-        cutoff = first_user.joined_at + datetime.timedelta(days=30)
         return user.joined_at <= cutoff
 
     if "department_rank" in criteria:
+        if user.status != "approved":
+            return False
         profile = StudentProfile.query.filter_by(user_id=user_id).first()
-        if not profile:
+        if not profile or not profile.department:
             return False
         rank = (
             db.session.query(func.count(User.id))
@@ -349,37 +396,61 @@ def _user_qualifies(user: User, criteria: dict) -> bool:
 # AWARDING
 # ============================================================================
 
+def _award(user_id: int, badge: Badge, *, skip_cache_invalidation: bool = False) -> UserBadge | None:
+    """
+    Insert the UserBadge for an already-qualified user. Returns the new
+    UserBadge, or None if a concurrent request awarded it first.
+    Does NOT commit.
+    """
+    user_badge = UserBadge(user_id=user_id, badge_id=badge.id)
+    try:
+        # SAVEPOINT: a duplicate (UNIQUE user_id+badge_id) rolls back only
+        # this insert, not the caller's whole transaction.
+        with db.session.begin_nested():
+            db.session.add(user_badge)
+    except IntegrityError:
+        logger.info("badge already awarded concurrently user_id=%s badge=%s", user_id, badge.name)
+        return None
+
+    # Atomic counter -- never `badge.awarded_count += 1` (lost updates).
+    db.session.query(Badge).filter(Badge.id == badge.id).update(
+        {Badge.awarded_count: Badge.awarded_count + 1}, synchronize_session=False
+    )
+    db.session.expire(badge, ["awarded_count"])
+
+    # Delivery (unread counter + WebSocket push) is deferred until commit.
+    notification_service.notify_badge_earned(user_id, badge)
+
+    if not skip_cache_invalidation:
+        run_after_commit(cache_service.delete, f"sh:1:badge:progress:{user_id}")
+
+    logger.info("badge_awarded user_id=%s badge=%s", user_id, badge.name)
+    return user_badge
+
+
 def check_and_award_badge(
-    user_id: int, badge_name: str, *, commit: bool = True, skip_cache_invalidation: bool = False
+    user_id: int, badge_name: str, *, skip_cache_invalidation: bool = False
 ) -> UserBadge | None:
     """
     Check if a user qualifies for a named badge and award it if so.
 
-    `commit` defaults to True (single-award call sites, e.g. an admin
-    award endpoint). check_all_badges_for_user passes commit=False and
-    does one commit after evaluating every badge — this parameter is a
-    deliberate, documented exception to the "services never commit"
-    convention (Document 2 §3.2 / §5), kept unchanged from the original
-    badges.py implementation.
+    Never commits: the caller owns the transaction (see module docstring).
+    ``skip_cache_invalidation`` lets a batching caller invalidate the
+    user's badge-progress cache once itself.
 
-    `skip_cache_invalidation` defaults to False (single-award call sites
-    invalidate the user's badge:progress cache immediately, matching plan
-    §5.2). check_all_badges_for_user passes skip_cache_invalidation=True on
-    every per-badge call in its loop and invalidates exactly once itself,
-    after the loop, next to its own commit — mirroring the `commit`
-    parameter's existing batching rationale: avoiding up to ~18 redundant
-    cache_service.delete() calls (one per badge evaluated) for what is
-    ultimately one user-facing cache entry, per plan §5.2/§17.4.
-
-    Returns the new UserBadge if awarded, None if already earned or the
-    user doesn't qualify.
+    Returns the new UserBadge if awarded; None if already earned, not
+    qualified, the user/badge is unknown, or it was awarded concurrently.
+    A missing badge row is logged -- it means the badges table was never
+    seeded (see seed_badges / ``flask seed-badges``).
     """
-    badge = Badge.query.filter_by(name=badge_name).first()
+    badge = Badge.query.filter_by(name=badge_name, is_active=True).first()
     if not badge:
+        logger.warning(
+            "check_and_award_badge: badge %r not found or inactive -- "
+            "has seed_badges() been run?", badge_name)
         return None
 
-    existing = UserBadge.query.filter_by(user_id=user_id, badge_id=badge.id).first()
-    if existing:
+    if UserBadge.query.filter_by(user_id=user_id, badge_id=badge.id).first():
         return None
 
     user = User.query.get(user_id)
@@ -389,46 +460,39 @@ def check_and_award_badge(
     if not _user_qualifies(user, badge.criteria):
         return None
 
-    user_badge = UserBadge(user_id=user_id, badge_id=badge.id)
-    db.session.add(user_badge)
-    badge.awarded_count += 1
-
-    notification_service.notify_badge_earned(user_id, badge)
-
-    if not skip_cache_invalidation:
-        cache_service.delete(f"sh:1:badge:progress:{user_id}")
-
-    if commit:
-        db.session.commit()
-
-    return user_badge
+    return _award(user_id, badge, skip_cache_invalidation=skip_cache_invalidation)
 
 
 def check_all_badges_for_user(user_id: int) -> list[Badge]:
     """
-    Check all active badges for a user in one pass, committing once.
+    Evaluate every active badge for a user in one pass.
 
-    Called after significant actions (post created, streak updated, etc.).
+    Loads the badge list, the user and the user's earned set once (instead
+    of re-querying them per badge), evaluates only unearned badges, and
+    invalidates the progress cache once after commit. Does NOT commit.
     Returns the list of newly awarded Badge objects.
     """
-    all_badges = Badge.query.filter_by(is_active=True).all()
-    awarded = []
+    user = User.query.get(user_id)
+    if not user:
+        return []
 
+    all_badges = Badge.query.filter_by(is_active=True).all()
+    earned_ids = {
+        row[0] for row in db.session.query(UserBadge.badge_id).filter_by(user_id=user_id)
+    }
+
+    awarded: list[Badge] = []
+    ctx: dict = {}
     for badge in all_badges:
-        result = check_and_award_badge(
-            user_id, badge.name, commit=False, skip_cache_invalidation=True
-        )
-        if result:
+        if badge.id in earned_ids:
+            continue
+        if not _user_qualifies(user, badge.criteria, ctx):
+            continue
+        if _award(user_id, badge, skip_cache_invalidation=True):
             awarded.append(badge)
 
     if awarded:
-        db.session.commit()
-        # Invalidate once, after the loop and alongside the commit above —
-        # not once per badge inside the loop (skip_cache_invalidation=True
-        # above suppresses the per-badge invalidation for exactly this
-        # reason). Matches this function's own existing commit-batching
-        # discipline (avoiding N round-trips) per plan §5.2/§17.4.
-        cache_service.delete(f"sh:1:badge:progress:{user_id}")
+        run_after_commit(cache_service.delete, f"sh:1:badge:progress:{user_id}")
 
     return awarded
 
