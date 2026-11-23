@@ -97,7 +97,9 @@ COUNTER RECONCILIATION:
 """
 
 import atexit
+import datetime
 import logging
+import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -129,7 +131,48 @@ _JOB_LOCK_TTL_SECONDS = 600  # 10 minutes
 _CONSECUTIVE_SKIP_ALERT_THRESHOLD = 5  # ~5 ticks of the SAME job with no execution
 
 
-def _run_locked(job_id: str, work_fn) -> None:
+_RETRY_DELAY_SECONDS = 600          # how long to wait before retrying a Redis-blocked run
+_MAX_REDIS_RETRIES = 3
+_retry_attempts: dict[str, int] = {}
+
+WEEKLY_SECONDS = 7 * 86400
+MONTHLY_SECONDS = 31 * 86400
+
+
+def _alert(message: str) -> None:
+    logger.error(message)
+    try:
+        import sentry_sdk
+        sentry_sdk.capture_message(message, level="error")
+    except Exception:
+        pass
+
+
+def _check_overdue(job_id: str, cadence_seconds: int) -> None:
+    """Alert (at most once per cadence) if the job has not completed for more
+    than two cadences. Judged by the last SUCCESS timestamp, not by counting
+    skipped ticks: a count cannot work for a job that ticks once a week, and
+    with several instances the number of skips per tick depends on how many
+    there are."""
+    from services import cache_service
+
+    last_ok = cache_service.get(f"sh:1:sched:lastrun:{job_id}")
+    if not isinstance(last_ok, (int, float)):
+        return
+    overdue_by = time.time() - last_ok
+    if overdue_by <= 2 * cadence_seconds:
+        return
+    alert_key = f"sh:1:sched:overdue_alerted:{job_id}"
+    if cache_service.get(alert_key):
+        return
+    cache_service.set(alert_key, 1, ttl_seconds=cadence_seconds)
+    _alert(
+        f"[SCHED_JOB_OVERDUE] job_id={job_id} last succeeded "
+        f"{int(overdue_by // 3600)}h ago (cadence {cadence_seconds // 3600}h)"
+    )
+
+
+def _run_locked(job_id: str, work_fn, cadence_seconds: int | None = None, retry_fn=None) -> None:
     """
     Shared wrapper: attempt the distributed lock for job_id, run work_fn()
     only if acquired, always release in a finally. Centralizes the
@@ -160,7 +203,31 @@ def _run_locked(job_id: str, work_fn) -> None:
     skip_counter_key = f"sh:1:sched:skipcount:{job_id}"
 
     with DistributedLock(lock_key, ttl_seconds=_JOB_LOCK_TTL_SECONDS) as lock:
+        if not lock.acquired and lock.failure_reason == "redis_error" and cadence_seconds:
+            # Could not even ask Redis. For a job that ticks once a week or
+            # month, "try again next tick" would mean a whole missing
+            # period, so alert now and retry soon.
+            attempts = _retry_attempts.get(job_id, 0)
+            _alert(f"[SCHED_JOB_BLOCKED_REDIS] job_id={job_id} could not check its lock (attempt {attempts + 1})")
+            if retry_fn is not None and attempts < _MAX_REDIS_RETRIES:
+                _retry_attempts[job_id] = attempts + 1
+                scheduler.add_job(
+                    func=retry_fn,
+                    trigger="date",
+                    run_date=datetime.datetime.now(datetime.timezone.utc)
+                    + datetime.timedelta(seconds=_RETRY_DELAY_SECONDS),
+                    id=f"{job_id}:retry",
+                    replace_existing=True,
+                )
+            return
         if not lock.acquired:
+            if cadence_seconds:
+                _check_overdue(job_id, cadence_seconds)
+                logger.info(
+                    "[SCHED_JOB_SKIPPED_LOCK_HELD] job_id=%s — another instance "
+                    "owns this tick's execution", job_id,
+                )
+                return
             logger.info(
                 "[SCHED_JOB_SKIPPED_LOCK_HELD] job_id=%s — another instance "
                 "owns this tick's execution", job_id,
@@ -188,6 +255,11 @@ def _run_locked(job_id: str, work_fn) -> None:
             return
         cache_service.set(skip_counter_key, 0, ttl_seconds=86400)
         work_fn()
+        if cadence_seconds:
+            _retry_attempts.pop(job_id, None)
+            cache_service.set(
+                f"sh:1:sched:lastrun:{job_id}", time.time(), ttl_seconds=10 * cadence_seconds
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,7 +284,8 @@ def _job_weekly(app):
                 result["created"], result["skipped"], result["total_ranked"],
             )
 
-    _run_locked("weekly_leaderboard_snapshot", _work)
+    _run_locked("weekly_leaderboard_snapshot", _work, cadence_seconds=WEEKLY_SECONDS,
+                retry_fn=lambda: _job_weekly(app))
 
 
 def _job_monthly(app):
@@ -227,7 +300,8 @@ def _job_monthly(app):
                 result["created"], result["skipped"], result["total_ranked"],
             )
 
-    _run_locked("monthly_leaderboard_snapshot", _work)
+    _run_locked("monthly_leaderboard_snapshot", _work, cadence_seconds=MONTHLY_SECONDS,
+                retry_fn=lambda: _job_monthly(app))
 
 
 def _job_reconcile_counters(app):
