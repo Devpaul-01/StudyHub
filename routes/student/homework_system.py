@@ -649,6 +649,15 @@ def get_my_assignments(current_user):
         limit, cursor = _parse_pagination_params()
         page, has_more, next_cursor = _slice_by_cursor(assignments, cursor, limit)
 
+        # One grouped query for the whole page instead of one COUNT per
+        # shared assignment (audit F-16).
+        shared_ids = [a.id for a in page if a.is_shared_for_help]
+        help_counts = dict(
+            db.session.query(HomeworkSubmission.assignment_id, db.func.count(HomeworkSubmission.id))
+            .filter(HomeworkSubmission.assignment_id.in_(shared_ids), lifecycle.not_cancelled())
+            .group_by(HomeworkSubmission.assignment_id).all()
+        ) if shared_ids else {}
+
         assignments_data = []
         for assignment in page:
             hours_until_due = (assignment.due_date - now).total_seconds() / 3600
@@ -671,29 +680,44 @@ def get_my_assignments(current_user):
                 "created_at": assignment.created_at.isoformat(),
                 "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
                 "is_shared": assignment.is_shared_for_help,
-                "help_requests_count": HomeworkSubmission.query.filter(
-                    HomeworkSubmission.assignment_id == assignment.id,
-                    lifecycle.not_cancelled(),
-                ).count() if assignment.is_shared_for_help else 0
+                "help_requests_count": help_counts.get(assignment.id, 0)
             })
 
         suggestions = _get_smart_suggestions(assignments, current_user) if not cursor else []
+
+        # Dashboard counters describe ALL of the user's assignments, not the
+        # currently filtered list (audit F-23: with the default 'active'
+        # filter, stats.completed was always 0). One grouped query, no rows
+        # loaded.
+        stat_rows = db.session.query(
+            Assignment.status,
+            db.func.count(Assignment.id),
+            db.func.sum(db.case((Assignment.due_date < now, 1), else_=0)),
+            db.func.sum(db.case((Assignment.is_shared_for_help.is_(True), 1), else_=0)),
+        ).filter(Assignment.user_id == current_user.id).group_by(Assignment.status).all()
+        by_status = {row[0]: row for row in stat_rows}
+
+        def _count(status):
+            return int(by_status[status][1]) if status in by_status else 0
+
+        stats = {
+            "not_started": _count("not_started"),
+            "in_progress": _count("in_progress"),
+            "completed": _count("completed"),
+            "overdue": sum(int(r[2] or 0) for st, r in by_status.items() if st != "completed"),
+            "shared_for_help": sum(int(r[3] or 0) for st, r in by_status.items() if st != "completed"),
+        }
 
         return jsonify({
             "status": "success",
             "data": {
                 "assignments": assignments_data,
+                # size of the filtered list (what pagination walks)
                 "total": len(assignments),
                 "next_cursor": next_cursor,
                 "has_more": has_more,
                 "suggestions": suggestions,
-                "stats": {
-                    "not_started": len([a for a in assignments if a.status == "not_started"]),
-                    "in_progress": len([a for a in assignments if a.status == "in_progress"]),
-                    "completed": len([a for a in assignments if a.status == "completed"]),
-                    "overdue": len([a for a in assignments if (a.due_date - now).total_seconds() < 0 and a.status != "completed"]),
-                    "shared_for_help": len([a for a in assignments if a.is_shared_for_help])
-                }
+                "stats": stats,
             }
         })
 
@@ -977,6 +1001,16 @@ def get_homework_feed(current_user):
             Assignment.status.in_(["not_started", "in_progress"])
         )
 
+        # The subject picker must list every subject available, so it is
+        # computed BEFORE the subject/difficulty filters narrow the set
+        # (audit F-23: selecting "Math" used to collapse it to ['Math']).
+        available_subjects = sorted(
+            row[0] for row in
+            query.with_entities(Assignment.subject)
+            .filter(Assignment.subject.isnot(None), Assignment.subject != "")
+            .distinct().all()
+        )
+
         subject = request.args.get("subject")
         if subject:
             query = query.filter_by(subject=subject)
@@ -1068,8 +1102,6 @@ def get_homework_feed(current_user):
                 "created_at": hw.created_at.isoformat()
             })
 
-        available_subjects = list(set([hw.subject for hw in homework_items if hw.subject]))
-
         return jsonify({
             "status": "success",
             "data": {
@@ -1077,7 +1109,7 @@ def get_homework_feed(current_user):
                 "total": len(homework_items),
                 "next_cursor": next_cursor,
                 "has_more": has_more,
-                "available_subjects": sorted(available_subjects),
+                "available_subjects": available_subjects,
                 "filters_applied": {
                     "subject": subject,
                     "difficulty": difficulty

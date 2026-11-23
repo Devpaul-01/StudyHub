@@ -181,3 +181,57 @@ class TestEffectiveStreak:
         data = resp.get_json()["data"]
         assert data["current_streak"] == 0
         assert data["longest_streak"] == 7
+
+
+class TestListPayloads:
+    def test_stats_cover_all_assignments_not_just_the_filtered_list(
+        self, client, make_user, make_assignment, auth_headers
+    ):
+        user = make_user()
+        past = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        make_assignment(user, status="completed")
+        make_assignment(user, status="completed")
+        make_assignment(user, status="in_progress")
+        make_assignment(user, status="not_started", due_date=past, is_shared_for_help=True)
+
+        resp = client.get("/student/assignments", headers=auth_headers(user))  # default: active
+
+        data = resp.get_json()["data"]
+        assert data["total"] == 2                       # filtered list size
+        assert data["stats"]["completed"] == 2          # was always 0 before F-23
+        assert data["stats"]["in_progress"] == 1
+        assert data["stats"]["not_started"] == 1
+        assert data["stats"]["overdue"] == 1
+        assert data["stats"]["shared_for_help"] == 1
+
+    def test_help_requests_count_is_grouped_and_ignores_cancelled(
+        self, client, db_session, make_user, make_assignment, auth_headers
+    ):
+        from models import HomeworkSubmission
+
+        owner = make_user()
+        a = make_assignment(owner, is_shared_for_help=True)
+        b = make_assignment(owner, is_shared_for_help=True)
+        for helper, status in ((make_user(), "pending"), (make_user(), "submitted"), (make_user(), "cancelled")):
+            db_session.add(HomeworkSubmission(requester_id=owner.id, helper_id=helper.id,
+                                              assignment_id=a.id, title="T", status=status))
+        db_session.flush()
+
+        resp = client.get("/student/assignments", headers=auth_headers(owner))
+
+        counts = {x["id"]: x["help_requests_count"] for x in resp.get_json()["data"]["assignments"]}
+        assert counts == {a.id: 2, b.id: 0}
+
+    def test_feed_available_subjects_not_collapsed_by_subject_filter(
+        self, client, make_user, make_assignment, make_connection, auth_headers
+    ):
+        me, friend = make_user(), make_user()
+        make_connection(me, friend)
+        make_assignment(friend, subject="Math", is_shared_for_help=True)
+        make_assignment(friend, subject="Physics", is_shared_for_help=True)
+
+        resp = client.get("/student/homework/feed?subject=Math", headers=auth_headers(me))
+
+        data = resp.get_json()["data"]
+        assert [h["subject"] for h in data["homework"]] == ["Math"]
+        assert data["available_subjects"] == ["Math", "Physics"]
