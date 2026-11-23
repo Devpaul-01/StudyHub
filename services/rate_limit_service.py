@@ -41,6 +41,8 @@ down is worse than no rate limiter. This is achieved by:
 from __future__ import annotations
 
 import logging
+
+import jwt
 from flask import request, current_app, g, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -74,25 +76,72 @@ def ip_key() -> str:
     return ip
 
 
+_ENVIRON_USER_KEY = "studyhub.rate_limit_user_id"
+_UNSET = object()
+
+
+def _user_id_from_request_token():
+    """
+    Best-effort user id from the request's access token, or None.
+
+    Flask-Limiter evaluates a decorated limit's key function BEFORE the view
+    runs, i.e. before role_required()/token_required() has had a chance to
+    set g.current_user_id. Reading g alone therefore always fell back to the
+    IP, so every "per-user" limit was really per-IP (students behind one
+    campus NAT shared a bucket). This verifies the JWT signature itself —
+    no database lookup — so the key is the same one the auth decorator will
+    later accept. Any failure (no token, bad signature, expired, malformed)
+    returns None and the caller falls back to the IP.
+
+    The id is cached in the request's WSGI environ (strictly per request;
+    `g` is per app context, which a long-lived context can share across
+    requests). It is deliberately NOT
+    written to g.current_user_id: that attribute is the auth decorator's
+    "this request is authenticated and authorised" marker, and this helper
+    has not checked the user exists or has the right role.
+    """
+    cached = request.environ.get(_ENVIRON_USER_KEY, _UNSET)
+    if cached is not _UNSET:
+        return cached
+
+    user_id = None
+    try:
+        token = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+        if not token:
+            token = request.cookies.get("access_token")
+        if token:
+            payload = jwt.decode(
+                token, current_app.config["SECRET_KEY"], algorithms=["HS256"]
+            )
+            raw = payload.get("user_id")
+            if raw is not None:
+                user_id = raw
+    except Exception:
+        user_id = None
+
+    request.environ[_ENVIRON_USER_KEY] = user_id
+    return user_id
+
+
 def user_or_ip_key() -> str:
     """
-    Per-user key for authenticated routes, falling back to IP for routes
-    that happen not to have a user yet.
+    Per-user key for authenticated routes, falling back to IP when there is
+    no valid token (see _user_id_from_request_token for why the token is
+    decoded here rather than read from g.current_user_id).
 
-    Reads g.current_user_id, which role_required()/token_required() (see
-    routes/student/helpers.py) sets immediately after decoding the JWT —
-    at zero extra cost, since the payload is already decoded at that point.
     IP-based limiting is the wrong granularity once a user is known (a
-    shared campus/NAT network would otherwise rate-limit unrelated
-    students together), so this is used instead of ip_key() on every
-    @token_required-protected route below.
+    shared campus/NAT network would otherwise rate-limit unrelated students
+    together).
     """
-    user_id = getattr(g, "current_user_id", None)
+    user_id = _user_id_from_request_token()
     if user_id:
         key = f"user:{user_id}"
         logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")
         return key
-    
+
     ip = get_remote_address()
     logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {ip} (fallback to IP)")
     return ip
@@ -133,6 +182,19 @@ def init_app(app) -> Limiter:
 
     logger.info(f"[RATE_LIMIT] ⚙️ Initializing with storage: {storage_uri}")
     logger.info(f"[RATE_LIMIT] ⚙️ Storage type: {'Redis' if is_redis else 'Memory'}")
+    if (
+        not is_redis
+        and app.config.get("RATE_LIMIT_ENABLED", True)
+        and not app.config.get("TESTING")
+        and not app.debug
+    ):
+        # Per-process counters: with N workers/instances every limit is
+        # silently N times looser, and counters reset on each deploy.
+        logger.error(
+            "[RATE_LIMIT] ❌ RATE_LIMIT_STORAGE_URI is memory:// in a non-debug, "
+            "non-test environment. Limits are enforced per process, not globally. "
+            "Set RATE_LIMIT_STORAGE_URI (or REDIS_URL) to a Redis URL."
+        )
 
     app.config.setdefault("RATELIMIT_STORAGE_URI", storage_uri)
     if is_redis:
