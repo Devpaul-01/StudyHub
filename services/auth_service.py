@@ -28,6 +28,7 @@ from werkzeug.security import generate_password_hash
 from sqlalchemy.exc import IntegrityError
 
 from models import User, StudentProfile, UserActivity
+from services.badge_triggers import schedule_badge_check
 from extensions import db
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,7 @@ def record_login_and_commit(user: User) -> User:
     now = datetime.datetime.utcnow()
     update_login_streak(user, now=now)
     record_activity(user.id, "login", today=now.date())
+    schedule_badge_check(user.id)   # streak badges; runs after the commit
     try:
         db.session.commit()
     except IntegrityError:
@@ -163,6 +165,7 @@ def record_login_and_commit(user: User) -> User:
         user = User.query.get(user.id)
         update_login_streak(user, now=now)
         record_activity(user.id, "login", today=now.date())
+        schedule_badge_check(user.id)
         db.session.commit()
     return user
 
