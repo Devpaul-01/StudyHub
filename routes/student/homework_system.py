@@ -164,6 +164,32 @@ def _slice_by_cursor(items: list, cursor: str | None, limit: int) -> tuple[list,
     return homework_service.slice_by_cursor(items, cursor, limit)
 
 
+# Sort modes -> (key extractor given the request's score map, descending,
+# cursor encode, cursor decode). The list is sorted by (key, id) so the
+# order is total and the keyset cursor is unambiguous (audit F-20).
+def _keyset_sort(items: list, mode: str, scores: dict):
+    difficulty_rank = {"easy": 1, "medium": 2, "hard": 3}
+    iso = lambda v: v.isoformat()  # noqa: E731
+    if mode == "priority":
+        spec = (lambda x: scores[x.id], True, repr, float)
+    elif mode == "due_date":
+        spec = (lambda x: x.due_date, False, iso, datetime.fromisoformat)
+    elif mode == "created_at":
+        spec = (lambda x: x.created_at, True, iso, datetime.fromisoformat)
+    else:  # difficulty
+        spec = (lambda x: difficulty_rank.get(x.difficulty, 2), False, str, int)
+    key_fn, descending, encode, decode = spec
+    items.sort(key=lambda x: (key_fn(x), x.id), reverse=descending)
+    return key_fn, descending, encode, decode
+
+
+def _slice_keyset(items, spec, cursor, limit):
+    key_fn, descending, encode, decode = spec
+    return homework_service.slice_by_keyset(
+        items, key_fn, cursor, limit, descending=descending, encode=encode, decode=decode
+    )
+
+
 def _get_urgency_level(hours_until_due: float) -> str:
     return homework_service.get_urgency_level(hours_until_due)
 
@@ -640,15 +666,12 @@ def get_my_assignments(current_user):
         }
 
         sort_by = request.args.get("sort", "priority")
-        if sort_by == "priority":
-            assignments.sort(key=lambda x: priority_scores[x.id], reverse=True)
-        elif sort_by == "due_date":
-            assignments.sort(key=lambda x: x.due_date)
-        else:
-            assignments.sort(key=lambda x: x.created_at, reverse=True)
+        if sort_by not in ("priority", "due_date", "created_at"):
+            sort_by = "created_at"
+        spec = _keyset_sort(assignments, sort_by, priority_scores)
 
         limit, cursor = _parse_pagination_params()
-        page, has_more, next_cursor = _slice_by_cursor(assignments, cursor, limit)
+        page, has_more, next_cursor = _slice_keyset(assignments, spec, cursor, limit)
 
         # One grouped query for the whole page instead of one COUNT per
         # shared assignment (audit F-16).
@@ -1028,16 +1051,13 @@ def get_homework_feed(current_user):
         }
 
         sort_by = request.args.get("sort", "urgency")
-        if sort_by == "urgency":
-            homework_items.sort(key=lambda x: priority_scores[x.id], reverse=True)
-        elif sort_by == "recent":
-            homework_items.sort(key=lambda x: x.created_at, reverse=True)
-        elif sort_by == "difficulty":
-            difficulty_order = {"easy": 1, "medium": 2, "hard": 3}
-            homework_items.sort(key=lambda x: difficulty_order.get(x.difficulty, 2))
+        feed_mode = {"urgency": "priority", "recent": "created_at", "difficulty": "difficulty"}.get(
+            sort_by, "priority"
+        )
+        spec = _keyset_sort(homework_items, feed_mode, priority_scores)
 
         limit, cursor = _parse_pagination_params()
-        page, has_more, next_cursor = _slice_by_cursor(homework_items, cursor, limit)
+        page, has_more, next_cursor = _slice_keyset(homework_items, spec, cursor, limit)
 
         student_ids = {hw.user_id for hw in page}
         students_map = {u.id: u for u in User.query.filter(User.id.in_(student_ids)).all()} if student_ids else {}
