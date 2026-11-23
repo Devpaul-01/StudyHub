@@ -637,7 +637,7 @@ export function renderLoadingState() {
 // REPLACE renderResourceItem function (line 428-452) with this:
 // ============================================================================
 
-export function renderResourceItem(resource, index, isEdit = false) {
+export function renderResourceItem(resource, index, isEdit = false, readOnly = false) {
   const removeAction = isEdit ? 'remove-edit-resource' : 'remove-resource';
   
   return `
@@ -654,12 +654,13 @@ export function renderResourceItem(resource, index, isEdit = false) {
             <circle cx="12" cy="12" r="3"/>
           </svg>
         </button>
-        <button class="hw-resource-remove-btn" data-action="${removeAction}" data-resource-index="${index}">
+        ${readOnly ? '' : `<button class="hw-resource-remove-btn" data-action="${removeAction}" data-resource-index="${index}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
+        `}
       </div>
     </div>
   `;

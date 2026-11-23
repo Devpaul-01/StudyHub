@@ -157,6 +157,13 @@ export function renderSubmissionDetailHelper(submission) {
               <p>${escapeHtml(submission.description)}</p>
             </div>
           ` : ''}
+
+          ${submission.assignment?.resources?.length ? `
+            <div class="hw-resources-list">
+              <div class="hw-resources-header">Assignment Files:</div>
+              ${submission.assignment.resources.map((r, i) => renderResourceItem(r, i, false, true)).join('')}
+            </div>
+          ` : ''}
         </div>
       </div>
 
@@ -218,7 +225,7 @@ export function renderSubmissionDetailHelper(submission) {
             ${submission.solution.resources && submission.solution.resources.length > 0 ? `
               <div class="hw-resources-list">
                 <div class="hw-resources-header">Attached Files:</div>
-                ${submission.solution.resources.map((r, i) => renderResourceItem(r, i)).join('')}
+                ${submission.solution.resources.map((r, i) => renderResourceItem(r, i, false, true)).join('')}
               </div>
             ` : ''}
           </div>
@@ -308,6 +315,13 @@ export function renderSubmissionDetailRequester(submission) {
               <p>${escapeHtml(submission.description)}</p>
             </div>
           ` : ''}
+
+          ${submission.assignment?.resources?.length ? `
+            <div class="hw-resources-list">
+              <div class="hw-resources-header">Assignment Files:</div>
+              ${submission.assignment.resources.map((r, i) => renderResourceItem(r, i, false, true)).join('')}
+            </div>
+          ` : ''}
         </div>
       </div>
 
@@ -325,7 +339,7 @@ export function renderSubmissionDetailRequester(submission) {
             ${submission.solution.resources && submission.solution.resources.length > 0 ? `
               <div class="hw-resources-list">
                 <div class="hw-resources-header">Attached Files:</div>
-                ${submission.solution.resources.map((r, i) => renderResourceItem(r, i)).join('')}
+                ${submission.solution.resources.map((r, i) => renderResourceItem(r, i, false, true)).join('')}
               </div>
             ` : ''}
           </div>
