@@ -432,3 +432,51 @@ class TestFeedWindow:
 
         assert "Five hours ago" in body
         assert "Expired" not in body
+
+
+class TestSubmissionCopiesFollowAssignment:
+    """Audit F-19: the helper must not keep seeing the pre-rename title."""
+
+    def test_rename_propagates_to_existing_submissions(
+        self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        from models import HomeworkSubmission
+
+        owner, helper = make_user(), make_user()
+        a = make_assignment(owner, title="Original", subject="Math", is_shared_for_help=True)
+        db_session.add(HomeworkSubmission(
+            requester_id=owner.id, helper_id=helper.id, assignment_id=a.id,
+            title="Original", subject="Math", difficulty="medium", status="pending",
+        ))
+        db_session.commit()
+
+        resp = client.put(
+            f"/student/assignments/{a.id}",
+            json={"title": "Renamed", "subject": "Physics"},
+            headers={**auth_headers(owner), **csrf_headers(client)},
+        )
+
+        assert resp.status_code == 200
+        sub = HomeworkSubmission.query.filter_by(assignment_id=a.id).one()
+        assert (sub.title, sub.subject) == ("Renamed", "Physics")
+
+    def test_unrelated_update_leaves_copies_alone(
+        self, client, db_session, make_user, make_assignment, auth_headers, csrf_headers
+    ):
+        from models import HomeworkSubmission
+
+        owner, helper = make_user(), make_user()
+        a = make_assignment(owner, title="Keep", is_shared_for_help=True)
+        db_session.add(HomeworkSubmission(
+            requester_id=owner.id, helper_id=helper.id, assignment_id=a.id,
+            title="Keep", subject="Math", difficulty="medium", status="pending",
+        ))
+        db_session.commit()
+
+        resp = client.put(
+            f"/student/assignments/{a.id}", json={"estimated_hours": 2},
+            headers={**auth_headers(owner), **csrf_headers(client)},
+        )
+
+        assert resp.status_code == 200
+        assert HomeworkSubmission.query.filter_by(assignment_id=a.id).one().title == "Keep"

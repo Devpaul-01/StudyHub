@@ -874,6 +874,14 @@ def update_assignment(current_user, assignment_id):
         # Mutation path: persist the recomputed priority score.
         assignment.priority_score = homework_service.calculate_priority_score(assignment)
 
+        # Submissions carry a display copy of these fields taken at offer time;
+        # keep it in step so a helper doesn't keep seeing the old title (F-19).
+        copied = {c: fields[c] for c in ("title", "description", "subject", "difficulty") if c in fields}
+        if copied:
+            HomeworkSubmission.query.filter(
+                HomeworkSubmission.assignment_id == assignment.id
+            ).update(copied, synchronize_session=False)
+
         db.session.commit()
 
         # Only on the actual not-completed -> completed transition, and only
