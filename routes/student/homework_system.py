@@ -59,7 +59,7 @@ from services.activity_service import (
 # Phase 5b (Document 4 §1): WRITE_HEAVY-tier limiting on assignment/help-
 # request create/update/delete/offer-help/submit-solution/give-feedback
 # routes.
-from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 homework_bp = Blueprint("student_homework", __name__)
 
@@ -272,7 +272,7 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
 # ============================================================================
 
 @homework_bp.route("/homework/<int:assignment_id>/helpers", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_assignment_helpers(current_user, assignment_id):
     """Get all helpers for a specific assignment."""
@@ -355,7 +355,7 @@ def get_assignment_helpers(current_user, assignment_id):
 
 
 @homework_bp.route("/activity/feed", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_activity_feed(current_user):
     """Get recent homework activities from connections."""
@@ -440,7 +440,7 @@ def get_activity_feed(current_user):
 
 
 @homework_bp.route("/activity/pulse", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_activity_pulse(current_user):
     """Get recent anonymized global activity (not scoped to connections).
@@ -511,7 +511,7 @@ def get_activity_pulse(current_user):
 
 
 @homework_bp.route("/homework/my-streak", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_streak(current_user):
     """Get current user's help streak information."""
@@ -542,7 +542,7 @@ def get_my_streak(current_user):
 
 
 @homework_bp.route("/homework/champions", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_current_champions(current_user):
     """Champions for the most recent finished week (computed by the weekly
@@ -636,7 +636,7 @@ def get_current_champions(current_user):
 
 
 @homework_bp.route("/assignments", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_assignments(current_user):
     """
@@ -985,7 +985,7 @@ def assignment_quick_actions(current_user, assignment_id):
 # ============================================================================
 
 @homework_bp.route("/homework/feed", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_homework_feed(current_user):
     """
@@ -1251,7 +1251,7 @@ def offer_homework_help(current_user, assignment_id):
 
 
 @homework_bp.route("/homework/my-help-requests", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_my_help_requests(current_user):
     """
@@ -1335,7 +1335,7 @@ def get_my_help_requests(current_user):
 
 
 @homework_bp.route("/homework/helping", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_homework_im_helping_with(current_user):
     """
@@ -1724,7 +1724,7 @@ def cancel_help_request(current_user, submission_id):
 # ============================================================================
 
 @homework_bp.route("/homework/stats", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_homework_stats(current_user):
     """Get comprehensive homework statistics for current user."""
@@ -1773,7 +1773,7 @@ def get_homework_stats(current_user):
 
 
 @homework_bp.route("/homework/stats/charts", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_homework_chart_data(current_user):
     """
