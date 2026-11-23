@@ -100,6 +100,12 @@ Every process that loses the lock race logs the skip and increments a **consecut
 - **Processing:** `cleanup_expired_activity_feed_job` — full detail in §3.1.
 - **Idempotency:** Genuinely idempotent, by construction rather than by accident (§3.1).
 
+#### `help_request_expiry`
+- **Purpose:** Flips every `HelpRequest` that is still `active` but past its `expires_at` to `expired`. Before this job, expiry was only applied lazily when someone tried to volunteer, so abandoned requests stayed `active` forever.
+- **Trigger:** Cron — every 15 minutes (`*/15`). Same locked tick → `maintenance_queue` dispatch pattern as `activity_feed_cleanup` (§3.1), so multiple scheduler-enabled instances never duplicate it.
+- **Processing:** `expire_help_requests_job` — one conditional `UPDATE help_requests SET status='expired' WHERE status='active' AND expires_at < now()`. Bounded by the number of currently-active requests (a partial unique index allows at most one active request per user).
+- **Idempotency:** Genuinely idempotent by construction — a duplicate or re-run matches zero rows. Retry policy: 2 attempts, 30s fixed backoff (`HELP_REQUEST_EXPIRY_RETRY` in `job_specs.py`); the next 15-minute tick self-heals regardless.
+
 #### `stale_ai_conversation_alert`
 - **Purpose:** A read-only, non-destructive alert — counts archived `AIConversation` rows past a staleness threshold (180 days, explicitly flagged in the code as a default to tune once real growth data exists, not a derived retention policy) and logs both the count and an approximate total-message figure as a storage-growth signal. Deletes nothing.
 - **Trigger:** Cron — every Sunday at 00:25 UTC, offset 5 minutes after `counter_reconciliation`'s 00:20 slot for the same load-contention reasoning.
