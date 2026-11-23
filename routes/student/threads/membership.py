@@ -33,6 +33,7 @@ from routes.student.helpers import (
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
 from services import notification_service
+from services.badge_triggers import schedule_badge_check
 from services.activity_service import record_live_activity
 # AUDIT BUG-5 FIX: require_moderator_or_creator raises AuthorizationError
 # (errors.py) on a failed permission check. Every route below wraps its
@@ -568,6 +569,7 @@ def approve_join_request(current_user, thread_id, request_id):
             related_type="thread",
             related_id=thread_id,
         )
+        schedule_badge_check(db.session.query(Thread.creator_id).filter_by(id=thread_id).scalar())
         db.session.commit()
 
         try:
@@ -875,6 +877,7 @@ def accept_thread_invite(current_user, invite_id):
             related_type="thread",
             related_id=thread.id,
         )
+        schedule_badge_check(db.session.query(Thread.creator_id).filter_by(id=thread.id).scalar())
         db.session.commit()
 
         # Issue 6: Notify existing members and the accepting user via personal room

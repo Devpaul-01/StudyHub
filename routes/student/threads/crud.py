@@ -36,6 +36,7 @@ from errors import ValidationError
 from services.ai_provider_service import call_ai_response
 from services.thread_authorization import is_moderator_or_creator, require_moderator_or_creator
 from services import notification_service
+from services.badge_triggers import schedule_badge_check
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): WRITE_HEAVY for thread create/update/delete/
 # settings mutations.
@@ -153,6 +154,7 @@ def create_thread(current_user):
                 )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
+        schedule_badge_check(current_user.id)
         db.session.commit()
 
         record_live_activity(
@@ -274,6 +276,7 @@ def create_standalone_thread(current_user):
                 )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
+        schedule_badge_check(current_user.id)
         db.session.commit()
 
         record_live_activity(
