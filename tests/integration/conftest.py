@@ -146,7 +146,9 @@ def app():
                                   # future dependency reads it.
     )
 
+    from tests.sqlite_savepoints import install as _install_sqlite_savepoints
     with flask_app.app_context():
+        _install_sqlite_savepoints(db.engine)
         db.create_all()
         yield flask_app
         db.drop_all()
