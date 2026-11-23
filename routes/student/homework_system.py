@@ -152,6 +152,10 @@ def _publish_completion(user_id: int, assignment) -> None:
 # PURE / NO-DB HELPERS
 # ============================================================================
 
+# Upper bound on shared assignments considered for one feed request.
+FEED_MAX_CANDIDATES = 500
+
+
 def _parse_pagination_params() -> tuple[int, str | None]:
     """Route-layer wrapper: pulls limit/cursor out of request.args, then
     delegates parsing/validation to the service."""
@@ -1051,7 +1055,11 @@ def get_homework_feed(current_user):
         if difficulty:
             query = query.filter_by(difficulty=difficulty)
 
-        homework_items = query.all()
+        # Priority/difficulty ordering is computed in Python (see
+        # homework_service.calculate_priority_score), so the candidate set is
+        # capped rather than unbounded: soonest-due first, which is also what
+        # the "urgency" sort surfaces (audit F-16).
+        homework_items = query.order_by(Assignment.due_date.asc(), Assignment.id.asc()).limit(FEED_MAX_CANDIDATES).all()
 
         now = datetime.utcnow()
         priority_scores = {

@@ -123,3 +123,25 @@ def test_chart_values_match_rows(client, db_session, make_user, make_assignment,
     assert sum(r["count"] for r in data["reactions_received"]) == 2
     assert sum(s["total"] for s in data["subject_completion"]) == 8
     assert data["response_time"]["total_timed"] == 2
+
+
+def test_feed_candidate_set_is_capped_to_soonest_due(
+    client, db_session, make_user, make_connection, make_assignment, auth_headers, monkeypatch
+):
+    from routes.student import homework_system
+
+    me, friend = make_user(), make_user()
+    make_connection(me, friend)
+    now = datetime.datetime.utcnow()
+    for i in range(6):
+        make_assignment(
+            friend, title=f"F{i}", subject="Math", is_shared_for_help=True,
+            due_date=now + datetime.timedelta(days=10 - i),  # F5 is due soonest
+        )
+    db_session.commit()
+    monkeypatch.setattr(homework_system, "FEED_MAX_CANDIDATES", 3)
+
+    resp = client.get("/student/homework/feed?limit=50", headers=auth_headers(me))
+
+    titles = {h["title"] for h in resp.get_json()["data"]["homework"]}
+    assert titles == {"F5", "F4", "F3"}
