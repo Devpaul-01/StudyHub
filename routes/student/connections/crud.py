@@ -52,6 +52,7 @@ from services.connection_service import (
 # Before this migration, notifications created via direct construction here
 # never triggered the increment, silently undercounting.
 from services import notification_service
+from services.badge_triggers import schedule_badge_check
 from services.activity_service import record_live_activity
 # Phase 5b (Document 4 §1): send/accept/reject requests, help-broadcast/
 # volunteer, block-adjacent actions -> WRITE_HEAVY; mark-seen/status checks
@@ -235,6 +236,8 @@ def onboard_connect_single(email, target_user_id):
                                 "data": {"connection_id": existing.id}})
             existing.status = "accepted"
             existing.responded_at = datetime.datetime.utcnow()
+            schedule_badge_check(user.id)
+            schedule_badge_check(target_user_id)
             db.session.commit()
             return jsonify({"status": "success", "message": "Connection accepted",
                             "data": {"connection_id": existing.id}})
@@ -1598,6 +1601,8 @@ def send_connection_request(current_user, user_id):
                     notification_service.notify_connection_accepted(
                         existing.requester_id, current_user.name, current_user.id
                     )
+                    schedule_badge_check(current_user.id)
+                    schedule_badge_check(existing.requester_id)
                     db.session.commit()
                     
                     return jsonify({
@@ -1700,6 +1705,8 @@ def send_connection_request(current_user, user_id):
                 requester_notes=message if message else f"Instant connection (compatibility: {compatibility_score}%)"
             )
             db.session.add(connection)
+            schedule_badge_check(current_user.id)
+            schedule_badge_check(user_id)
             
             # Notify both users about instant connection
             notification_service.notify_instant_connection(
@@ -1883,6 +1890,8 @@ def accept_connection(current_user, request_id):
         notification_service.notify_connection_accepted(
             connection.requester_id, current_user.name, current_user.id
         )
+        schedule_badge_check(current_user.id)
+        schedule_badge_check(connection.requester_id)
         
         db.session.commit()
         
