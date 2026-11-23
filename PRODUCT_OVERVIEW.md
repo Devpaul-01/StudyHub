@@ -141,7 +141,7 @@ Homework has two connected halves. **Personal tracking**: assignments with due d
 
 Smart suggestions surface automatically based on a student's current assignment list — flagging an urgent-and-hard assignment due soon, suggesting an easy one as a quick win, nudging a hard-and-unshared assignment toward the peer-help flow, or calling out anything already overdue. This runs as a pure function over already-loaded data (`ARCHITECTURE.md` §8) rather than a separate query, so it's cheap to compute on every homework-feed load.
 
-**Weekly Champions** — the homework dashboard surfaces a "This Week's Champions" panel (top helpers by subject, overall volume, and response speed) reading from a real `WeeklyChampion` table. Worth being precise about this one, in the same spirit as the search caveat below: `WeeklyChampion` has a genuine read path (`homework_system.get_current_champions`) and a real UI built around it, but nothing in this codebase's background-job layer currently writes a row into that table — it isn't one of the five scheduled jobs (`BACKGROUND_JOBS.md` §2.2), and no other write path populates it either. It's product-designed and UI-complete infrastructure waiting on the computation step that would make it live, not a working automated feature.
+**Weekly Champions** — every Monday at 00:35 UTC a scheduled job (`services/champion_service.py`) computes the previous week's champions (top helper overall, top helper per subject, and fastest responder with at least two helps) from completed help the requester marked helpful, and the homework dashboard shows them as "Last Week's Champions" next to the viewer's live progress for the current week. The job is idempotent: re-running it for the same week produces the same rows.
 
 ---
 

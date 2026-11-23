@@ -276,7 +276,7 @@ erDiagram
     User ||--o{ UserBadge : earns
     Badge ||--o{ UserBadge : "awarded via"
     User ||--o{ LeaderboardSnapshot : "weekly/monthly, written by scheduler"
-    User ||--o{ WeeklyChampion : "read-only — see note below"
+    User ||--o{ WeeklyChampion : "weekly, written by scheduler"
 
     ReputationHistory {
         int user_id FK
@@ -289,7 +289,7 @@ erDiagram
 
 `ReputationHistory` is an append-only ledger, not a mutable log alongside a counter. `User.reputation` is the current total, but every change to it is required to go through `award_reputation()` (§7), which writes a `ReputationHistory` row in the same call — meaning the total is always independently reconstructable by summing history rows, not trusted as a bare mutable field that could silently drift from its own audit trail.
 
-`WeeklyChampion` is marked read-only above because, unlike `LeaderboardSnapshot`, it has no write path anywhere in this codebase — no scheduled job, no route, no other service populates it, even though a real UI (`homework_system.get_current_champions`) reads from it and displays a "This Week's Champions" panel. See §5.6 for this alongside the codebase's other honestly-flagged gap.
+`WeeklyChampion` rows are written by the `weekly_champions` scheduler job (`services/champion_service.py`), which runs every Monday for the week that just ended and upserts on a unique `(week_start, champion_type, subject)` key, so re-running it is harmless. It counts only completed submissions the requester marked helpful.
 
 ### 5.5 AI conversations
 
@@ -314,12 +314,12 @@ A composite index on `(user_id, is_archived, last_message_at)` covers the hottes
 
 ### 5.6 Two honest gaps: tables that exist but aren't load-bearing
 
-Two models in this schema have a real definition and, in one case, a real UI built around them, but no working data pipeline behind them — worth naming both together, since they're the same class of finding and the pattern matters more than either instance on its own: a table's presence in `models.py` is not the same claim as a table being load-bearing, and this codebase is not free of that gap.
+One model in this schema (`SearchIndex`) has a real definition but no working data pipeline behind it (`WeeklyChampion` used to be a second example and now has a writer — see below). It is worth naming because a table's presence in `models.py` is not the same claim as a table being load-bearing, and this codebase is not free of that gap.
 
 # Schema reserved for planned full-text search — not currently populated.
 **`SearchIndex`** is defined with a docstring stating it's meant for full-text search. It is never populated and never queried anywhere in the codebase — every search endpoint in `search_service.py` runs unindexed `ILIKE '%term%'` against the live `users`/`posts`/`threads` tables instead. The table hasn't been dropped because doing so is a destructive schema change that needs a real migration and a product decision on whether full-text search is still planned.
 
-**`WeeklyChampion`** is the more interesting of the two, because the read side is genuinely built: `homework_system.get_current_champions()` queries it (and `leaderboard_service` reads it to flag a user's champion status), and the homework dashboard renders a real "This Week's Champions" panel from whatever rows it finds. But no code anywhere in this codebase — not a scheduled job, not a route, not another service — ever inserts a row into it. It isn't one of the five scheduled jobs documented in `BACKGROUND_JOBS.md` §2.2, despite being exactly the shape of work that belongs there alongside the leaderboard snapshot jobs. The feature is UI-complete and schema-complete; the computation step that would make it live is the missing piece.
+**`WeeklyChampion`** was previously the second example here (a complete read path and UI with no writer). It now has one: the `weekly_champions` job in `scheduler.py` calls `champion_service.compute_weekly_champions()` for the previous Monday-Sunday (UTC) week. Only `SearchIndex` remains an unpopulated table.
 
 Both are flagged here rather than presented as working infrastructure, in keeping with this document's own standard: the goal is to make the real engineering legible, which means being equally direct about what isn't finished yet.
 

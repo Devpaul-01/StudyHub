@@ -47,7 +47,7 @@ flowchart LR
 
 ## 2. Scheduled jobs (APScheduler)
 
-All five jobs are registered in `scheduler.py` and run inside every process where `SCHEDULER_ENABLED=true` — which, without the lock described below, would mean every instance fires every job on every tick. The lock is what makes running more than one scheduler-enabled process safe at all.
+All six jobs are registered in `scheduler.py` and run inside every process where `SCHEDULER_ENABLED=true` — which, without the lock described below, would mean every instance fires every job on every tick. The lock is what makes running more than one scheduler-enabled process safe at all.
 
 ### 2.1 Distributed locking — the mechanism every job shares
 
@@ -74,7 +74,7 @@ Every job wraps its body in `DistributedLock.acquire()` before doing anything. T
 
 Every process that loses the lock race logs the skip and increments a **consecutive-skip counter** for that job. Five consecutive skips triggers a `logger.error` + Sentry alert — the intended signal for "something is wrong with the instance that keeps winning the lock; it may be silently failing to complete its work," rather than a routine "another instance was faster" log line.
 
-### 2.2 The five jobs
+### 2.2 The six jobs
 
 #### `weekly_leaderboard_snapshot`
 - **Purpose:** Writes weekly `LeaderboardSnapshot` rows (global rank, department rank, score) used for "you moved up 3 places this week" trend indicators.
@@ -86,6 +86,12 @@ Every process that loses the lock race logs the skip and increments a **consecut
 - **Purpose:** The monthly counterpart to the job above — same `take_snapshot()` function, called with `"monthly"` instead of `"weekly"`, writing the monthly trend baseline.
 - **Trigger:** Cron — the 1st of each month at 00:10 UTC.
 - **Processing / idempotency:** Identical reasoning to `weekly_leaderboard_snapshot` — the job's own docstring says as much rather than duplicating the explanation.
+
+#### `weekly_champions`
+- **Purpose:** Computes the just-finished week's homework champions (`most_helpful_overall`, `subject_champion`, `fastest_helper`) into `WeeklyChampion`.
+- **Trigger:** Cron — every Monday at 00:35 UTC, for the previous Monday-Sunday (UTC) week.
+- **Processing:** Executes directly inside the lock, calling `champion_service.compute_weekly_champions()`.
+- **Idempotency:** Idempotent by construction — rows are upserted on the unique key `(week_start, champion_type, subject)` and stale rows are removed, so a duplicate or repeated run converges on identical rows; the lock only avoids wasted work.
 
 #### `counter_reconciliation`
 - **Purpose:** Weekly safety net comparing every denormalized counter (`comment_count`, `view_count`, `bookmark_count`, `Thread.member_count`, etc.) against a real `COUNT(*)` over the underlying rows.
