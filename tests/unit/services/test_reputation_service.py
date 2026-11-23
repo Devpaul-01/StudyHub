@@ -325,3 +325,18 @@ def test_check_and_award_milestone_noop_with_no_ids(db_session, make_user):
         # Should not raise
         reputation_service.check_and_award_milestone(user.id)
     mock_award.assert_not_called()
+
+
+def test_level_up_schedules_a_badge_check(db_session, make_user):
+    user = make_user(reputation=48)
+    with patch("services.reputation_service.notification_service.notify_level_up"), \
+         patch("services.reputation_service.schedule_badge_check") as sched:
+        reputation_service.award_reputation(user.id, "post_10_likes")      # 48 -> 53 (Newbie -> Learner)
+    sched.assert_called_once_with(user.id)
+
+
+def test_no_level_change_does_not_schedule_a_badge_check(db_session, make_user):
+    user = make_user(reputation=10)
+    with patch("services.reputation_service.schedule_badge_check") as sched:
+        reputation_service.award_reputation(user.id, "comment_marked_helpful")
+    sched.assert_not_called()

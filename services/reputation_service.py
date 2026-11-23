@@ -44,6 +44,7 @@ from services.reputation_levels import get_reputation_level
 from services import notification_service
 from services import cache_service
 from services.after_commit import run_after_commit
+from services.badge_triggers import schedule_badge_check
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,9 @@ def award_reputation(
     if leveled_up:
         # notify_level_up() only adds + flushes; delivery is deferred.
         notification_service.notify_level_up(user_id, new_level)
+        # Reputation-threshold badges (e.g. Reputation Master) are
+        # evaluated by a job once this transaction commits.
+        schedule_badge_check(user_id)
 
     logger.info(
         "reputation_award user_id=%s action=%s requested=%s applied=%s before=%s after=%s "
