@@ -5,16 +5,12 @@ Handles profile viewing, editing, stats, badges, and customization
 
 from flask import Blueprint, request, jsonify, current_app, render_template
 from werkzeug.utils import secure_filename
-from sqlalchemy import func, desc, or_, and_          # FIX: added and_
-from sqlalchemy.orm import joinedload                  # FIX: added for N+1 elimination
-import os
+from sqlalchemy import func, or_, and_
 import datetime
-from flask import session
 
 from models import (
-    User, StudentProfile, Post, Comment, ThreadJoinRequest , Thread, ThreadMember,
-    UserBadge, Badge, ReputationHistory, UserActivity, Connection, Notification,
-    PostReaction, Bookmark, OnboardingDetails,
+    User, StudentProfile, Post, Comment, Thread, ThreadMember,
+    UserBadge, Badge, Connection, PostReaction, Bookmark, OnboardingDetails,
 )
 from extensions import db
 from errors import ValidationError
@@ -23,10 +19,7 @@ from services.profile_validation import (
     ProfileValidationError, STUDY_DAYS, STUDY_SLOTS, clean_bio, clean_class_level,
     clean_plain_text, clean_study_schedule, clean_text_list,
 )
-from routes.student.helpers import (
-    token_required, success_response, error_response,
-    save_file, ALLOWED_IMAGE_EXT,
-)
+from routes.student.helpers import token_required, success_response, error_response
 # Phase 5b (Document 4 §1): PUBLIC_READ on profile/stats reads (own and
 # others'), WRITE_HEAVY on edits (academic info, avatar, update, skills,
 # goals, pin/unpin, study schedule, visibility settings), BURST_OK on
