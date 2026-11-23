@@ -20,6 +20,7 @@ import time
 import traceback
 from services.reputation_service import check_and_award_milestone
 from services.atomic_counters import adjust_counter
+from services.badge_triggers import schedule_badge_check
 from sqlalchemy.exc import IntegrityError
 
 import mimetypes
@@ -1198,7 +1199,8 @@ def create_post(current_user):
         )
         
         # Update user stats
-        current_user.total_posts = (current_user.total_posts or 0) + 1
+        adjust_counter(User, current_user.id, "total_posts", 1)
+        schedule_badge_check(current_user.id)
         
         # Update activity
         update_user_activity(current_user.id, "post")
@@ -1534,8 +1536,7 @@ def delete_post(current_user, post_id):
         db.session.delete(post)
         
         # Update user stats
-        if current_user.total_posts > 0:
-            current_user.total_posts -= 1
+        adjust_counter(User, current_user.id, "total_posts", -1)
         
         db.session.commit()
         
