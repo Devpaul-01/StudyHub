@@ -40,6 +40,7 @@ from models import (
 )
 from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 from services import cache_service
+from services.homework_service import effective_help_streak
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,7 +351,7 @@ def _build_entry(
         },
         "streaks": {
             "login_streak": user.login_streak,
-            "help_streak_current": user.help_streak_current,
+            "help_streak_current": effective_help_streak(user.help_streak_current, user.help_streak_last_updated),
         },
         "stats": {
             "total_posts": user.total_posts,
@@ -837,7 +838,7 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
         "level": {"current": level, "points_to_next": points_to_next, "progress_pct": progress_pct},
         "streaks": {
             "login_streak": user.login_streak,
-            "help_streak_current": user.help_streak_current,
+            "help_streak_current": effective_help_streak(user.help_streak_current, user.help_streak_last_updated),
             "help_streak_longest": user.help_streak_longest,
         },
         "stats": {
@@ -981,6 +982,7 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
             func.sum(ReputationHistory.points_change).label("weekly_gain"),
             User.username, User.name, User.avatar, User.reputation,
             User.reputation_level, User.login_streak, User.help_streak_current,
+            User.help_streak_last_updated,
             StudentProfile.department, StudentProfile.class_name,
         )
         .join(User, User.id == ReputationHistory.user_id)
@@ -998,7 +1000,8 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
         q.group_by(
             ReputationHistory.user_id, User.username, User.name, User.avatar,
             User.reputation, User.reputation_level, User.login_streak,
-            User.help_streak_current, StudentProfile.department, StudentProfile.class_name,
+            User.help_streak_current, User.help_streak_last_updated,
+            StudentProfile.department, StudentProfile.class_name,
         )
         .order_by(desc("weekly_gain"))
         .limit(limit)
@@ -1027,7 +1030,7 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
             },
             "streaks": {
                 "login_streak": row.login_streak or 0,
-                "help_streak_current": row.help_streak_current or 0,
+                "help_streak_current": effective_help_streak(row.help_streak_current, row.help_streak_last_updated),
             },
         })
 
@@ -1437,7 +1440,7 @@ def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
 
     consistency_bonus_explanation = (
         f"Your {user.login_streak}-day login streak + "
-        f"{user.help_streak_current}-day help streak contribute "
+        f"{effective_help_streak(user.help_streak_current, user.help_streak_last_updated)}-day help streak contribute "
         "to your display momentum badge."
     )
 
@@ -1452,7 +1455,7 @@ def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
         "level": rep_level(user.reputation),
         "streaks": {
             "login_streak": user.login_streak,
-            "help_streak_current": user.help_streak_current,
+            "help_streak_current": effective_help_streak(user.help_streak_current, user.help_streak_last_updated),
             "help_streak_longest": user.help_streak_longest,
         },
         "consistency_note": consistency_bonus_explanation,

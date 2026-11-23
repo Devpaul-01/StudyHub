@@ -269,7 +269,15 @@ def validate_assignment_update(data) -> dict:
 # Submission payloads (F-07, F-09)
 # ----------------------------------------------------------------------------
 
-REACTION_TYPES = ("thanks", "lifesaver", "mindblown", "perfect")
+# One source of truth for reaction keys (audit F-18): validation, the CHECK
+# constraint, the UI picker and the stats chart all use these keys.
+REACTION_LABELS = {
+    "thanks": "Thanks 🙏",
+    "lifesaver": "Lifesaver 🔥",
+    "mindblown": "Mind Blown 🧠",
+    "perfect": "Perfect ⭐",
+}
+REACTION_TYPES = tuple(REACTION_LABELS)
 
 
 def validate_solution_submit(data) -> dict:

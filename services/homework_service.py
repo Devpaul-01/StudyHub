@@ -197,3 +197,52 @@ def get_smart_suggestions(assignments: list[Assignment], *, now: datetime.dateti
         })
 
     return suggestions[:2]
+
+
+# ============================================================================
+# HELP CREDIT  (pure)
+# ============================================================================
+
+MIN_HELPFUL_RATING = 3
+
+
+def resolve_is_helpful(
+    *,
+    previously_helpful: bool,
+    reaction_type: str | None,
+    rating: int | None,
+    explicit: bool | None,
+) -> bool:
+    """Decide whether completed help counts as "helpful" (audit F-06, Q-9).
+
+    Nothing is assumed: help is helpful only on an explicit positive signal
+    from the requester - a reaction, a rating >= MIN_HELPFUL_RATING, or
+    ``is_helpful: true``. An explicit negative signal (``is_helpful: false``
+    or a rating below the minimum) always wins, even over an earlier
+    positive one, so a requester can correct themselves.
+    """
+    if explicit is False:
+        return False
+    if rating is not None and rating < MIN_HELPFUL_RATING:
+        return False
+    return bool(
+        previously_helpful
+        or reaction_type
+        or (rating is not None and rating >= MIN_HELPFUL_RATING)
+        or explicit is True
+    )
+
+
+def effective_help_streak(
+    current: int | None,
+    last_updated: datetime.datetime | None,
+    *,
+    now: datetime.datetime | None = None,
+) -> int:
+    """The streak to DISPLAY. The stored value is only reset on the next help,
+    so a week of inactivity would otherwise still show the old number
+    (audit F-23). Day boundary is UTC (documented product decision)."""
+    if not current or last_updated is None:
+        return 0
+    today = (now or datetime.datetime.utcnow()).date()
+    return current if (today - last_updated.date()).days <= 1 else 0

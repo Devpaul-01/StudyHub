@@ -48,6 +48,7 @@ from services.homework_validation import (
     validate_assignment_update,
     validate_feedback,
     validate_solution_submit,
+    REACTION_LABELS,
 )
 from services.activity_service import (
     record_live_activity,
@@ -203,30 +204,34 @@ def _update_help_streak(helper_user_id: int) -> dict | None:
     if not user:
         return None
 
+    # total_helps_given counts every newly completed helpful help. It used to
+    # sit behind the once-per-day streak check, so it counted days (F-06).
+    user.total_helps_given = (user.total_helps_given or 0) + 1
+
     today = datetime.utcnow().date()
     last_updated = user.help_streak_last_updated.date() if user.help_streak_last_updated else None
+    current = user.help_streak_current or 0
+    longest = user.help_streak_longest or 0
 
     if last_updated == today:
         return {
-            'current_streak': user.help_streak_current,
-            'longest_streak': user.help_streak_longest,
+            'current_streak': current,
+            'longest_streak': longest,
             'is_new_record': False
         }
 
-    yesterday = today - timedelta(days=1)
-
-    if last_updated == yesterday:
-        user.help_streak_current += 1
-    elif last_updated is None or (today - last_updated).days > 1:
-        user.help_streak_current = 1
+    if last_updated == today - timedelta(days=1):
+        current += 1
+    else:
+        current = 1
+    user.help_streak_current = current
 
     is_new_record = False
-    if user.help_streak_current > user.help_streak_longest:
-        user.help_streak_longest = user.help_streak_current
+    if current > longest:
+        user.help_streak_longest = longest = current
         is_new_record = True
 
     user.help_streak_last_updated = datetime.utcnow()
-    user.total_helps_given += 1
 
     return {
         'current_streak': user.help_streak_current,
@@ -496,7 +501,9 @@ def get_my_streak(current_user):
         return jsonify({
             "status": "success",
             "data": {
-                "current_streak": current_user.help_streak_current,
+                "current_streak": homework_service.effective_help_streak(
+                    current_user.help_streak_current, current_user.help_streak_last_updated
+                ),
                 "longest_streak": current_user.help_streak_longest,
                 "last_updated": current_user.help_streak_last_updated.isoformat() if current_user.help_streak_last_updated else None,
                 "streak_at_risk": streak_at_risk,
@@ -1526,7 +1533,6 @@ def give_feedback(current_user, submission_id):
             )
 
         now = datetime.utcnow()
-        is_helpful = bool(submission.is_marked_helpful)
         values = {
             "feedback_text": fields["feedback_text"],
             "feedback_resources": fields["feedback_resources"],
@@ -1536,16 +1542,17 @@ def give_feedback(current_user, submission_id):
         if fields["reaction_type"]:
             values["reaction_type"] = fields["reaction_type"]
             values["reaction_at"] = now
-            is_helpful = True
-
         if fields["rating"]:
             values["feedback_rating"] = fields["rating"]
-            if fields["rating"] >= 3:
-                is_helpful = True
 
-        if not is_helpful and fields["is_helpful"] is not False:
-            is_helpful = True
-
+        # "Helpful" is never assumed (audit F-06): it needs an explicit
+        # positive signal and an explicit negative one always wins.
+        is_helpful = homework_service.resolve_is_helpful(
+            previously_helpful=bool(submission.is_marked_helpful),
+            reaction_type=fields["reaction_type"],
+            rating=fields["rating"],
+            explicit=fields["is_helpful"],
+        )
         values["is_marked_helpful"] = is_helpful
         values["status"] = target_status
 
@@ -1760,13 +1767,6 @@ def get_homework_chart_data(current_user):
             for subj, counts in subject_map.items()
         ], key=lambda x: x["total"], reverse=True)[:6]
 
-        REACTION_LABELS = {
-            "thanks": "Thanks 🙏",
-            "lifesaver": "Lifesaver 🔥",
-            "mind_blown": "Mind Blown 🧠",
-            "perfect": "Perfect ⭐",
-        }
-
         reactions_query = HomeworkSubmission.query.filter(
             HomeworkSubmission.helper_id == current_user.id,
             HomeworkSubmission.reaction_type.isnot(None)
@@ -1774,7 +1774,10 @@ def get_homework_chart_data(current_user):
 
         reaction_counts = {label: 0 for label in REACTION_LABELS.values()}
         for h in reactions_query:
-            label = REACTION_LABELS.get(h.reaction_type)
+            # tolerate the legacy 'mind_blown' key written before F-18
+            label = REACTION_LABELS.get(
+                "mindblown" if h.reaction_type == "mind_blown" else h.reaction_type
+            )
             if label:
                 reaction_counts[label] += 1
 

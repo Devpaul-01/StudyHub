@@ -26,6 +26,7 @@ from routes.student.helpers import (
 # others'), WRITE_HEAVY on edits (academic info, avatar, update, skills,
 # goals, pin/unpin, study schedule, visibility settings), BURST_OK on
 # avatar delete (cheap state change).
+from services.homework_service import effective_help_streak
 from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key, ip_key
 
 profile_bp = Blueprint("student_profile", __name__)
@@ -78,7 +79,7 @@ def get_my_profile_data(current_user):
                 },
                 "learning_goals": current_user.learning_goals or [],
                 "help_streak": {
-                    "current": current_user.help_streak_current,
+                    "current": effective_help_streak(current_user.help_streak_current, current_user.help_streak_last_updated),
                     "longest": current_user.help_streak_longest,
                 },
                 "onboarding": {
@@ -303,7 +304,7 @@ def get_my_stats(current_user):
                 "help": {
                     "total_helps_given":    current_user.total_helps_given,
                     "total_helps_received": current_user.total_helps_received,
-                    "streak_current":       current_user.help_streak_current,
+                    "streak_current":       effective_help_streak(current_user.help_streak_current, current_user.help_streak_last_updated),
                     "streak_longest":       current_user.help_streak_longest,
                     "total_helpful":        current_user.total_helpful,
                 },
