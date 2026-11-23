@@ -817,12 +817,18 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
     today = datetime.date.today()
     champ = (
         WeeklyChampion.query
-        .filter(WeeklyChampion.user_id == user_id, WeeklyChampion.week_end >= today)
+        # champions are computed for the week that just ended, so the badge
+        # stays valid for the following 7 days (audit F-15)
+        .filter(
+            WeeklyChampion.user_id == user_id,
+            WeeklyChampion.week_end >= today - timedelta(days=7),
+        )
+        .order_by(WeeklyChampion.week_end.desc(), WeeklyChampion.id.desc())
         .first()
     )
     if champ:
         champion_status = {
-            "type": champ.champion_type, "subject": champ.subject, "help_count": champ.help_count,
+            "type": champ.champion_type, "subject": champ.subject or None, "help_count": champ.help_count,
         }
 
     return {

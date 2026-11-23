@@ -42,7 +42,7 @@ export function renderChampionsBanner(championsData) {
     return `
       <div class="champions-banner champions-empty">
         <div class="champions-empty-icon">🏆</div>
-        <p>No champions yet this week</p>
+        <p>No champions yet</p>
         <p class="champions-empty-hint">Be the first to help others!</p>
       </div>
     `;
@@ -51,7 +51,7 @@ export function renderChampionsBanner(championsData) {
   return `
     <div class="champions-banner">
       <div class="champions-header">
-        <h3 class="champions-title">🏆 This Week's Champions</h3>
+        <h3 class="champions-title">🏆 Last Week's Champions</h3>
         <div class="champions-week">${formatWeekRange(championsData.week_start, championsData.week_end)}</div>
       </div>
       

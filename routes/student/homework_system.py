@@ -545,16 +545,20 @@ def get_my_streak(current_user):
 @limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
 def get_current_champions(current_user):
-    """Get this week's champions."""
+    """Champions for the most recent finished week (computed by the weekly
+    job, services/champion_service.py) plus the caller's live progress for
+    the current week."""
     try:
         from models import WeeklyChampion
 
         today = datetime.utcnow().date()
-        week_start = today - timedelta(days=today.weekday())
+        current_week_start = today - timedelta(days=today.weekday())
 
+        champion_week_start = db.session.query(db.func.max(WeeklyChampion.week_start)).scalar()
         champions = WeeklyChampion.query.filter(
-            WeeklyChampion.week_start == week_start
-        ).all()
+            WeeklyChampion.week_start == champion_week_start
+        ).all() if champion_week_start else []
+        week_start = champion_week_start or current_week_start
 
         champion_user_ids = {c.user_id for c in champions}
         champion_users_map = (
@@ -580,7 +584,7 @@ def get_current_champions(current_user):
                     'avatar': user.avatar,
                     'username': user.username
                 },
-                'subject': champion.subject,
+                'subject': champion.subject or None,
                 'help_count': champion.help_count,
                 'is_you': user.id == current_user.id
             }
@@ -594,13 +598,13 @@ def get_current_champions(current_user):
 
         champions_data['subject_champions'].sort(key=lambda x: x['help_count'], reverse=True)
 
-        week_end = week_start + timedelta(days=6)
+        progress_end = current_week_start + timedelta(days=6)
         helps_this_week = HomeworkSubmission.query.filter(
             HomeworkSubmission.helper_id == current_user.id,
             HomeworkSubmission.status == 'completed',
             HomeworkSubmission.is_marked_helpful == True,
-            func.date(HomeworkSubmission.feedback_at) >= week_start,
-            func.date(HomeworkSubmission.feedback_at) <= week_end
+            func.date(HomeworkSubmission.feedback_at) >= current_week_start,
+            func.date(HomeworkSubmission.feedback_at) <= progress_end
         ).all()
 
         subject_counts = {}
@@ -617,8 +621,12 @@ def get_current_champions(current_user):
             "status": "success",
             "data": {
                 "champions": champions_data,
+                # the finished week the champions belong to...
                 "week_start": week_start.isoformat(),
                 "week_end": (week_start + timedelta(days=6)).isoformat(),
+                # ...and the current week the progress block counts
+                "progress_week_start": current_week_start.isoformat(),
+                "progress_week_end": progress_end.isoformat(),
                 "your_progress": your_progress
             }
         })
