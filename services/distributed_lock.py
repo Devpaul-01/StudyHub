@@ -106,6 +106,9 @@ class DistributedLock:
         self.ttl_seconds = ttl_seconds
         self.owner_token = _make_owner_token()
         self.acquired = False
+        # Why acquire() returned False: "already_held" (another owner has it,
+        # normal under multiple instances) or "redis_error" (could not ask).
+        self.failure_reason = None
 
     def acquire(self) -> bool:
         """
@@ -120,6 +123,7 @@ class DistributedLock:
                 self.key, self.owner_token, nx=True, ex=self.ttl_seconds
             )
             self.acquired = bool(got)
+            self.failure_reason = None if self.acquired else "already_held"
             if self.acquired:
                 logger.info(
                     "[LOCK_ACQUIRED] key=%s owner=%s ttl=%ss",
@@ -138,6 +142,7 @@ class DistributedLock:
                 self.key, self.owner_token, exc_info=True,
             )
             self.acquired = False
+            self.failure_reason = "redis_error"
             return False
 
     def release(self) -> bool:

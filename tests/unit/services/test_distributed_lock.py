@@ -88,3 +88,15 @@ def test_context_manager_releases_on_exception(fakeredis_client):
     except ValueError:
         pass
     assert fakeredis_client.get("sh:1:test:lock:i") is None  # still released
+
+
+def test_failure_reason_is_already_held_when_another_owner_has_the_lock(fakeredis_client):
+    a = DistributedLock("sh:1:test:lock:r", ttl_seconds=60)
+    assert a.acquire() is True and a.failure_reason is None
+    b = DistributedLock("sh:1:test:lock:r", ttl_seconds=60)
+    assert b.acquire() is False and b.failure_reason == "already_held"
+
+
+def test_failure_reason_is_redis_error_when_redis_is_unreachable(raising_redis_client):
+    lock = DistributedLock("sh:1:test:lock:r2", ttl_seconds=60)
+    assert lock.acquire() is False and lock.failure_reason == "redis_error"
