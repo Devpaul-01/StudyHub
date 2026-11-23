@@ -32,7 +32,7 @@ import bleach
 from sqlalchemy import or_, and_, func
 from sqlalchemy.exc import IntegrityError
 
-from models import Connection, Post, StudentProfile, User
+from models import Connection, Post
 from extensions import db
 # Plan §4.8/§17.7: get_mutual_connection_count and the single-pair
 # get_connection_health wrapper (not the batch form — see its own docstring

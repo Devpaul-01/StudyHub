@@ -9,26 +9,18 @@ sub-blueprint aggregation that re-exposes all routes under the same
 paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
-from sqlalchemy import or_, and_, case
-from datetime import timedelta
-import datetime
+from flask import Blueprint, jsonify, current_app, Response, stream_with_context
 import json
 import logging
-import random
 
 from models import (
-    User, StudentProfile, Connection, Notification,
-    HelpRequest, Thread, ThreadMember,
-    OnboardingDetails, Message
+    User, Connection
 )
 from extensions import db
 from routes.student.helpers import (
-    token_required, success_response, error_response,
-    block_connection, unblock_connection,
+    token_required, error_response,
 )
 
-from services.online_status_service import get_user_online_status
 from services.ai_provider_service import provider_manager, StudyAssistant
 from services import cache_service
 from services.connection_service import (
@@ -37,9 +29,6 @@ from services.connection_service import (
     gather_user_data,
     calculate_compatibility,
     get_recent_activity,
-    get_mutual_connection_count,
-    get_connection_health,
-    get_user_onboarding_preview,
 )
 # Phase 5b (Document 4 §1): AI_EXPENSIVE — this is the AI-streaming
 # compatibility overview, a real AI-provider call.

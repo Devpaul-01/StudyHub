@@ -9,43 +9,34 @@ sub-blueprint aggregation that re-exposes all routes under the same
 paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
-from sqlalchemy import or_, and_, case
+from flask import Blueprint, request, jsonify, current_app
+from sqlalchemy import or_, and_
 # AUDIT ENG-2 FIX: catches the new uq_connections_pair unique index
 # (models.py) firing on a genuine reverse-duplicate race in
 # send_connection_request below.
 from sqlalchemy.exc import IntegrityError
-from datetime import timedelta
 import datetime
-import json
 import logging
 import math
 import random
 
 from models import (
     User, StudentProfile, Connection,
-    HelpRequest, HelpRequestVolunteer, Thread, ThreadMember,
-    OnboardingDetails, Message
+    HelpRequest, HelpRequestVolunteer, OnboardingDetails
 )
 from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response,
-    block_connection, unblock_connection,
     is_request_authorized_for_email,
 )
 
 from services.online_status_service import get_user_online_status, get_online_status_batch
-from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
     calculate_compatibility_score,
     calculate_schedule_overlap,
     gather_user_data,
     calculate_compatibility,
-    get_recent_activity,
-    get_mutual_connection_count,
-    get_connection_health,
     get_connection_health_batch,
-    get_user_onboarding_preview,
     notify_after_commit,
     clean_user_text,
     accept_pending_connection,
@@ -266,8 +257,8 @@ def connections_suggestions_by_email(email):
 
         return jsonify({"status": "success", "data": {"matches": top_matches}})
 
-    except Exception as e:
-        current_app.logger.error(f"connections_suggestions_by_email error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("connections_suggestions_by_email error: ", exc_info=True)
         return error_response("Failed to generate suggestions")
 
 
@@ -1385,7 +1376,6 @@ def list_connections(current_user):
         # an inline copy of the health formula that could drift.
         health_map = get_connection_health_batch(current_user.id, connected_ids)
 
-        now = datetime.datetime.utcnow()
         connections_data = []
 
         for other_id in connected_ids:

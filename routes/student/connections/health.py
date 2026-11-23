@@ -9,34 +9,23 @@ sub-blueprint aggregation that re-exposes all routes under the same
 paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
-from sqlalchemy import or_, and_, case
-from datetime import timedelta
+from flask import Blueprint, request, jsonify, current_app
+from sqlalchemy import or_, and_
 import datetime
-import json
 import logging
-import random
 
 from models import (
-    User, StudentProfile, Connection, Notification,
-    HelpRequest, Thread, ThreadMember,
-    OnboardingDetails, Message
+    User, StudentProfile, Connection, Thread,
+    ThreadMember, Message
 )
 from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response,
-    block_connection, unblock_connection,
 )
 
 from services.online_status_service import get_user_online_status, get_online_status_batch
-from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
     clean_user_text,
-    calculate_compatibility_score,
-    calculate_schedule_overlap,
-    gather_user_data,
-    calculate_compatibility,
-    get_recent_activity,
     get_mutual_connection_count,
     get_connection_health,
     get_connection_health_batch,
@@ -44,7 +33,7 @@ from services.connection_service import (
 )
 # Phase 5b (Document 4 §1): PUBLIC_READ for detail/online/notes reads;
 # WRITE_HEAVY for the one genuine write (notes/update).
-from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +295,7 @@ def get_connection_details(current_user, connection_id):
             }
         })
         
-    except Exception as e:
+    except Exception:
         current_app.logger.error("Get connection details error", exc_info=True)
         return error_response("Failed to load connection details", 500)
 
@@ -437,8 +426,8 @@ def get_online_connections(current_user):
             "time_window_minutes": time_window
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Get online connections error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Get online connections error: ", exc_info=True)
         return error_response("Failed to load online connections")
 
 
@@ -505,8 +494,8 @@ def get_online_connections_count(current_user):
             }
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Get online connections count error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Get online connections count error: ", exc_info=True)
         return error_response("Failed to get online connections count")
 
 
@@ -642,8 +631,8 @@ def get_online_connections_by_department(current_user):
             "time_window_minutes": time_window
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Get online dept connections error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Get online dept connections error: ", exc_info=True)
         return error_response("Failed to load online connections from department")
 
 
@@ -712,8 +701,8 @@ def get_connection_notes(current_user, connection_id):
             }
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Get connection notes error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Get connection notes error: ", exc_info=True)
         return error_response("Failed to get connection notes")
 
 
@@ -773,9 +762,9 @@ def update_connection_notes(current_user, connection_id):
             }
         )
         
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        current_app.logger.error(f"Update connection notes error: ", exc_info=True)
+        current_app.logger.error("Update connection notes error: ", exc_info=True)
         return error_response("Failed to update connection notes")
 
 

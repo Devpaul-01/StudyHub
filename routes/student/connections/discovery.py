@@ -9,36 +9,22 @@ sub-blueprint aggregation that re-exposes all routes under the same
 paths as before.
 """
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
+from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import or_, and_, case
-from datetime import timedelta
 import datetime
-import json
 import logging
-import random
 
 from models import (
-    User, StudentProfile, Connection, Notification,
-    HelpRequest, Thread, ThreadMember,
-    OnboardingDetails, Message
+    User, StudentProfile, Connection, OnboardingDetails
 )
 from extensions import db
 from routes.student.helpers import (
-    token_required, success_response, error_response,
-    block_connection, unblock_connection,
+    token_required, error_response,
 )
 
 from services.online_status_service import get_user_online_status, get_online_status_batch
-from services.ai_provider_service import provider_manager, StudyAssistant
 from services.connection_service import (
-    calculate_compatibility_score,
     calculate_schedule_overlap,
-    gather_user_data,
-    calculate_compatibility,
-    get_recent_activity,
-    get_mutual_connection_count,
-    get_connection_health,
-    get_user_onboarding_preview,
 )
 from services import search_service
 # Phase 5b (Document 4 §1): PUBLIC_READ across the board — this file is
@@ -215,8 +201,8 @@ def get_mutual_connections(current_user, user_id):
             },
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Mutual connections error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Mutual connections error: ", exc_info=True)
         return error_response("Failed to get mutual connections")
 
 
@@ -510,8 +496,8 @@ def search_users(current_user):
             }
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Search users error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Search users error: ", exc_info=True)
         return error_response("Failed to search users")
 
 # ============================================================================
@@ -746,8 +732,8 @@ def _get_generic_user_suggestions(current_user, limit=20, message=None):
             }
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Generic suggestions error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Generic suggestions error: ", exc_info=True)
         return jsonify({
             "status": "success",
             "data": {
@@ -1011,8 +997,8 @@ def discover_mutual_connections(current_user):
             }
         })
         
-    except Exception as e:
-        current_app.logger.error(f"Discover mutuals error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Discover mutuals error: ", exc_info=True)
         return error_response("Failed to discover mutual connections")
 
 
@@ -1212,8 +1198,8 @@ def connection_suggestions_flat(current_user):
             "total": len(suggestions),
         })
 
-    except Exception as e:
-        current_app.logger.error(f"Flat connection suggestions error: ", exc_info=True)
+    except Exception:
+        current_app.logger.error("Flat connection suggestions error: ", exc_info=True)
         return error_response("Failed to load suggestions")
 
 # PHASE-1 WIRING FIX: calculate_schedule_overlap, get_user_top_topics,
