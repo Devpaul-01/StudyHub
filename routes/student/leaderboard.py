@@ -193,8 +193,8 @@ def get_nearby_users(current_user):
         if err:
             return err
 
-        my_score = leaderboard_service.get_user_period_score(current_user.id, period)
-        my_rank = leaderboard_service.get_user_rank(current_user.id, period, department)
+        standing = leaderboard_service.get_viewer_standing(current_user.id, period, department)
+        my_score, my_rank = standing["score"], standing["rank"]
 
         nearby = leaderboard_service.get_nearby_users(
             current_user.id, period=period, department=department, n_range=n_range

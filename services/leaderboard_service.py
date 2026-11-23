@@ -386,6 +386,79 @@ def get_user_period_score(user_id: int, period: str) -> int:
     return _user_period_score(user_id, period)
 
 
+def _compute_standing(user_id: int, period: str, department: str | None) -> dict:
+    """Where one user stands on one board, in a single aggregation pass.
+
+    Returns {score, rank, pos, total, on_board}:
+      score    - the user's own score for the period (always computed)
+      rank     - competition rank (the same number the list shows), or None
+                 when the user cannot be ranked on this board: not an
+                 approved user, or the board is for a department they are not
+                 in (previously they were shown a rank inside it anyway)
+      pos      - unique position (score DESC, id ASC) if on the board
+      total    - users on the board
+      on_board - whether the user has a row on the board (period boards only
+                 contain users with activity in the window)
+    """
+    user = db.session.get(User, user_id)
+    if not user:
+        return {"score": 0, "rank": None, "pos": None, "total": 0, "on_board": False}
+
+    score = _user_period_score(user_id, period)
+    eligible = user.status == "approved"
+    if eligible and department:
+        own_dept = (
+            db.session.query(StudentProfile.department)
+            .filter(StudentProfile.user_id == user_id)
+            .scalar()
+        )
+        eligible = own_dept == department
+
+    base = _score_rows(period, department)
+    total, higher, tied_before, on_board = (
+        db.session.query(
+            func.count(),
+            func.coalesce(func.sum(case((base.c.score > score, 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(case(((base.c.score == score) & (base.c.user_id < user_id), 1), else_=0)), 0
+            ),
+            func.coalesce(func.sum(case((base.c.user_id == user_id, 1), else_=0)), 0),
+        )
+        .select_from(base)
+        .one()
+    )
+    on_board = bool(on_board) and eligible
+    return {
+        "score": score,
+        "rank": int(higher) + 1 if eligible else None,
+        "pos": int(higher) + int(tied_before) + 1 if on_board else None,
+        "total": int(total),
+        "on_board": on_board,
+    }
+
+
+@cache_service.cached(
+    "sh:1:lb:standing:{user_id}:{period}:{department_key}", ttl_seconds=60,
+    version_key="sh:1:ver:{user_id}",
+)
+def _get_viewer_standing_cached(user_id: int, period: str, department_key: str) -> dict:
+    return _compute_standing(user_id, period, None if department_key == "_" else department_key)
+
+
+def get_viewer_standing(user_id: int, period: str, department: str | None = None) -> dict:
+    """Cached _compute_standing. Shared by the list overlay, /me and /nearby so
+    one page load does one aggregation instead of three. The viewer's own
+    changes are live (their cache version is bumped on commit); other users'
+    movement lags by the 60 s TTL, same as the shared pages."""
+    return _get_viewer_standing_cached(user_id, period, _dept_key(department))
+
+
+def _percentile(total: int, rank: int | None) -> float:
+    if not total or not rank:
+        return 0.0
+    return round(((total - rank + 1) / total) * 100, 1)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY BUILDER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,9 +636,9 @@ def get_global_leaderboard(
         entry["is_you"] = entry["user"]["id"] == viewer_id
         entry["connection_status"] = cmap.get(entry["user"]["id"])
 
-    your_score = _user_period_score(viewer_id, period)
-    your_rank = get_user_rank(viewer_id, period, department)
-    your_percentile = round(((total - your_rank + 1) / total) * 100, 1) if total > 0 else 0.0
+    standing = get_viewer_standing(viewer_id, period, department)
+    your_score, your_rank = standing["score"], standing["rank"]
+    your_percentile = _percentile(total, your_rank)
 
     return LeaderboardPage(
         entries=entries,
@@ -590,122 +663,47 @@ def get_department_leaderboard(
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. NEARBY USERS
 # ─────────────────────────────────────────────────────────────────────────────
-@cache_service.cached(
-    "sh:1:lb:rank:{user_id}:nearby-core:{period}:{department_key}:{n_range}:{my_score}:{my_rank}",
-    ttl_seconds=60,
-    version_key="sh:1:ver:{user_id}",
-)
-def _get_nearby_for_user(
-    user_id: int, my_score: int, my_rank: int, period: str,
-    department_key: str | None, n_range: int,
-) -> list:
-    """Core nearby-user computation. Includes the viewer themself in the middle.
+def _compute_nearby(user_id: int, period: str, department: str | None, n_range: int) -> list:
+    """The viewer plus up to n_range users above and below, by shared position.
 
-    Uses its own `nearby-core:` key namespace (distinct from
-    _get_nearby_users_cached's `nearby:` namespace below) — these are two
-    different functions with two different signatures/return shapes, and
-    previously shared an identical key template purely by copy-paste,
-    which meant (a) this function's real parameter was named `department`
-    while the template referenced `{department_key}`, causing every call
-    to raise KeyError('department_key') and silently skip caching (see
-    cache_service.cached's fail-open KeyError branch), and (b) even once
-    fixed, an accidental key collision between two distinct cached
-    functions is a correctness bug in its own right — this function is
-    also called directly by _get_my_rank_cached with different arguments
-    than _get_nearby_users_cached passes, so they must not share a cache
-    key. `my_score`/`my_rank` are included in the key since callers can
-    legitimately pass different values in for the same
-    user/period/department (e.g. _get_my_rank_cached always passes
-    department_key=None regardless of the department filter requested),
-    and those values directly determine the returned window of entries.
-
-    `department_key` here is the already-`_dept_key()`-normalized string
-    (never raw None) — same convention as every other @cached function in
-    this module, for the same reason: the decorator interpolates from the
-    raw call arguments, so normalization must happen before this function
-    is invoked, not inside its body.
+    Built from the same ranked query as the list, so every entry carries the
+    rank the list shows for that user. Users tied with the viewer are included
+    (they used to be silently dropped). Returns [] when the viewer cannot be
+    ranked on this board.
     """
-    department = None if department_key in (None, "_") else department_key
-    user = User.query.get(user_id)
-    profile = StudentProfile.query.filter_by(user_id=user_id).first() if user_id else None
+    n_range = clamp(n_range, 1, MAX_NEARBY_RANGE)
+    standing = get_viewer_standing(user_id, period, department)
+    if standing["rank"] is None:
+        return []
 
-    entries = []
+    user = db.session.get(User, user_id)
+    profile = StudentProfile.query.filter_by(user_id=user_id).first()
 
-    if period == "all_time":
-        base_filter = [User.status == "approved", User.id != user_id]
-        if department:
-            base_filter.append(
-                User.id.in_(
-                    db.session.query(StudentProfile.user_id).filter(StudentProfile.department == department)
-                )
-            )
+    # Off-board viewers (no activity this week) are shown where they would sit.
+    anchor = float(standing["pos"]) if standing["on_board"] else (standing["rank"] - 1) + 0.5
 
-        above_rows = (
-            db.session.query(User.id.label("user_id"), User.reputation.label("score"))
-            .filter(User.reputation > my_score, *base_filter)
-            .order_by(asc("score"), asc(User.id))
-            .limit(n_range)
-            .all()
+    ranked = _ranked_scores(period, department)
+    rows = (
+        db.session.query(ranked.c.user_id, ranked.c.score, ranked.c.rank, ranked.c.pos)
+        .filter(
+            ranked.c.pos >= anchor - n_range,
+            ranked.c.pos <= anchor + n_range,
+            ranked.c.user_id != user_id,
         )
-        above_rows = list(reversed(above_rows))
+        .order_by(ranked.c.pos)
+        .all()
+    )
+    umap = _user_map([r.user_id for r in rows])
+    pmap = _profile_map([r.user_id for r in rows])
 
-        below_rows = (
-            db.session.query(User.id.label("user_id"), User.reputation.label("score"))
-            .filter(User.reputation < my_score, *base_filter)
-            .order_by(desc("score"), asc(User.id))
-            .limit(n_range)
-            .all()
-        )
+    def entry_for(row):
+        u = umap.get(row.user_id)
+        return _build_entry(int(row.rank), u, pmap.get(row.user_id), int(row.score or 0), user_id, {}) if u else None
 
-    else:
-        start = _period_start(period)
-
-        def _period_nearby_query(score_filter_op, order_by_col, lim):
-            q = (
-                db.session.query(
-                    ReputationHistory.user_id.label("user_id"),
-                    func.sum(ReputationHistory.points_change).label("score"),
-                )
-                .join(User, User.id == ReputationHistory.user_id)
-                .filter(
-                    ReputationHistory.created_at >= start,
-                    User.status == "approved",
-                    User.id != user_id,
-                )
-            )
-            if department:
-                q = q.join(StudentProfile, StudentProfile.user_id == ReputationHistory.user_id)
-                q = q.filter(StudentProfile.department == department)
-            q = q.group_by(ReputationHistory.user_id).having(score_filter_op)
-            q = q.order_by(order_by_col, asc(ReputationHistory.user_id)).limit(lim)
-            return q.all()
-
-        score_col = func.sum(ReputationHistory.points_change)
-        above_rows = list(reversed(_period_nearby_query(score_col > my_score, asc(score_col), n_range)))
-        below_rows = _period_nearby_query(score_col < my_score, desc(score_col), n_range)
-
-    all_nearby_ids = [r.user_id for r in above_rows] + [r.user_id for r in below_rows]
-    nearby_umap = _user_map(all_nearby_ids)
-    nearby_pmap = _profile_map(all_nearby_ids)
-
-    rank_cursor = my_rank - len(above_rows)
-
-    for i, row in enumerate(above_rows):
-        u = nearby_umap.get(row.user_id)
-        p = nearby_pmap.get(row.user_id)
-        if u:
-            entries.append(_build_entry(rank_cursor + i, u, p, int(row.score or 0), user_id, {}))
-
-    if user:
-        entries.append(_build_entry(my_rank, user, profile, my_score, user_id, {}))
-
-    for i, row in enumerate(below_rows):
-        u = nearby_umap.get(row.user_id)
-        p = nearby_pmap.get(row.user_id)
-        if u:
-            entries.append(_build_entry(my_rank + i + 1, u, p, int(row.score or 0), user_id, {}))
-
-    return entries
+    above = [e for e in (entry_for(r) for r in rows if r.pos < anchor) if e]
+    below = [e for e in (entry_for(r) for r in rows if r.pos > anchor) if e]
+    me = _build_entry(standing["rank"], user, profile, standing["score"], user_id, {})
+    return above + [me] + below
 
 
 @cache_service.cached(
@@ -715,47 +713,20 @@ def _get_nearby_for_user(
 def _get_nearby_users_cached(
     user_id: int, period: str, department_key: str, n_range: int
 ) -> list:
-    """
-    Cached body of get_nearby_users, below. Requires `department_key` as an
-    already-normalized, non-None string — see get_nearby_users' docstring
-    and get_my_rank's identical split for why: @cached interpolates its
-    key template from the RAW arguments a caller passes, not from any
-    value the function body reassigns internally, so a parameter that
-    defaults to None and gets normalized inside the function body would
-    have the literal string "None" (not the normalized "_") baked into
-    the cache key on every real call, since real callers never pass the
-    normalized form explicitly.
+    """Cached body of get_nearby_users.
 
-    Cache-aside per plan §4.2's `/leaderboard/nearby` row: 60s TTL fallback
-    + hard invalidation on the viewing user's own reputation change. The
-    key is deliberately placed under the `sh:1:lb:rank:{user_id}:` prefix
-    (rather than a separate `lb:nearby:` prefix) specifically so it's
-    covered by reputation_service.py::award_reputation's existing
-    `cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")` call
-    (plan §5.1) with no separate invalidation hook needed here — the
-    pattern-delete wildcard already reaches this key.
-
-    Unlike the global leaderboard, this is entirely scoped to `user_id` —
-    every entry is built with current_user_id=user_id (real, not a
-    placeholder), so is_you is already correct regardless of who's asking
-    (there's no "other viewer" for this endpoint, it's inherently "my own
-    surrounding context"). connection_status is the one piece that could
-    go stale within the 60s TTL — an accepted trade-off, same category as
-    the global leaderboard's connection_status staleness.
+    department_key is the already-normalised (never None) department: the
+    @cached decorator builds its key from the raw call arguments, so the
+    public wrapper normalises before calling in. Scoped entirely to user_id,
+    so there is no per-viewer overlay; connection_status can lag by the 60 s
+    TTL, an accepted trade-off.
     """
     department = None if department_key == "_" else department_key
+    nearby = _compute_nearby(user_id, period, department, n_range)
 
-    n_range = min(n_range, MAX_NEARBY_RANGE)
-    my_score = _user_period_score(user_id, period)
-    my_rank = get_user_rank(user_id, period, department)
-
-    nearby = _get_nearby_for_user(user_id, my_score, my_rank, period, department_key, n_range)
-
-    nearby_ids = [e["user"]["id"] for e in nearby]
-    cmap = _connection_map(user_id, nearby_ids)
+    cmap = _connection_map(user_id, [e["user"]["id"] for e in nearby])
     for entry in nearby:
         entry["connection_status"] = cmap.get(entry["user"]["id"])
-
     return nearby
 
 
@@ -766,8 +737,7 @@ def get_nearby_users(
     """
     Users immediately surrounding `user_id` in the rankings, with
     connection-status annotated in (this is the route-facing entry point;
-    _get_nearby_for_user is also called internally by get_my_rank, which
-    calls _get_nearby_for_user directly and is NOT cached at that level).
+    get_my_rank builds its own, uncached window with _compute_nearby).
 
     Thin public entry point: normalizes `department` into the `_`-for-
     missing convention (plan §3.2) BEFORE calling the actual @cached
@@ -827,44 +797,37 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
     profile = StudentProfile.query.filter_by(user_id=user_id).first()
     dept = department or (profile.department if profile else None)
 
-    my_score = _user_period_score(user_id, period)
-    global_rank = get_user_rank(user_id, period, None)
-    dept_rank = get_user_rank(user_id, period, dept) if dept else None
+    global_standing = get_viewer_standing(user_id, period, None)
+    my_score = global_standing["score"]
+    global_rank = global_standing["rank"]
+    total_global = global_standing["total"] or 1
+    # Department rank is None when the requested department is not the user's.
+    dept_rank = get_viewer_standing(user_id, period, dept)["rank"] if dept else None
 
-    if period == "all_time":
-        total_global = db.session.query(func.count(User.id)).filter(User.status == "approved").scalar() or 1
-    else:
-        start = _period_start(period)
-        subq = (
-            db.session.query(ReputationHistory.user_id)
-            .join(User, User.id == ReputationHistory.user_id)
-            .filter(ReputationHistory.created_at >= start, User.status == "approved")
-            .group_by(ReputationHistory.user_id)
-            .subquery()
-        )
-        total_global = db.session.query(func.count()).select_from(subq).scalar() or 1
+    percentile = _percentile(total_global, global_rank)
 
-    percentile = round(((total_global - global_rank + 1) / total_global) * 100, 1)
-
+    # Rank movement compares against an all-time snapshot, so it is only
+    # meaningful for the all-time card (see _rank_change_applies).
     rank_change = None
-    try:
-        from models import LeaderboardSnapshot
-        week_ago = datetime.datetime.utcnow() - timedelta(days=6)
-        two_weeks_ago = datetime.datetime.utcnow() - timedelta(days=15)
-        snap = (
-            LeaderboardSnapshot.query
-            .filter(
-                LeaderboardSnapshot.user_id == user_id,
-                LeaderboardSnapshot.snapshot_type == "weekly",
-                LeaderboardSnapshot.created_at.between(two_weeks_ago, week_ago),
+    if _rank_change_applies(period, None) and global_rank:
+        try:
+            from models import LeaderboardSnapshot
+            week_ago = datetime.datetime.utcnow() - timedelta(days=6)
+            two_weeks_ago = datetime.datetime.utcnow() - timedelta(days=15)
+            snap = (
+                LeaderboardSnapshot.query
+                .filter(
+                    LeaderboardSnapshot.user_id == user_id,
+                    LeaderboardSnapshot.snapshot_type == "weekly",
+                    LeaderboardSnapshot.created_at.between(two_weeks_ago, week_ago),
+                )
+                .order_by(LeaderboardSnapshot.created_at.desc())
+                .first()
             )
-            .order_by(LeaderboardSnapshot.created_at.desc())
-            .first()
-        )
-        if snap and snap.global_rank:
-            rank_change = snap.global_rank - global_rank
-    except (ImportError, SQLAlchemyError):
-        pass
+            if snap and snap.global_rank:
+                rank_change = snap.global_rank - global_rank
+        except (ImportError, SQLAlchemyError):
+            pass
 
     level = rep_level(user.reputation)
     next_thresh = next((lvl["min"] for lvl in REPUTATION_LEVELS if lvl["min"] > user.reputation), None)
@@ -897,10 +860,7 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
         .scalar()
     ) or 0
 
-    nearby = _get_nearby_for_user(
-        user_id=user_id, my_score=my_score, my_rank=global_rank,
-        period=period, department_key="_", n_range=n_nearby,
-    )
+    nearby = _compute_nearby(user_id, period, None, n_nearby)
     nearby_user_ids = [u["user"]["id"] for u in nearby]
     nearby_cmap = _connection_map(user_id, nearby_user_ids)
     for entry in nearby:
