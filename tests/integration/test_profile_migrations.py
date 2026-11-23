@@ -19,6 +19,7 @@ RUNNER = ROOT / "tests/integration/migration_runner.py"
 # guardian_*}.
 BASE_REVISION = "c3a1d94e7b52"
 CLEANUP_REVISION = "a3c5d7e9f102"
+DROP_REVISION = "d4e6f8a0b213"
 
 
 def _run(db_file, action, revision):
@@ -160,3 +161,45 @@ class TestCleanupRevision:
         assert _load(ob[1]["subjects"]) == ["Math"]
         assert _load(ob[1]["strong_subjects"]) == []
         assert _load(ob[1]["help_subjects"]) == ["bA/b", "a"]
+
+
+class TestDropRevision:
+    def test_drops_the_unused_objects_and_keeps_everything_else(self, migrated_db):
+        _run(migrated_db, "upgrade", DROP_REVISION)
+
+        tables = {r["name"] for r in _rows(migrated_db, "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "profile_change_history" not in tables
+        assert _columns(migrated_db, "student_profiles") == {"id", "user_id", "department", "class_name"}
+        assert "study_schedule" not in _columns(migrated_db, "users")
+        assert {"id", "name", "bio", "skills", "privacy_settings"} <= _columns(migrated_db, "users")
+        indexes = {r["name"] for r in _rows(migrated_db, "SELECT name FROM sqlite_master WHERE type='index'")}
+        assert "idx_student_profiles_dept_user" in indexes
+        assert _rows(migrated_db, "SELECT user_id, department FROM student_profiles ORDER BY user_id")[0] == {
+            "user_id": 1, "department": "Biology"}
+        assert _rows(migrated_db, "SELECT version_num FROM alembic_version") == [{"version_num": DROP_REVISION}]
+
+    def test_downgrade_restores_the_structure(self, migrated_db):
+        _run(migrated_db, "upgrade", DROP_REVISION)
+        _run(migrated_db, "downgrade", CLEANUP_REVISION)
+
+        assert {"full_name", "registered_at"} <= _columns(migrated_db, "student_profiles")
+        assert "study_schedule" in _columns(migrated_db, "users")
+        tables = {r["name"] for r in _rows(migrated_db, "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "profile_change_history" in tables
+
+    def test_upgrade_is_safe_on_a_database_that_never_had_the_objects(self, tmp_path):
+        db_file = tmp_path / "new.db"
+        engine = sa.create_engine(f"sqlite:///{db_file}")
+        md = sa.MetaData()
+        sa.Table("users", md, sa.Column("id", sa.Integer, primary_key=True), sa.Column("name", sa.String(100)))
+        sa.Table("student_profiles", md, sa.Column("id", sa.Integer, primary_key=True),
+                 sa.Column("user_id", sa.Integer), sa.Column("department", sa.String(100)))
+        sa.Table("alembic_version", md, sa.Column("version_num", sa.String(32), nullable=False))
+        md.create_all(engine)
+        with engine.begin() as c:
+            c.execute(md.tables["alembic_version"].insert(), [{"version_num": BASE_REVISION}])
+        engine.dispose()
+
+        _run(db_file, "upgrade", DROP_REVISION)
+
+        assert _rows(db_file, "SELECT version_num FROM alembic_version") == [{"version_num": DROP_REVISION}]
