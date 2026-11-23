@@ -181,6 +181,11 @@ def _user_map(user_ids: list) -> dict:
     return {u.id: u for u in users}
 
 
+def _rank_change_applies(period: str, department: str | None) -> bool:
+    """Rank movement is only comparable on the all-time, all-department board."""
+    return period == "all_time" and not department
+
+
 def _old_rank_map(user_ids: list, snapshot_type: str = "weekly") -> dict:
     """
     Batch-fetch last week's global_rank for each user from LeaderboardSnapshot.
@@ -244,24 +249,26 @@ def _top_badge(user_id: int) -> dict | None:
 # SCORE QUERY HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _alltime_rows(department: str | None, limit: int, offset: int):
-    """Return (rows, total) for all-time leaderboard. Rows have .user_id/.score."""
-    q = (
-        db.session.query(User.id.label("user_id"), User.reputation.label("score"))
-        .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
-        .filter(User.status == "approved")
-    )
-    if department:
-        q = q.filter(StudentProfile.department == department)
+def _score_rows(period: str, department: str | None):
+    """Subquery of (user_id, score): everyone who is on the given board.
 
-    total = q.count()
-    rows = q.order_by(desc("score"), asc(User.id)).limit(limit).offset(offset).all()
-    return rows, total
-
-
-def _period_rows(period: str, department: str | None, limit: int, offset: int):
-    """Return (rows, total) for period-based leaderboard (aggregates ReputationHistory)."""
-    start = _period_start(period)
+    all_time: every approved user, scored by User.reputation.
+    period:   approved users with ledger activity in the window, scored by the
+              sum of points_change (so net-zero and negative scores are real
+              entries; users with no activity are simply absent).
+    """
+    if period == "all_time":
+        q = (
+            db.session.query(
+                User.id.label("user_id"),
+                func.coalesce(User.reputation, 0).label("score"),
+            )
+            .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+            .filter(User.status == "approved")
+        )
+        if department:
+            q = q.filter(StudentProfile.department == department)
+        return q.subquery()
 
     q = (
         db.session.query(
@@ -270,17 +277,49 @@ def _period_rows(period: str, department: str | None, limit: int, offset: int):
         )
         .join(User, User.id == ReputationHistory.user_id)
         .outerjoin(StudentProfile, StudentProfile.user_id == ReputationHistory.user_id)
-        .filter(ReputationHistory.created_at >= start, User.status == "approved")
+        .filter(ReputationHistory.created_at >= _period_start(period), User.status == "approved")
     )
     if department:
         q = q.filter(StudentProfile.department == department)
+    return q.group_by(ReputationHistory.user_id).subquery()
 
-    q = q.group_by(ReputationHistory.user_id)
 
-    subq = q.subquery()
-    total = db.session.query(func.count()).select_from(subq).scalar() or 0
-    rows = q.order_by(desc("score"), asc(ReputationHistory.user_id)).limit(limit).offset(offset).all()
-    return rows, total
+def _ranked_scores(period: str, department: str | None):
+    """The single source of truth for ranking.
+
+    Adds three window columns to _score_rows():
+      rank  - competition rank: tied users share a rank, the next rank skips
+              ("1, 2, 2, 4"). This is what every surface displays.
+      pos   - unique 1-based position, ordered (score DESC, user_id ASC). Used
+              only to slice pages and the "near you" window deterministically.
+      total - number of users on the board.
+    Because the list, pagination and nearby all read these same columns they
+    cannot disagree about a user's rank, even when scores tie.
+    """
+    base = _score_rows(period, department)
+    return db.session.query(
+        base.c.user_id,
+        base.c.score,
+        func.rank().over(order_by=base.c.score.desc()).label("rank"),
+        func.row_number().over(order_by=(base.c.score.desc(), base.c.user_id.asc())).label("pos"),
+        func.count().over().label("total"),
+    ).subquery()
+
+
+def _ranked_page(period: str, department: str | None, limit: int, offset: int):
+    """Return (rows, total); rows have .user_id/.score/.rank in board order."""
+    ranked = _ranked_scores(period, department)
+    rows = (
+        db.session.query(ranked.c.user_id, ranked.c.score, ranked.c.rank, ranked.c.total)
+        .filter(ranked.c.pos > offset, ranked.c.pos <= offset + limit)
+        .order_by(ranked.c.pos)
+        .all()
+    )
+    if rows:
+        return rows, int(rows[0].total)
+    # Page past the end: the window columns have no row to report a total on.
+    total = db.session.query(func.count()).select_from(ranked).scalar() or 0
+    return rows, int(total)
 
 
 def _user_period_score(user_id: int, period: str) -> int:
@@ -439,22 +478,22 @@ def _get_global_leaderboard_page(
     limit = min(limit, MAX_LIMIT)
     offset = (page - 1) * limit
 
-    if period == "all_time":
-        rows, total = _alltime_rows(department, limit, offset)
-    else:
-        rows, total = _period_rows(period, department, limit, offset)
+    rows, total = _ranked_page(period, department, limit, offset)
 
     user_ids = [r.user_id for r in rows]
     umap = _user_map(user_ids)
     pmap = _profile_map(user_ids)
-    old_ranks = _old_rank_map(user_ids)
+    # Snapshots hold ALL-TIME, department-agnostic ranks, so movement is only
+    # meaningful on that exact board. On weekly/monthly/daily or department
+    # boards the comparison would be between two different rankings.
+    old_ranks = _old_rank_map(user_ids) if _rank_change_applies(period, department) else {}
 
     entries = []
-    for i, row in enumerate(rows):
+    for row in rows:
         user = umap.get(row.user_id)
         if not user:
             continue
-        rank = offset + i + 1
+        rank = int(row.rank)
         old_rank = old_ranks.get(user.id)
         rank_change = (old_rank - rank) if old_rank else None
         # current_user_id=None -> is_you always False; conn_map={} -> every
