@@ -97,8 +97,8 @@ export const homeworkAPI = {
   /**
    * Offer to help with homework
    */
-  async offerHelp(assignmentId, message = '') {
-    return await api.post(`/homework/${assignmentId}/offer-help`, { message });
+  async offerHelp(assignmentId) {
+    return await api.post(`/homework/${assignmentId}/offer-help`, {});
   },
 
   /**
