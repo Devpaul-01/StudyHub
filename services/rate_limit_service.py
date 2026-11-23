@@ -41,6 +41,9 @@ down is worse than no rate limiter. This is achieved by:
 from __future__ import annotations
 
 import logging
+import re
+
+import jwt
 from flask import request, current_app, g, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -82,25 +85,51 @@ def ip_key() -> str:
     return ip
 
 
+def _user_id_from_request_token():
+    """The user id from a VERIFIED access token on this request, else None.
+
+    Flask-Limiter evaluates a route's limit in the decorator that wraps the
+    view, which sits outside @token_required / @role_required, so
+    g.current_user_id (set by those) does not exist yet when the key function
+    runs. The old implementation therefore always fell back to the IP, and
+    students behind one campus NAT shared a single budget.
+
+    This reads the same token (Authorization: Bearer, else the access_token
+    cookie) and verifies signature and expiry with jwt.decode: no database
+    access, and a forged or expired token yields None, so it can never be used
+    to pick someone else's bucket or to mint arbitrary keys.
+    """
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=["HS256"])
+    except Exception:
+        return None
+    user_id = payload.get("user_id")
+    return user_id if isinstance(user_id, int) else None
+
+
 def user_or_ip_key() -> str:
     """
-    Per-user key for authenticated routes, falling back to IP for routes
-    that happen not to have a user yet.
+    Per-user key for authenticated routes, falling back to IP when there is no
+    valid token (or no identity yet).
 
-    Reads g.current_user_id, which role_required()/token_required() (see
-    routes/student/helpers.py) sets immediately after decoding the JWT —
-    at zero extra cost, since the payload is already decoded at that point.
-    IP-based limiting is the wrong granularity once a user is known (a
-    shared campus/NAT network would otherwise rate-limit unrelated
-    students together), so this is used instead of ip_key() on every
-    @token_required-protected route below.
+    IP-based limiting is the wrong granularity once a user is known (a shared
+    campus/NAT network would otherwise rate-limit unrelated students
+    together), so authenticated routes use this instead of ip_key().
     """
-    user_id = getattr(g, "current_user_id", None)
+    user_id = _user_id_from_request_token() or getattr(g, "current_user_id", None)
     if user_id:
         key = f"user:{user_id}"
         logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")
         return key
-    
+
     ip = get_remote_address()
     logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {ip} (fallback to IP)")
     return ip
@@ -178,6 +207,11 @@ def _is_exempt_path(path: str) -> bool:
     return exempt
 
 
+def _redact_uri(uri: str) -> str:
+    """Hide credentials (redis://user:password@host) before logging a URI."""
+    return re.sub(r"://[^@/]*@", "://***@", uri)
+
+
 def init_app(app) -> Limiter:
     """
     Call once from create_app(), after app.config is fully populated.
@@ -188,8 +222,15 @@ def init_app(app) -> Limiter:
     storage_uri = app.config.get("RATE_LIMIT_STORAGE_URI", "memory://")
     is_redis = storage_uri.startswith("redis://") or storage_uri.startswith("rediss://")
 
-    logger.info(f"[RATE_LIMIT] ⚙️ Initializing with storage: {storage_uri}")
+    logger.info(f"[RATE_LIMIT] ⚙️ Initializing with storage: {_redact_uri(storage_uri)}")
     logger.info(f"[RATE_LIMIT] ⚙️ Storage type: {'Redis' if is_redis else 'Memory'}")
+    if not is_redis and not app.config.get("TESTING") and not app.debug:
+        # With memory storage every worker/instance keeps its own counters, so
+        # the effective limit is multiplied by the number of processes.
+        logger.warning(
+            "[RATE_LIMIT] Using per-process memory storage outside testing/debug: limits "
+            "are NOT shared across workers or instances. Set RATE_LIMIT_STORAGE_URI or REDIS_URL."
+        )
 
     app.config.setdefault("RATELIMIT_STORAGE_URI", storage_uri)
     if is_redis:
