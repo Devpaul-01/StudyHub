@@ -114,3 +114,74 @@ class TestRankChangeScope:
         data = _board(client, auth_headers(u), "period=all_time&department=CS")
 
         assert data["leaderboard"][0]["rank_change"] is None
+
+
+class TestNearbyAndMyRank:
+    def test_nearby_includes_tied_users_and_uses_list_ranks(
+        self, client, make_user, auth_headers, fakeredis_client
+    ):
+        top = make_user(reputation=100)
+        a, b, me = make_user(reputation=50), make_user(reputation=50), make_user(reputation=50)
+        low = make_user(reputation=10)
+
+        data = client.get("/student/leaderboard/nearby?period=all_time&range=5",
+                          headers=auth_headers(me)).get_json()["data"]
+
+        listed = {e["user"]["id"]: e["rank"] for e in _board(client, auth_headers(me))["leaderboard"]}
+        got = {e["user"]["id"]: e["rank"] for e in data["nearby"]}
+        assert set(got) == {top.id, a.id, b.id, me.id, low.id}      # tied users are not dropped
+        assert got == listed                                         # same ranks as the list
+        assert data["your_rank"] == listed[me.id] == 2
+
+    def test_nearby_window_is_ordered_and_bounded(
+        self, client, make_user, auth_headers, fakeredis_client
+    ):
+        users = [make_user(reputation=100 - i) for i in range(11)]   # scores 100..90
+        me = users[5]
+
+        data = client.get("/student/leaderboard/nearby?period=all_time&range=2",
+                          headers=auth_headers(me)).get_json()["data"]
+
+        assert [e["user"]["id"] for e in data["nearby"]] == [u.id for u in users[3:8]]
+        assert [e["is_you"] for e in data["nearby"]] == [False, False, True, False, False]
+
+    def test_nearby_for_a_viewer_with_no_weekly_activity_shows_where_they_would_sit(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        a, b, quiet = make_user(), make_user(), make_user()
+        _hist(db_session, a, 20); _hist(db_session, b, 10)
+
+        data = client.get("/student/leaderboard/nearby?period=weekly&range=3",
+                          headers=auth_headers(quiet)).get_json()["data"]
+
+        assert [e["user"]["id"] for e in data["nearby"]] == [a.id, b.id, quiet.id]
+        assert data["your_rank"] == 3
+
+    def test_viewer_outside_the_department_gets_no_rank_in_it(
+        self, client, make_user, make_student_profile, auth_headers, fakeredis_client
+    ):
+        mine, other = make_user(reputation=5, status="approved"), make_user(reputation=50, status="approved")
+        make_student_profile(mine, department="Physics")
+        make_student_profile(other, department="CS")
+
+        board = _board(client, auth_headers(mine), "period=all_time&department=CS")
+        nearby = client.get("/student/leaderboard/nearby?period=all_time&department=CS",
+                            headers=auth_headers(mine)).get_json()["data"]
+
+        assert [e["user"]["id"] for e in board["leaderboard"]] == [other.id]
+        assert board["your_position"]["rank"] is None
+        assert nearby["your_rank"] is None and nearby["nearby"] == []
+
+    def test_my_rank_card_agrees_with_the_list_and_scopes_movement(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        make_user(reputation=100)
+        make_user(reputation=50)
+        me = make_user(reputation=50)
+
+        card = client.get("/student/leaderboard/me?period=all_time", headers=auth_headers(me)).get_json()["data"]
+        weekly = client.get("/student/leaderboard/me?period=weekly", headers=auth_headers(me)).get_json()["data"]
+
+        assert card["rank"]["global"] == 2
+        assert [e["rank"] for e in card["nearby_users"]] == [1, 2, 2]
+        assert weekly["rank"]["change"] is None
