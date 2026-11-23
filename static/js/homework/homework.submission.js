@@ -373,6 +373,13 @@ export function renderSubmissionDetailRequester(submission) {
 
       <div class="hw-form-group">
         <label class="hw-form-checkbox">
+          <input type="checkbox" id="hw-is-helpful" checked />
+          <span>This solution was helpful</span>
+        </label>
+      </div>
+
+      <div class="hw-form-group">
+        <label class="hw-form-checkbox">
           <input type="checkbox" id="hw-mark-complete" checked />
           <span>Mark this help request as completed</span>
         </label>
@@ -551,6 +558,8 @@ export async function handleSubmitSolution(event, submissionId) {
   const submitBtn = form.querySelector('button[data-action="submit-feedback-form"]');
   const feedbackText = form.querySelector('#hw-feedback-text').value.trim();
   const markComplete = form.querySelector('#hw-mark-complete').checked;
+  // Explicit: the server no longer assumes "helpful" (audit F-06)
+  const isHelpful = form.querySelector('#hw-is-helpful')?.checked ?? false;
   const reactionInput = form.querySelector('#hw-selected-reaction');
   const reactionType = reactionInput?.value || null;
 
@@ -566,6 +575,7 @@ export async function handleSubmitSolution(event, submissionId) {
     const response = await homeworkAPI.giveFeedback(submissionId, {
       feedback_text: feedbackText,
       mark_complete: markComplete,
+      is_helpful: isHelpful,
       ...(reactionType && { reaction_type: reactionType })
     });
 
