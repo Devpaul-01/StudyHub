@@ -6,18 +6,10 @@ previously untested: get_my_help_requests, get_homework_im_helping_with,
 get_submission_details, submit_solution, give_feedback,
 cancel_help_request, get_homework_stats, get_homework_chart_data.
 
-IMPORTANT: this batch uncovered a serious, repo-wide bug (see the xfail
-tests in TestSubmitSolution/TestGiveFeedback below): HomeworkSubmission
-.status is a strict SQLAlchemy Enum restricted to
-HomeworkSubmissionStatus's five values (pending, accepted, completed,
-declined, cancelled), but submit_solution()/give_feedback() in this very
-file set it to "submitted" / "reviewed" -- neither of which is a valid
-enum member. Every real call to submit_solution() therefore raises a
-LookupError at commit time (swallowed by the bare except -> a generic
-400), which means give_feedback()'s own `if submission.status !=
-"submitted"` check can never pass either, since no submission can ever
-actually reach that status. The entire "helper submits a solution ->
-requester gives feedback" pipeline is non-functional in production.
+The status lifecycle exercised here is the declarative table in
+services/homework_lifecycle.py (pending/accepted -> submitted -> reviewed ->
+completed, with cancelled/declined terminal). The full state x action matrix
+and the concurrency/atomicity guarantees live in test_homework_lifecycle.py.
 """
 
 import datetime
