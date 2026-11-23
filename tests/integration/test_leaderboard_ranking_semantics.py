@@ -185,3 +185,33 @@ class TestNearbyAndMyRank:
         assert card["rank"]["global"] == 2
         assert [e["rank"] for e in card["nearby_users"]] == [1, 2, 2]
         assert weekly["rank"]["change"] is None
+
+
+class TestConnectionsBoard:
+    def test_zero_score_friend_ranks_above_a_negative_score_friend(
+        self, client, make_user, make_connection, auth_headers, fakeredis_client, db_session
+    ):
+        me, neg, zero = make_user(), make_user(), make_user()
+        make_connection(me, neg, status="accepted")
+        make_connection(me, zero, status="accepted")
+        _hist(db_session, me, 5)
+        _hist(db_session, neg, -5, action="content_reported")
+
+        data = client.get("/student/leaderboard/connections?period=weekly",
+                          headers=auth_headers(me)).get_json()["data"]
+
+        assert [(e["user"]["id"], e["score"], e["rank"]) for e in data["leaderboard"]] == [
+            (me.id, 5, 1), (zero.id, 0, 2), (neg.id, -5, 3)]
+        assert data["your_rank"] == 1
+
+    def test_tied_friends_share_a_rank(
+        self, client, make_user, make_connection, auth_headers, fakeredis_client
+    ):
+        me, a, b = make_user(reputation=50), make_user(reputation=50), make_user(reputation=10)
+        make_connection(me, a, status="accepted")
+        make_connection(me, b, status="accepted")
+
+        data = client.get("/student/leaderboard/connections?period=all_time",
+                          headers=auth_headers(me)).get_json()["data"]
+
+        assert [e["rank"] for e in data["leaderboard"]] == [1, 1, 3]

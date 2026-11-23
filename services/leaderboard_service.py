@@ -932,14 +932,11 @@ def get_my_rank(user_id: int, period: str = "weekly", department: str | None = N
 def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
     """Leaderboard scoped to a user's accepted connections (+ self).
 
-    Cache-aside per plan §4.2's `/leaderboard/connections` row: TTL
-    fallback only, 60s. Genuinely per-viewer (depends on the specific
-    connection graph, not a shared page like the global leaderboard), and
-    deliberately NOT hard-invalidated: a per-viewer key makes the
-    invalidation fan-out unbounded (any of this user's connections'
-    reputation changes, or a new connection being accepted, would need to
-    invalidate this exact cache entry — plan §4.2's own reasoning for why
-    this specific cache is TTL-only by design, not an oversight).
+    Cache-aside per plan §4.2's `/leaderboard/connections` row: 60s TTL.
+    Genuinely per-viewer (depends on the specific connection graph). The
+    viewer's own reputation changes retire it through their cache version;
+    changes to *friends'* scores or the graph itself are deliberately not
+    fanned out (unbounded invalidation) and lag by the TTL.
     """
     conns = Connection.query.filter(
         or_(
@@ -954,49 +951,42 @@ def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
     friend_ids.add(user_id)
     friend_ids_list = list(friend_ids)
 
+    # Score every approved member of the circle, including those with no
+    # activity in the window (score 0), BEFORE ordering. Zero-score members
+    # used to be appended after the sorted rows, which ranked a friend on 0
+    # below a friend on -5.
+    approved = {
+        u.id: u
+        for u in User.query.filter(User.id.in_(friend_ids_list), User.status == "approved").all()
+    }
     if period == "all_time":
-        rows = (
-            db.session.query(User.id.label("user_id"), User.reputation.label("score"))
-            .filter(User.id.in_(friend_ids_list), User.status == "approved")
-            .order_by(desc("score"), asc(User.id))
-            .all()
-        )
+        scores = {uid: int(u.reputation or 0) for uid, u in approved.items()}
     else:
-        start = _period_start(period)
-        rows = (
+        scores = {uid: 0 for uid in approved}
+        for row in (
             db.session.query(
-                ReputationHistory.user_id.label("user_id"),
-                func.sum(ReputationHistory.points_change).label("score"),
+                ReputationHistory.user_id, func.sum(ReputationHistory.points_change).label("score")
             )
-            .join(User, User.id == ReputationHistory.user_id)
             .filter(
-                ReputationHistory.user_id.in_(friend_ids_list),
-                ReputationHistory.created_at >= start,
-                User.status == "approved",
+                ReputationHistory.user_id.in_(list(approved)),
+                ReputationHistory.created_at >= _period_start(period),
             )
             .group_by(ReputationHistory.user_id)
-            .order_by(desc("score"), asc(ReputationHistory.user_id))
             .all()
-        )
+        ):
+            scores[row.user_id] = int(row.score or 0)
 
-    found_ids = {r.user_id for r in rows}
-    missing = [uid for uid in friend_ids_list if uid not in found_ids]
-    zero_users = User.query.filter(User.id.in_(missing), User.status == "approved").all()
-
-    umap = _user_map([r.user_id for r in rows])
-    pmap = _profile_map(friend_ids_list)
-    cmap = _connection_map(user_id, friend_ids_list)
+    ordered = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    pmap = _profile_map(list(approved))
+    cmap = _connection_map(user_id, list(approved))
 
     entries = []
-    for i, row in enumerate(rows):
-        user = umap.get(row.user_id)
-        if not user:
-            continue
-        entries.append(_build_entry(i + 1, user, pmap.get(user.id), int(row.score or 0), user_id, cmap))
-
-    base_rank = len(entries) + 1
-    for j, user in enumerate(zero_users):
-        entries.append(_build_entry(base_rank + j, user, pmap.get(user.id), 0, user_id, cmap))
+    rank = 0
+    previous_score = None
+    for position, (uid, score) in enumerate(ordered, start=1):
+        if score != previous_score:      # competition ranking: ties share a rank
+            rank, previous_score = position, score
+        entries.append(_build_entry(rank, approved[uid], pmap.get(uid), score, user_id, cmap))
 
     your_entry = next((e for e in entries if e["is_you"]), None)
 
