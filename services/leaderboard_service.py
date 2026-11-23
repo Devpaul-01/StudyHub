@@ -986,7 +986,7 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
     below overlays real per-viewer values after the cache lookup.
     """
     department = None if department_key == "_" else department_key
-    limit = min(limit, 30)
+    limit = clamp(limit, 1, MAX_RISING_LIMIT)
     week_ago = datetime.datetime.utcnow() - timedelta(days=7)
 
     q = (
@@ -994,7 +994,7 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
             ReputationHistory.user_id.label("user_id"),
             func.sum(ReputationHistory.points_change).label("weekly_gain"),
             User.username, User.name, User.avatar, User.reputation,
-            User.reputation_level, User.login_streak, User.help_streak_current,
+            User.login_streak, User.help_streak_current,
             StudentProfile.department, StudentProfile.class_name,
         )
         .join(User, User.id == ReputationHistory.user_id)
@@ -1011,23 +1011,26 @@ def _get_rising_stars_page(limit: int, department_key: str) -> dict:
     rows = (
         q.group_by(
             ReputationHistory.user_id, User.username, User.name, User.avatar,
-            User.reputation, User.reputation_level, User.login_streak,
+            User.reputation, User.login_streak,
             User.help_streak_current, StudentProfile.department, StudentProfile.class_name,
         )
-        .order_by(desc("weekly_gain"))
+        .order_by(desc("weekly_gain"), asc(ReputationHistory.user_id))
         .limit(limit)
         .all()
     )
 
     level_cache = {}
     data = []
+    rank, previous_gain = 0, None
     for idx, row in enumerate(rows, start=1):
+        if row.weekly_gain != previous_gain:      # ties share a rank, as on every board
+            rank, previous_gain = idx, row.weekly_gain
         rep = row.reputation or 0
         level = level_cache.get(rep) or rep_level(rep)
         level_cache[rep] = level
 
         data.append({
-            "rank": idx,
+            "rank": rank,
             "weekly_gain": int(row.weekly_gain or 0),
             "is_you": False,  # placeholder — overwritten per-viewer below
             "connection_status": None,  # placeholder — overwritten per-viewer below
@@ -1090,6 +1093,11 @@ def get_leaderboard_stats() -> dict:
     platform could in principle move one of these aggregates), so this
     relies on its TTL alone, same reasoning as get_leaderboard_stats'
     sibling platform-wide aggregates elsewhere in this module.
+
+    top_department is the department with the largest TOTAL reputation, so a
+    large department can outrank a smaller, higher-scoring one; the response
+    carries member_count so clients can show that context. Ties on every
+    "top" figure break by id/name so the answer does not flip between calls.
     """
     week_ago = datetime.datetime.utcnow() - timedelta(days=7)
 
@@ -1102,9 +1110,16 @@ def get_leaderboard_stats() -> dict:
         .scalar()
     ) or 0
 
+    # Approved users only, like every other figure here (previously this
+    # alone counted points earned by unapproved accounts).
     week_rep = (
         db.session.query(func.sum(ReputationHistory.points_change))
-        .filter(ReputationHistory.created_at >= week_ago, ReputationHistory.points_change > 0)
+        .join(User, User.id == ReputationHistory.user_id)
+        .filter(
+            ReputationHistory.created_at >= week_ago,
+            ReputationHistory.points_change > 0,
+            User.status == "approved",
+        )
         .scalar()
     ) or 0
 
@@ -1120,7 +1135,7 @@ def get_leaderboard_stats() -> dict:
         .join(User, User.id == StudentProfile.user_id)
         .filter(User.status == "approved", StudentProfile.department.isnot(None))
         .group_by(StudentProfile.department)
-        .order_by(desc("dept_rep"))
+        .order_by(desc("dept_rep"), asc(StudentProfile.department))
         .first()
     )
     top_department = None
@@ -1143,7 +1158,7 @@ def get_leaderboard_stats() -> dict:
             User.status == "approved",
         )
         .group_by(ReputationHistory.user_id)
-        .order_by(desc("gain"))
+        .order_by(desc("gain"), asc(ReputationHistory.user_id))
         .first()
     )
     top_gainer = None
@@ -1156,7 +1171,7 @@ def get_leaderboard_stats() -> dict:
             }
 
     top_all_time = (
-        db.session.query(User).filter(User.status == "approved").order_by(desc(User.reputation)).first()
+        db.session.query(User).filter(User.status == "approved").order_by(desc(User.reputation), asc(User.id)).first()
     )
     top_scorer = None
     if top_all_time:

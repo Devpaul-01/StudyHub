@@ -215,3 +215,27 @@ class TestConnectionsBoard:
                           headers=auth_headers(me)).get_json()["data"]
 
         assert [e["rank"] for e in data["leaderboard"]] == [1, 1, 3]
+
+
+class TestRisingAndStats:
+    def test_rising_stars_ties_share_a_rank_and_order_is_deterministic(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        a, b, c = make_user(), make_user(), make_user()
+        _hist(db_session, a, 10); _hist(db_session, b, 10); _hist(db_session, c, 4)
+
+        data = client.get("/student/leaderboard/rising", headers=auth_headers(a)).get_json()["data"]
+
+        assert [(r["user"]["id"], r["rank"], r["weekly_gain"]) for r in data["rising_stars"]] == [
+            (a.id, 1, 10), (b.id, 1, 10), (c.id, 3, 4)]
+
+    def test_stats_week_rep_counts_only_approved_users(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        viewer = make_user(status="approved")
+        pending = make_user(status="pending")
+        _hist(db_session, viewer, 10); _hist(db_session, pending, 500)
+
+        data = client.get("/student/leaderboard/stats", headers=auth_headers(viewer)).get_json()["data"]
+
+        assert data["week_rep_earned"] == 10
