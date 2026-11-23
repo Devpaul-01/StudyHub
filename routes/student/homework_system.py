@@ -26,7 +26,7 @@ from __future__ import annotations
 import datetime as _dt
 
 from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import or_, and_, func, desc
+from sqlalchemy import or_, and_, func, desc, case
 from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta
 
@@ -289,7 +289,7 @@ def get_assignment_helpers(current_user, assignment_id):
             HomeworkSubmission.requester_id == current_user.id,
             lifecycle.not_cancelled(),
         ).order_by(
-            db.case(
+            case(
                 (HomeworkSubmission.status == 'completed', 1),
                 (HomeworkSubmission.status == 'reviewed', 2),
                 (HomeworkSubmission.status == 'submitted', 3),
@@ -724,8 +724,8 @@ def get_my_assignments(current_user):
         stat_rows = db.session.query(
             Assignment.status,
             db.func.count(Assignment.id),
-            db.func.sum(db.case((Assignment.due_date < now, 1), else_=0)),
-            db.func.sum(db.case((Assignment.is_shared_for_help.is_(True), 1), else_=0)),
+            db.func.sum(case((Assignment.due_date < now, 1), else_=0)),
+            db.func.sum(case((Assignment.is_shared_for_help.is_(True), 1), else_=0)),
         ).filter(Assignment.user_id == current_user.id).group_by(Assignment.status).all()
         by_status = {row[0]: row for row in stat_rows}
 
@@ -1729,41 +1729,68 @@ def cancel_help_request(current_user, submission_id):
 def get_homework_stats(current_user):
     """Get comprehensive homework statistics for current user."""
     try:
-        my_assignments = Assignment.query.filter_by(user_id=current_user.id).all()
-        help_received = HomeworkSubmission.query.filter(
-            HomeworkSubmission.requester_id == current_user.id, lifecycle.not_cancelled()
-        ).all()
-        help_given = HomeworkSubmission.query.filter(
-            HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled()
-        ).all()
+        now = datetime.utcnow()
+
+        # One grouped query per table instead of loading every row (F-16).
+        status_counts = dict(
+            db.session.query(Assignment.status, func.count(Assignment.id))
+            .filter(Assignment.user_id == current_user.id)
+            .group_by(Assignment.status)
+            .all()
+        )
+        shared_count, overdue_count = db.session.query(
+            func.coalesce(func.sum(case((Assignment.is_shared_for_help.is_(True), 1), else_=0)), 0),
+            func.coalesce(func.sum(case(
+                ((and_(Assignment.due_date < now, Assignment.status != "completed")), 1),
+                else_=0,
+            )), 0),
+        ).filter(Assignment.user_id == current_user.id).one()
+
+        def _submission_counts(role_column):
+            rows = (
+                db.session.query(HomeworkSubmission.status, func.count(HomeworkSubmission.id))
+                .filter(role_column == current_user.id, lifecycle.not_cancelled())
+                .group_by(HomeworkSubmission.status)
+                .all()
+            )
+            by_status = dict(rows)
+            return {
+                "total": sum(by_status.values()),
+                "pending": by_status.get("pending", 0),
+                "submitted": by_status.get("submitted", 0),
+                "reviewed": by_status.get("reviewed", 0),
+                "completed": by_status.get("completed", 0),
+            }
+
+        my_subjects = [
+            row[0] for row in db.session.query(Assignment.subject)
+            .filter(Assignment.user_id == current_user.id, Assignment.subject.isnot(None), Assignment.subject != "")
+            .distinct().all()
+        ]
+        helping_subjects = [
+            row[0] for row in db.session.query(HomeworkSubmission.subject)
+            .filter(
+                HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled(),
+                HomeworkSubmission.subject.isnot(None), HomeworkSubmission.subject != "",
+            )
+            .distinct().all()
+        ]
 
         stats = {
             "my_assignments": {
-                "total": len(my_assignments),
-                "not_started": len([a for a in my_assignments if a.status == "not_started"]),
-                "in_progress": len([a for a in my_assignments if a.status == "in_progress"]),
-                "completed": len([a for a in my_assignments if a.status == "completed"]),
-                "shared_for_help": len([a for a in my_assignments if a.is_shared_for_help]),
-                "overdue": len([a for a in my_assignments if (a.due_date - datetime.utcnow()).total_seconds() < 0 and a.status != "completed"])
+                "total": sum(status_counts.values()),
+                "not_started": status_counts.get("not_started", 0),
+                "in_progress": status_counts.get("in_progress", 0),
+                "completed": status_counts.get("completed", 0),
+                "shared_for_help": int(shared_count),
+                "overdue": int(overdue_count),
             },
-            "help_received": {
-                "total": len(help_received),
-                "pending": len([h for h in help_received if h.status == "pending"]),
-                "submitted": len([h for h in help_received if h.status == "submitted"]),
-                "reviewed": len([h for h in help_received if h.status == "reviewed"]),
-                "completed": len([h for h in help_received if h.status == "completed"])
-            },
-            "help_given": {
-                "total": len(help_given),
-                "pending": len([h for h in help_given if h.status == "pending"]),
-                "submitted": len([h for h in help_given if h.status == "submitted"]),
-                "reviewed": len([h for h in help_given if h.status == "reviewed"]),
-                "completed": len([h for h in help_given if h.status == "completed"])
-            },
+            "help_received": _submission_counts(HomeworkSubmission.requester_id),
+            "help_given": _submission_counts(HomeworkSubmission.helper_id),
             "subjects": {
-                "my_subjects": list(set([a.subject for a in my_assignments if a.subject])),
-                "helping_with": list(set([h.subject for h in help_given if h.subject]))
-            }
+                "my_subjects": my_subjects,
+                "helping_with": helping_subjects,
+            },
         }
 
         return jsonify({"status": "success", "data": stats})
@@ -1792,72 +1819,81 @@ def get_homework_chart_data(current_user):
             day_labels.append((day, label))
             daily_map[day] = {"day": label, "helps_given": 0, "assignments_created": 0}
 
-        recent_helps = HomeworkSubmission.query.filter(
-            HomeworkSubmission.helper_id == current_user.id,
-            HomeworkSubmission.created_at >= seven_days_ago
-        ).all()
-        for h in recent_helps:
-            day = h.created_at.date()
-            if day in daily_map:
-                daily_map[day]["helps_given"] += 1
-
-        recent_assignments = Assignment.query.filter(
-            Assignment.user_id == current_user.id,
-            Assignment.created_at >= seven_days_ago
-        ).all()
-        for a in recent_assignments:
-            day = a.created_at.date()
-            if day in daily_map:
-                daily_map[day]["assignments_created"] += 1
+        # Per-day counts via GROUP BY on the date, only for the 7-day window.
+        helps_by_day = dict(
+            db.session.query(func.date(HomeworkSubmission.created_at), func.count(HomeworkSubmission.id))
+            .filter(
+                HomeworkSubmission.helper_id == current_user.id,
+                HomeworkSubmission.created_at >= seven_days_ago,
+            )
+            .group_by(func.date(HomeworkSubmission.created_at)).all()
+        )
+        created_by_day = dict(
+            db.session.query(func.date(Assignment.created_at), func.count(Assignment.id))
+            .filter(
+                Assignment.user_id == current_user.id,
+                Assignment.created_at >= seven_days_ago,
+            )
+            .group_by(func.date(Assignment.created_at)).all()
+        )
+        for day in daily_map:
+            key = day.isoformat()
+            daily_map[day]["helps_given"] = int(helps_by_day.get(key, helps_by_day.get(day, 0)))
+            daily_map[day]["assignments_created"] = int(created_by_day.get(key, created_by_day.get(day, 0)))
 
         daily_activity = [daily_map[day] for day, _ in day_labels]
 
-        all_help_given = HomeworkSubmission.query.filter(
-            HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled()
-        ).all()
+        helper_scope = (HomeworkSubmission.helper_id == current_user.id, lifecycle.not_cancelled())
 
-        subject_map = {}
-        for h in all_help_given:
-            subject = h.subject or "General"
-            if subject not in subject_map:
-                subject_map[subject] = {"total": 0, "completed": 0}
-            subject_map[subject]["total"] += 1
-            if h.status == "completed":
-                subject_map[subject]["completed"] += 1
-
+        subject_rows = (
+            db.session.query(
+                func.coalesce(HomeworkSubmission.subject, "General"),
+                func.count(HomeworkSubmission.id),
+                func.coalesce(func.sum(case((HomeworkSubmission.status == "completed", 1), else_=0)), 0),
+            )
+            .filter(*helper_scope)
+            .group_by(func.coalesce(HomeworkSubmission.subject, "General"))
+            .all()
+        )
         subject_completion = sorted([
             {
                 "subject": subj,
-                "total": counts["total"],
-                "completed": counts["completed"],
-                "rate": round((counts["completed"] / counts["total"]) * 100) if counts["total"] > 0 else 0
+                "total": int(total),
+                "completed": int(completed),
+                "rate": round((int(completed) / int(total)) * 100) if total else 0,
             }
-            for subj, counts in subject_map.items()
+            for subj, total, completed in subject_rows
         ], key=lambda x: x["total"], reverse=True)[:6]
 
-        reactions_query = HomeworkSubmission.query.filter(
-            HomeworkSubmission.helper_id == current_user.id,
-            HomeworkSubmission.reaction_type.isnot(None)
-        ).all()
-
-        reaction_counts = {label: 0 for label in REACTION_LABELS.values()}
-        for h in reactions_query:
-            # tolerate the legacy 'mind_blown' key written before F-18
-            label = REACTION_LABELS.get(
-                "mindblown" if h.reaction_type == "mind_blown" else h.reaction_type
+        reaction_rows = (
+            db.session.query(HomeworkSubmission.reaction_type, func.count(HomeworkSubmission.id))
+            .filter(
+                HomeworkSubmission.helper_id == current_user.id,
+                HomeworkSubmission.reaction_type.isnot(None),
             )
+            .group_by(HomeworkSubmission.reaction_type).all()
+        )
+        reaction_counts = {label: 0 for label in REACTION_LABELS.values()}
+        for reaction_type, count in reaction_rows:
+            # tolerate the legacy 'mind_blown' key written before F-18
+            label = REACTION_LABELS.get("mindblown" if reaction_type == "mind_blown" else reaction_type)
             if label:
-                reaction_counts[label] += 1
+                reaction_counts[label] += int(count)
 
         reactions_received = [
             {"reaction": reaction, "count": count}
             for reaction, count in reaction_counts.items()
         ]
 
-        timed_submissions = [
-            h for h in all_help_given
-            if h.response_time_seconds and h.response_time_seconds > 0
-        ]
+        total_timed, avg_seconds, fastest_seconds = (
+            db.session.query(
+                func.count(HomeworkSubmission.id),
+                func.avg(HomeworkSubmission.response_time_seconds),
+                func.min(HomeworkSubmission.response_time_seconds),
+            )
+            .filter(*helper_scope, HomeworkSubmission.response_time_seconds > 0)
+            .one()
+        )
 
         def fmt_duration(seconds):
             if seconds < 3600:
@@ -1868,13 +1904,11 @@ def get_homework_chart_data(current_user):
                 return f"{round(seconds / 86400, 1)}d"
 
         response_time = None
-        if timed_submissions:
-            avg_seconds = sum(h.response_time_seconds for h in timed_submissions) / len(timed_submissions)
-            fastest_seconds = min(h.response_time_seconds for h in timed_submissions)
+        if total_timed:
             response_time = {
-                "average": fmt_duration(avg_seconds),
+                "average": fmt_duration(float(avg_seconds)),
                 "fastest": fmt_duration(fastest_seconds),
-                "total_timed": len(timed_submissions)
+                "total_timed": int(total_timed),
             }
 
         return jsonify({
