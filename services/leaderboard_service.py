@@ -1322,6 +1322,41 @@ def get_rank_history(user_id: int, weeks: int = 8) -> dict:
 # recommendation in Document 1 §6.3.
 # ─────────────────────────────────────────────────────────────────────────────
 
+SNAPSHOT_LOCK_TTL_SECONDS = 600
+
+
+class SnapshotBusyError(RuntimeError):
+    """Another worker or the scheduler is already running this snapshot."""
+
+
+class SnapshotUnavailableError(RuntimeError):
+    """The lock could not be checked (Redis unreachable), so nothing was run."""
+
+
+def snapshot_job_id(snapshot_type: str) -> str:
+    return f"{snapshot_type}_leaderboard_snapshot"
+
+
+def snapshot_lock_key(snapshot_type: str) -> str:
+    """The lock scheduler.py takes for the cron job of the same name. The admin
+    trigger takes the identical key so a manual run and a scheduled run (or
+    two manual runs) can never overlap."""
+    return f"sh:1:sched:lock:{snapshot_job_id(snapshot_type)}"
+
+
+def take_snapshot_exclusive(snapshot_type: str = "weekly") -> dict:
+    """take_snapshot() under the same distributed lock the scheduler uses."""
+    from services.distributed_lock import DistributedLock
+
+    lock = DistributedLock(snapshot_lock_key(snapshot_type), ttl_seconds=SNAPSHOT_LOCK_TTL_SECONDS)
+    with lock:
+        if not lock.acquired:
+            if lock.failure_reason == "already_held":
+                raise SnapshotBusyError(f"{snapshot_type} snapshot already in progress")
+            raise SnapshotUnavailableError("could not check the snapshot lock")
+        return take_snapshot(snapshot_type)
+
+
 _SNAPSHOT_CHUNK = 1000
 
 

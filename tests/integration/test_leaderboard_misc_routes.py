@@ -114,7 +114,7 @@ class TestCreateSnapshot:
         assert resp.status_code == 403
 
     def test_admin_can_create_weekly_snapshot(
-        self, client, make_user, auth_headers, csrf_headers
+        self, client, make_user, auth_headers, csrf_headers, fakeredis_client
     ):
         admin = make_user(role="admin", reputation=50, status="approved")
 
@@ -128,6 +128,51 @@ class TestCreateSnapshot:
         body = resp.get_json()
         assert body["status"] == "success"
         assert "created" in body["data"]
+
+    def test_snapshot_is_rejected_while_the_scheduler_holds_the_lock(
+        self, client, make_user, auth_headers, csrf_headers, fakeredis_client
+    ):
+        from models import LeaderboardSnapshot
+        from services import leaderboard_service
+        admin = make_user(role="admin", reputation=50, status="approved")
+        fakeredis_client.set(leaderboard_service.snapshot_lock_key("weekly"), "scheduler-instance")
+
+        resp = client.post(
+            "/student/leaderboard/snapshot", json={"type": "weekly"},
+            headers={**auth_headers(admin), **csrf_headers(client)},
+        )
+
+        assert resp.status_code == 409
+        assert LeaderboardSnapshot.query.count() == 0
+
+    def test_snapshot_fails_closed_when_the_lock_cannot_be_checked(
+        self, client, make_user, auth_headers, csrf_headers, monkeypatch
+    ):
+        from services import distributed_lock
+        admin = make_user(role="admin", reputation=50, status="approved")
+
+        class Down:
+            def set(self, *a, **k):
+                raise ConnectionError("redis down")
+
+        monkeypatch.setattr(distributed_lock, "redis_client", Down())
+
+        resp = client.post(
+            "/student/leaderboard/snapshot", json={"type": "weekly"},
+            headers={**auth_headers(admin), **csrf_headers(client)},
+        )
+
+        assert resp.status_code == 503
+
+    def test_admin_run_and_cron_share_one_lock_key(self):
+        import scheduler
+        from services import leaderboard_service
+        assert leaderboard_service.snapshot_lock_key("weekly") == "sh:1:sched:lock:weekly_leaderboard_snapshot"
+        assert leaderboard_service.snapshot_lock_key("monthly") == "sh:1:sched:lock:monthly_leaderboard_snapshot"
+        # the scheduler registers its jobs under the ids the lock key is built from
+        src = open(scheduler.__file__).read()
+        assert f'id="{leaderboard_service.snapshot_job_id("weekly")}"' in src
+        assert f'id="{leaderboard_service.snapshot_job_id("monthly")}"' in src
 
 
 # ============================================================================

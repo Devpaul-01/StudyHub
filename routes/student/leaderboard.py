@@ -348,7 +348,12 @@ def create_snapshot(current_user):
         if snapshot_type not in {"weekly", "monthly"}:
             return error_response("Invalid snapshot type. Use: weekly, monthly", 400)
 
-        result = leaderboard_service.take_snapshot(snapshot_type)
+        try:
+            result = leaderboard_service.take_snapshot_exclusive(snapshot_type)
+        except leaderboard_service.SnapshotBusyError:
+            return error_response("A snapshot is already running. Try again shortly.", 409)
+        except leaderboard_service.SnapshotUnavailableError:
+            return error_response("Snapshot lock unavailable (cache unreachable). Try again shortly.", 503)
 
         return success_response(
             f"Snapshot created ({snapshot_type})",
