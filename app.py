@@ -402,6 +402,39 @@ def create_app(config_class=None):
         provider_manager.warm_model_discovery()
 
     # ========================================================================
+    # Badge definitions
+    #
+    # The badges table is data, not schema: nothing else ever inserted the
+    # BADGE_DEFINITIONS rows, so a fresh deployment had no badges and every
+    # award silently did nothing. seed_badges() is an idempotent,
+    # race-tolerant upsert (several gunicorn workers may boot at once), so
+    # it runs on every non-test startup; `flask seed-badges` runs it on
+    # demand (e.g. after editing BADGE_DEFINITIONS). Set
+    # SEED_BADGES_ON_STARTUP=false to opt out of the startup run.
+    # ========================================================================
+    @app.cli.command("seed-badges")
+    def seed_badges_command():
+        """Create/refresh the badge definitions (idempotent)."""
+        from services.badge_service import seed_badges
+        counts = seed_badges()
+        print(f"Badges seeded: {counts}")
+
+    if (
+        not app.config.get('TESTING', False)
+        and os.environ.get("SEED_BADGES_ON_STARTUP", "true").lower() not in ("0", "false", "no")
+    ):
+        with app.app_context():
+            try:
+                from services.badge_service import seed_badges
+                seed_badges()
+            except Exception:
+                # Never block boot on this (e.g. tables not created yet).
+                db.session.rollback()
+                app.logger.warning(
+                    "Badge seeding skipped at startup -- run `flask seed-badges` "
+                    "once the database schema exists", exc_info=True)
+
+    # ========================================================================
     # Routes
     # ========================================================================
     
