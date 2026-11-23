@@ -41,7 +41,7 @@ from routes.student.helpers import (
 from services.online_status_service import get_user_online_status, get_online_status_batch
 from sqlalchemy.exc import IntegrityError
 from services import homework_lifecycle as lifecycle
-from services import homework_service, notification_service
+from services import homework_service, idempotency_service as idempotency, notification_service
 from services.homework_validation import (
     HomeworkValidationError,
     validate_assignment_create,
@@ -778,11 +778,24 @@ def create_assignment(current_user):
         "share_for_help": false
     }
     """
+    body = request.get_json(silent=True)
+    client_key = idempotency.normalize_key(body.get("idempotency_key")) if isinstance(body, dict) else None
+    claimed = False
     try:
         try:
-            fields = validate_assignment_create(request.get_json(silent=True))
+            fields = validate_assignment_create(body)
         except HomeworkValidationError as e:
             return error_response(e.message, 400)
+
+        if client_key:
+            state, stored = idempotency.begin("hw-create", current_user.id, client_key)
+            if state == idempotency.IN_PROGRESS:
+                return error_response("This assignment is already being created", 409)
+            if state == idempotency.DONE:
+                return success_response(
+                    "Assignment created successfully! 📚", data=stored
+                ), 200
+            claimed = True
 
         assignment = Assignment(
             user_id=current_user.id,
@@ -795,6 +808,16 @@ def create_assignment(current_user):
 
         db.session.add(assignment)
         db.session.commit()
+
+        response_data = {
+            "id": assignment.id,
+            "title": assignment.title,
+            "priority_score": assignment.priority_score,
+            "is_shared": assignment.is_shared_for_help,
+        }
+        if claimed:
+            idempotency.finish("hw-create", current_user.id, client_key, response_data)
+            claimed = False
 
         # Activity feed: only when shared for help — an assignment kept
         # private has nothing to tell a connection about, and firing here
@@ -811,19 +834,14 @@ def create_assignment(current_user):
                 }
             )
 
-        return success_response(
-            "Assignment created successfully! 📚",
-            data={
-                "id": assignment.id,
-                "title": assignment.title,
-                "priority_score": assignment.priority_score,
-                "is_shared": assignment.is_shared_for_help
-            }
-        ), 201
+        return success_response("Assignment created successfully! 📚", data=response_data), 201
 
     except Exception as e:
         db.session.rollback()
         return _server_error("Create assignment error", "Failed to create assignment")
+    finally:
+        if claimed:
+            idempotency.abandon("hw-create", current_user.id, client_key)
 
 
 @homework_bp.route("/assignments/<int:assignment_id>", methods=["PUT"])
