@@ -300,6 +300,21 @@ export function switchTab(tab) {
   }
 }
 /**
+ * The active filters, sent on EVERY page request. Load-more previously
+ * dropped everything but `status`, so a filtered first page was followed by
+ * an unfiltered second page (audit F-20).
+ */
+function myHomeworkFilterParams() {
+  const { status, subject } = homeworkState.filters;
+  return { status, ...(subject && { subject }) };
+}
+
+function connectionsFilterParams() {
+  const { subject, difficulty } = homeworkState.filters;
+  return { ...(subject && { subject }), ...(difficulty && { difficulty }) };
+}
+
+/**
  * Load my homework — first page only. Resets pagination state.
  */
 export async function loadMyHomework() {
@@ -315,7 +330,7 @@ export async function loadMyHomework() {
 
     // Fetch first page
     const response = await homeworkAPI.getMyAssignments({
-      status: homeworkState.filters.status,
+      ...myHomeworkFilterParams(),
       limit: PAGE_SIZE
     });
 
@@ -361,7 +376,7 @@ async function loadMoreMyHomework() {
 
   try {
     const response = await homeworkAPI.getMyAssignments({
-      status: homeworkState.filters.status,
+      ...myHomeworkFilterParams(),
       limit: PAGE_SIZE,
       cursor: homeworkState.myAssignmentsCursor
     });
@@ -410,7 +425,10 @@ export async function loadConnectionsHomework() {
     homeworkState.setLoading('connectionsHomework', true);
 
     // Fetch first page
-    const response = await homeworkAPI.getConnectionsHomework({ limit: PAGE_SIZE });
+    const response = await homeworkAPI.getConnectionsHomework({
+      ...connectionsFilterParams(),
+      limit: PAGE_SIZE
+    });
 
     homeworkState.setLoading('connectionsHomework', false);
 
@@ -453,6 +471,7 @@ async function loadMoreConnectionsHomework() {
 
   try {
     const response = await homeworkAPI.getConnectionsHomework({
+      ...connectionsFilterParams(),
       limit: PAGE_SIZE,
       cursor: homeworkState.connectionsCursor
     });
