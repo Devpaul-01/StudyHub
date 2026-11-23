@@ -114,14 +114,23 @@ class LeaderboardSnapshot(db.Model):
     department_rank = db.Column(db.Integer, nullable=True)
     score           = db.Column(db.Integer, nullable=False, default=0)  # User.reputation at snapshot time
     created_at      = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    # UTC calendar day of the snapshot. Together with (user_id, snapshot_type)
+    # it is unique, which is what makes take_snapshot() idempotent even when
+    # two workers run it at once.
+    snapshot_date   = db.Column(
+        db.Date, nullable=False,
+        default=lambda ctx: (
+            ctx.get_current_parameters().get("created_at") or datetime.datetime.utcnow()
+        ).date(),
+    )
 
     user = db.relationship("User", backref="leaderboard_snapshots")
 
     __table_args__ = (
-        db.Index("idx_lb_snap_user_id",        "user_id"),
         db.Index("idx_lb_snap_type_date",       "snapshot_type", "created_at"),
         db.Index("idx_lb_snap_rank",            "global_rank"),
         db.Index("idx_lb_snap_user_type_date",  "user_id", "snapshot_type", "created_at"),
+        db.Index("uq_lb_snap_user_type_day",    "user_id", "snapshot_type", "snapshot_date", unique=True),
     )
 
     def __repr__(self):
