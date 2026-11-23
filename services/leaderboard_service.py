@@ -1322,6 +1322,29 @@ def get_rank_history(user_id: int, weeks: int = 8) -> dict:
 # recommendation in Document 1 §6.3.
 # ─────────────────────────────────────────────────────────────────────────────
 
+_SNAPSHOT_CHUNK = 1000
+
+
+def _insert_ignore_conflicts(model, rows: list[dict]) -> int:
+    """INSERT ... ON CONFLICT DO NOTHING; returns how many rows were inserted.
+
+    RETURNING reports only rows this statement actually inserted, so a
+    concurrent run that wins the race is not double counted (counting rows
+    before/after would credit the loser with the winner's rows).
+    """
+    dialect = db.session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:  # pragma: no cover - unsupported dialect: plain insert, guard still applies
+        from sqlalchemy import insert
+        db.session.execute(insert(model), rows)
+        return len(rows)
+    stmt = insert(model).on_conflict_do_nothing().returning(model.id)
+    return len(db.session.execute(stmt, rows).all())
+
+
 def take_snapshot(snapshot_type: str = "weekly") -> dict:
     """
     Create a leaderboard snapshot of current all-time rankings.
@@ -1337,74 +1360,66 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
     from models import LeaderboardSnapshot
 
     now = datetime.datetime.utcnow()
+    today = now.date()
 
+    # Fast path for the common re-run. The unique index on
+    # (user_id, snapshot_type, snapshot_date) is what actually guarantees
+    # idempotency; this just avoids doing the ranking work for nothing.
     already_ran = (
-        db.session.query(LeaderboardSnapshot)
+        db.session.query(LeaderboardSnapshot.id)
         .filter(
             LeaderboardSnapshot.snapshot_type == snapshot_type,
-            func.date(LeaderboardSnapshot.created_at) == now.date(),
+            LeaderboardSnapshot.snapshot_date == today,
         )
         .first()
     )
     if already_ran:
         return SnapshotResult(created=0, skipped=0, total_ranked=0).to_dict()
 
+    # Competition ranks computed by the database with the same RANK()
+    # semantics every live board uses, so a snapshot rank and the rank shown
+    # on the board for the same score are the same number. Department ranks
+    # are partitioned by department; users with no department get none.
+    score = func.coalesce(User.reputation, 0)
     ranked = (
-        db.session.query(User.id, User.reputation)
+        db.session.query(
+            User.id.label("user_id"),
+            score.label("score"),
+            StudentProfile.department.label("department"),
+            func.rank().over(order_by=score.desc()).label("global_rank"),
+            func.rank().over(
+                partition_by=StudentProfile.department, order_by=score.desc()
+            ).label("department_rank"),
+        )
         .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
         .filter(User.status == "approved")
-        .order_by(desc(User.reputation), asc(User.id))
         .all()
     )
 
     if not ranked:
         return SnapshotResult(created=0, skipped=0, total_ranked=0).to_dict()
 
-    dept_rows = (
-        db.session.query(User.id, StudentProfile.department)
-        .join(StudentProfile, StudentProfile.user_id == User.id)
-        .filter(User.status == "approved", StudentProfile.department.isnot(None))
-        .order_by(StudentProfile.department, desc(User.reputation), asc(User.id))
-        .all()
+    rows = [
+        {
+            "user_id": r.user_id,
+            "snapshot_type": snapshot_type,
+            "global_rank": int(r.global_rank),
+            "department_rank": int(r.department_rank) if r.department else None,
+            "score": int(r.score),
+            "created_at": now,
+            "snapshot_date": today,
+        }
+        for r in ranked
+    ]
+
+    # Chunked, conflict-ignoring bulk insert: no ORM object per user (50k users
+    # used to mean 50k session objects) and a concurrent run that slips past
+    # the check above cannot create duplicates; its rows are skipped.
+    created = sum(
+        _insert_ignore_conflicts(LeaderboardSnapshot, rows[start:start + _SNAPSHOT_CHUNK])
+        for start in range(0, len(rows), _SNAPSHOT_CHUNK)
     )
-
-    dept_rank_map: dict[int, int] = {}
-    dept_counters: dict[str, int] = {}
-    for uid, dept in dept_rows:
-        dept_counters[dept] = dept_counters.get(dept, 0) + 1
-        dept_rank_map[uid] = dept_counters[dept]
-
-    created = 0
-    skipped = 0
-
-    today_snapped = {
-        row.user_id
-        for row in (
-            LeaderboardSnapshot.query
-            .filter(
-                LeaderboardSnapshot.snapshot_type == snapshot_type,
-                func.date(LeaderboardSnapshot.created_at) == now.date(),
-            )
-            .with_entities(LeaderboardSnapshot.user_id)
-            .all()
-        )
-    }
-
-    for global_rank, (uid, reputation) in enumerate(ranked, start=1):
-        if uid in today_snapped:
-            skipped += 1
-            continue
-
-        snap = LeaderboardSnapshot(
-            user_id=uid,
-            snapshot_type=snapshot_type,
-            global_rank=global_rank,
-            department_rank=dept_rank_map.get(uid),
-            score=reputation,
-            created_at=now,
-        )
-        db.session.add(snap)
-        created += 1
+    skipped = len(rows) - created
 
     db.session.commit()
 
@@ -1431,7 +1446,7 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
         cache_service.delete(default_key)
         _get_global_leaderboard_page("weekly", "_", 1, DEFAULT_LIMIT)
 
-    return SnapshotResult(created=created, skipped=skipped, total_ranked=len(ranked)).to_dict()
+    return SnapshotResult(created=created, skipped=skipped, total_ranked=len(rows)).to_dict()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -187,3 +187,47 @@ def test_take_snapshot_department_rank_excludes_users_without_department(
     assert high_snap.department_rank == 1
     low_snap = LeaderboardSnapshot.query.filter_by(user_id=with_dept_low.id).first()
     assert low_snap.department_rank == 2
+
+
+def test_take_snapshot_uses_competition_ranks_for_ties(db_session, make_user, make_student_profile, fakeredis_client):
+    top = make_user(reputation=500, status="approved")
+    a = make_user(reputation=300, status="approved")
+    b = make_user(reputation=300, status="approved")
+    low = make_user(reputation=100, status="approved")
+    for u in (top, a, b, low):
+        make_student_profile(u, department="CS")
+
+    leaderboard_service.take_snapshot("weekly")
+
+    snaps = {s.user_id: s for s in LeaderboardSnapshot.query.all()}
+    assert [snaps[u.id].global_rank for u in (top, a, b, low)] == [1, 2, 2, 4]
+    assert [snaps[u.id].department_rank for u in (top, a, b, low)] == [1, 2, 2, 4]
+
+
+def test_take_snapshot_records_the_utc_day_and_department_rank_is_per_department(
+    db_session, make_user, make_student_profile, fakeredis_client
+):
+    cs = make_user(reputation=100, status="approved")
+    phys = make_user(reputation=900, status="approved")
+    make_student_profile(cs, department="CS")
+    make_student_profile(phys, department="Physics")
+
+    with freezegun.freeze_time("2026-11-15 00:05:00"):
+        leaderboard_service.take_snapshot("weekly")
+
+    snaps = {s.user_id: s for s in LeaderboardSnapshot.query.all()}
+    assert snaps[cs.id].snapshot_date == datetime.date(2026, 11, 15)
+    assert snaps[cs.id].global_rank == 2 and snaps[cs.id].department_rank == 1
+    assert snaps[phys.id].department_rank == 1
+
+
+def test_database_rejects_a_second_snapshot_row_for_the_same_user_type_and_day(db_session, make_user):
+    from sqlalchemy.exc import IntegrityError
+    u = make_user(status="approved")
+    day = datetime.date(2026, 11, 15)
+    db_session.add(LeaderboardSnapshot(user_id=u.id, snapshot_type="weekly", global_rank=1, score=0, snapshot_date=day))
+    db_session.flush()
+    db_session.add(LeaderboardSnapshot(user_id=u.id, snapshot_type="weekly", global_rank=1, score=0, snapshot_date=day))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
