@@ -28,7 +28,7 @@ import datetime
 import logging
 from dataclasses import dataclass, asdict
 
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 
 from models import (
     User, Badge, UserBadge, Comment, Connection, Thread, StudentProfile,
@@ -329,17 +329,12 @@ def _user_qualifies(user: User, criteria: dict) -> bool:
         profile = StudentProfile.query.filter_by(user_id=user_id).first()
         if not profile:
             return False
-        rank = (
-            db.session.query(func.count(User.id))
-            .join(StudentProfile)
-            .filter(
-                StudentProfile.department == profile.department,
-                User.reputation > user.reputation,
-                User.status == "approved",
-            )
-            .scalar()
-            + 1
-        )
+        # Same ranking as the leaderboard (competition ranks: users tied for
+        # 3rd all hold rank 3), computed live because this runs mid-request.
+        from services import leaderboard_service
+        rank = leaderboard_service.get_user_rank(user_id, "all_time", profile.department)
+        if rank is None:
+            return False
         return rank <= criteria["department_rank"]
 
     return False

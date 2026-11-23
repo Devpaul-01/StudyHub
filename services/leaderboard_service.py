@@ -336,47 +336,15 @@ def _user_period_score(user_id: int, period: str) -> int:
     return int(val or 0)
 
 
-def _user_rank_alltime(user_id: int, department: str | None = None) -> int:
-    """Count approved users with higher all-time reputation -> rank."""
-    user = User.query.get(user_id)
-    if not user:
-        return 0
-    q = (
-        db.session.query(func.count(User.id))
-        .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
-        .filter(User.reputation > user.reputation, User.status == "approved")
-    )
-    if department:
-        q = q.filter(StudentProfile.department == department)
-    return (q.scalar() or 0) + 1
+def get_user_rank(user_id: int, period: str, department: str | None = None) -> int | None:
+    """The user's competition rank on a board, computed live (not cached).
 
-
-def _user_rank_period(user_id: int, period: str, department: str | None = None) -> int:
-    """Count users with higher period score -> rank."""
-    user_score = _user_period_score(user_id, period)
-    start = _period_start(period)
-
-    subq = (
-        db.session.query(
-            ReputationHistory.user_id,
-            func.sum(ReputationHistory.points_change).label("total"),
-        )
-        .join(User, User.id == ReputationHistory.user_id)
-        .outerjoin(StudentProfile, StudentProfile.user_id == ReputationHistory.user_id)
-        .filter(ReputationHistory.created_at >= start, User.status == "approved")
-    )
-    if department:
-        subq = subq.filter(StudentProfile.department == department)
-    subq = subq.group_by(ReputationHistory.user_id).subquery()
-
-    count = db.session.query(func.count()).filter(subq.c.total > user_score).scalar() or 0
-    return count + 1
-
-
-def get_user_rank(user_id: int, period: str, department: str | None = None) -> int:
-    if period == "all_time":
-        return _user_rank_alltime(user_id, department)
-    return _user_rank_period(user_id, period, department)
+    Thin wrapper over _compute_standing so there is exactly one ranking
+    implementation. None when the user cannot be ranked there (not approved,
+    or not in that department). Used where a stale rank would be wrong, e.g.
+    badge checks that run mid-request right after a reputation change.
+    """
+    return _compute_standing(user_id, period, department)["rank"]
 
 
 def get_user_period_score(user_id: int, period: str) -> int:

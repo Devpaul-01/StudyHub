@@ -294,3 +294,16 @@ def test_calculate_badge_progress_missing_badge_or_user_returns_none(db_session,
     assert badge_service.calculate_badge_progress(user.id, 999999) is None
     badge = Badge.query.first()
     assert badge_service.calculate_badge_progress(999999, badge.id) is None
+
+
+def test_department_rank_badge_follows_competition_ties(db_session, make_user, make_student_profile):
+    """Users tied for 3rd share rank 3, matching what the leaderboard shows."""
+    users = [make_user(reputation=r, status="approved") for r in (500, 400, 300, 300, 100)]
+    for u in users:
+        make_student_profile(u, department="CS")
+    crit = {"department_rank": 3}
+    assert [badge_service._user_qualifies(u, crit) for u in users] == [True, True, True, True, False]
+
+
+def test_department_rank_badge_requires_a_profile(db_session, make_user):
+    assert badge_service._user_qualifies(make_user(reputation=10, status="approved"), {"department_rank": 3}) is False
