@@ -20,7 +20,7 @@ import {
   renderHelpingWithList,
   renderStatusFilterChips,
 } from './homework.templates.js';
-import { showHomeworkToast } from './homework.utils.js';
+import { showHomeworkToast, createSequencer } from './homework.utils.js';
 import { loadStatsTab, loadDynamicStatsComponents} from './homework.stats.js';
 
 // How many items to fetch per page for both infinite-scroll lists
@@ -31,6 +31,13 @@ const PAGE_SIZE = 15;
 // watching, so the old node references go stale).
 let myHomeworkObserver = null;
 let connectionsObserver = null;
+
+// One sequencer per list: a response is only rendered if no newer request for
+// the same list started after it (audit F-25).
+const myHomeworkSeq = createSequencer();
+const connectionsSeq = createSequencer();
+const myHelpRequestsSeq = createSequencer();
+const helpingWithSeq = createSequencer();
 
 function disconnectObserver(observer) {
   if (observer) observer.disconnect();
@@ -119,12 +126,16 @@ export async function loadMyHelpRequests() {
   const container = document.getElementById('my-help-requests-container');
   if (!container) return;
 
+  const token = myHelpRequestsSeq.next();
+
   try {
     container.innerHTML = renderLoadingState();
     homeworkState.setLoading('myHelpRequests', true);
 
     const status = homeworkState.getMyHelpRequestsStatusFilter();
     const response = await homeworkAPI.getMyHelpRequestsInbox(status);
+
+    if (!myHelpRequestsSeq.isCurrent(token)) return; // superseded by a newer request
 
     homeworkState.setLoading('myHelpRequests', false);
 
@@ -135,6 +146,7 @@ export async function loadMyHelpRequests() {
       throw new Error(response.message || 'Failed to load help requests');
     }
   } catch (error) {
+    if (!myHelpRequestsSeq.isCurrent(token)) return;
     console.error('Error loading my help requests:', error);
     homeworkState.setLoading('myHelpRequests', false);
     container.innerHTML = `
@@ -158,12 +170,16 @@ export async function loadHelpingWith() {
   const container = document.getElementById('helping-with-container');
   if (!container) return;
 
+  const token = helpingWithSeq.next();
+
   try {
     container.innerHTML = renderLoadingState();
     homeworkState.setLoading('helpingWith', true);
 
     const status = homeworkState.getHelpingWithStatusFilter();
     const response = await homeworkAPI.getHelpingWith({ status });
+
+    if (!helpingWithSeq.isCurrent(token)) return; // superseded by a newer request
 
     homeworkState.setLoading('helpingWith', false);
 
@@ -174,6 +190,7 @@ export async function loadHelpingWith() {
       throw new Error(response.message || 'Failed to load helping-with list');
     }
   } catch (error) {
+    if (!helpingWithSeq.isCurrent(token)) return;
     console.error('Error loading helping-with:', error);
     homeworkState.setLoading('helpingWith', false);
     container.innerHTML = `
@@ -323,6 +340,8 @@ export async function loadMyHomework() {
   if (!container) return;
   
 
+  const token = myHomeworkSeq.next();
+
   try {
     // Show loading
     container.innerHTML = renderLoadingState();
@@ -333,6 +352,8 @@ export async function loadMyHomework() {
       ...myHomeworkFilterParams(),
       limit: PAGE_SIZE
     });
+
+    if (!myHomeworkSeq.isCurrent(token)) return; // superseded by a newer request
 
     homeworkState.setLoading('myHomework', false);
 
@@ -350,6 +371,7 @@ export async function loadMyHomework() {
       throw new Error(response.message || 'Failed to load homework');
     }
   } catch (error) {
+    if (!myHomeworkSeq.isCurrent(token)) return;
     console.error('Error loading my homework:', error);
     homeworkState.setLoading('myHomework', false);
     container.innerHTML = `
@@ -371,6 +393,7 @@ async function loadMoreMyHomework() {
   if (homeworkState.myAssignmentsLoadingMore || !homeworkState.myAssignmentsHasMore) return;
 
   homeworkState.myAssignmentsLoadingMore = true;
+  const generation = myHomeworkSeq.current();
   const loadMoreEl = document.getElementById('hw-my-load-more');
   if (loadMoreEl) loadMoreEl.classList.remove('hidden');
 
@@ -380,6 +403,8 @@ async function loadMoreMyHomework() {
       limit: PAGE_SIZE,
       cursor: homeworkState.myAssignmentsCursor
     });
+
+    if (!myHomeworkSeq.isCurrent(generation)) return; // filters changed while loading
 
     if (response.status === 'success') {
       const newAssignments = response.data.assignments || [];
@@ -419,6 +444,8 @@ export async function loadConnectionsHomework() {
   
   if (!container) return;
 
+  const token = connectionsSeq.next();
+
   try {
     // Show loading
     container.innerHTML = renderLoadingState();
@@ -429,6 +456,8 @@ export async function loadConnectionsHomework() {
       ...connectionsFilterParams(),
       limit: PAGE_SIZE
     });
+
+    if (!connectionsSeq.isCurrent(token)) return; // superseded by a newer request
 
     homeworkState.setLoading('connectionsHomework', false);
 
@@ -445,6 +474,7 @@ export async function loadConnectionsHomework() {
       throw new Error(response.message || 'Failed to load connections homework');
     }
   } catch (error) {
+    if (!connectionsSeq.isCurrent(token)) return;
     console.error('Error loading connections homework:', error);
     homeworkState.setLoading('connectionsHomework', false);
     container.innerHTML = `
@@ -466,6 +496,7 @@ async function loadMoreConnectionsHomework() {
   if (homeworkState.connectionsLoadingMore || !homeworkState.connectionsHasMore) return;
 
   homeworkState.connectionsLoadingMore = true;
+  const generation = connectionsSeq.current();
   const loadMoreEl = document.getElementById('hw-connections-load-more');
   if (loadMoreEl) loadMoreEl.classList.remove('hidden');
 
@@ -475,6 +506,8 @@ async function loadMoreConnectionsHomework() {
       limit: PAGE_SIZE,
       cursor: homeworkState.connectionsCursor
     });
+
+    if (!connectionsSeq.isCurrent(generation)) return; // filters changed while loading
 
     if (response.status === 'success') {
       const newItems = response.data.homework || [];

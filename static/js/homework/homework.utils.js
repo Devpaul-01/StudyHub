@@ -292,3 +292,49 @@ export function serverUtcToLocalInput(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
          `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+/**
+ * Request sequencer: lets an async loader ignore a response that was
+ * superseded by a newer request (e.g. the user switched filters while the
+ * first one was still in flight — audit F-25).
+ *
+ *   const seq = createSequencer();
+ *   const token = seq.next();
+ *   const response = await fetchSomething();
+ *   if (!seq.isCurrent(token)) return;   // a newer request owns the UI now
+ */
+export function createSequencer() {
+  let latest = 0;
+  return {
+    next() {
+      latest += 1;
+      return latest;
+    },
+    current() {
+      return latest;
+    },
+    isCurrent(token) {
+      return token === latest;
+    },
+  };
+}
+
+/**
+ * Single-flight guard for mutating actions (delete, offer help, cancel…):
+ * a second click while the first request is pending is ignored instead of
+ * firing a duplicate request (audit F-25).
+ *
+ *   if (!beginFlight(key)) return;
+ *   try { ... } finally { endFlight(key); }
+ */
+const actionsInFlight = new Set();
+
+export function beginFlight(key) {
+  if (actionsInFlight.has(key)) return false;
+  actionsInFlight.add(key);
+  return true;
+}
+
+export function endFlight(key) {
+  actionsInFlight.delete(key);
+}

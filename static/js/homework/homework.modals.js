@@ -262,7 +262,8 @@ export function openCreateHomeworkModal() {
   if (shareCheckbox) shareCheckbox.checked = false;
 
   // Clear resources
-  homeworkState.clearUploadedResources();
+  homeworkState.clearResources('create');
+  createIdempotencyKey = null;
   updateResourcePreview('hw-create-resources-preview');
 
   // Setup file input change handler
@@ -295,8 +296,23 @@ export function closeHomeworkModal(modalId) {
  * @param {HTMLElement} container - The form or div container from delegation
  * @param {Event} event - The submit/click event
  */
+let createInFlight = false;
+let createIdempotencyKey = null;
+
+function newIdempotencyKey() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export async function handleCreateHomework(container, event) {
   event.preventDefault();
+
+  // Single-flight: a second click while the first request is pending is
+  // ignored (audit F-25). The server-side idempotency key covers retries
+  // that cross a page reload or network retry.
+  if (createInFlight) return;
 
   console.log('=== handleCreateHomework called ===');
   console.log('container:', container);
@@ -387,8 +403,7 @@ export async function handleCreateHomework(container, event) {
   });
 
   // Get uploaded resources from state
-  const resources = homeworkState.getUploadedResources();
-  console.log('Resources from state:', resources);
+  const resources = [...homeworkState.getResources('create')];
 
   // Validate
   if (!title) {
@@ -403,18 +418,13 @@ export async function handleCreateHomework(container, event) {
     return;
   }
 
-  // Disable submit button
+  // Disable the button until the request settles (no timer-based re-enable)
+  createInFlight = true;
   if (submitBtn) {
     submitBtn.disabled = true;
-    const originalText = submitBtn.textContent;
     submitBtn.textContent = 'Creating...';
-    
-    // Restore button after function completes
-    setTimeout(() => {
-      submitBtn.disabled = false;
-      submitBtn.textContent = originalText;
-    }, 5000); // Safety timeout
   }
+  if (!createIdempotencyKey) createIdempotencyKey = newIdempotencyKey();
 
   try {
     // Create payload with resources
@@ -426,7 +436,8 @@ export async function handleCreateHomework(container, event) {
       difficulty,
       estimated_hours: estimatedHours ? parseFloat(estimatedHours) : null,
       share_for_help: shareForHelp,
-      resources: resources  // Include uploaded resources
+      resources: resources,  // Include uploaded resources
+      idempotency_key: createIdempotencyKey
     };
 
     console.log('📤 Sending payload to API:', payload);
@@ -436,6 +447,8 @@ export async function handleCreateHomework(container, event) {
     console.log('📥 API Response:', response);
 
     if (response.status === 'success') {
+      createIdempotencyKey = null;
+      homeworkState.clearResources('create');
       closeHomeworkModal('hw-create-modal');
       refreshCurrentTab();
     } else {
@@ -445,6 +458,7 @@ export async function handleCreateHomework(container, event) {
     console.error('❌ Error creating assignment:', error);
     showHomeworkToast(error.message || 'Failed to create assignment', 'error');
   } finally {
+    createInFlight = false;
     if (submitBtn) {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Create Assignment';
@@ -580,7 +594,7 @@ export async function handleResourceUpload(event) {
 
     if (response.status === 'success') {
       const resource = response.data;
-      homeworkState.addUploadedResource(resource);
+      homeworkState.addResource('create', resource);
       
       // Update preview
       updateResourcePreview('hw-create-resources-preview');
@@ -603,7 +617,7 @@ function updateResourcePreview(containerId) {
   
   if (!container) return;
 
-  const resources = homeworkState.getUploadedResources();
+  const resources = homeworkState.getResources('create');
 
   if (resources.length === 0) {
     container.innerHTML = '';
@@ -625,13 +639,36 @@ function updateResourcePreview(containerId) {
 /**
  * Remove resource
  */
-export function removeResource(index) {
-  homeworkState.removeUploadedResource(index);
-  
-  // Update all preview containers
-  document.querySelectorAll('.hw-resources-preview').forEach(container => {
-    updateResourcePreview(container.id);
-  });
+export function removeResource(index, flow = 'create') {
+  homeworkState.removeResource(flow, index);
+
+  if (flow === 'solution') {
+    updateSolutionResourcePreview();
+    return;
+  }
+  updateResourcePreview('hw-create-resources-preview');
+}
+
+/**
+ * Render the attachments of the solution being written (flow 'solution').
+ */
+export function updateSolutionResourcePreview() {
+  const preview = document.getElementById('hw-solution-resources-preview');
+  if (!preview) return;
+
+  const resources = homeworkState.getResources('solution');
+  if (resources.length === 0) {
+    preview.innerHTML = '';
+    preview.classList.add('hidden');
+    return;
+  }
+
+  preview.classList.remove('hidden');
+  preview.innerHTML = `
+    <div class="hw-resources-list">
+      <div class="hw-resources-header">Attached Files (${resources.length}):</div>
+      ${resources.map((r, i) => renderResourceItem(r, i, false, false, 'solution')).join('')}
+    </div>`;
 }
 
 /**

@@ -7,7 +7,7 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, formatDate, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl } from './homework.utils.js';
+import { showHomeworkToast, formatDate, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl, beginFlight, endFlight } from './homework.utils.js';
 import { renderResourceItem } from './homework.templates.js';
 
 /**
@@ -472,7 +472,11 @@ export async function openSubmissionDetailModal(submissionId) {
   }
 
   const modalBody = modal.querySelector('.hw-modal-body');
-  
+
+  // Files attached while writing a solution for another submission must not
+  // follow the user into this one (audit F-29).
+  homeworkState.clearResources('solution');
+
   // Show loading
   modalBody.innerHTML = `
     <div class="hw-loading-state">
@@ -541,10 +545,11 @@ export async function handleSubmitSolution(event, submissionId) {
   try {
     const response = await homeworkAPI.submitSolution(submissionId, {
       solution_text: solutionText,
-      resources: homeworkState.getUploadedResources()
+      resources: [...homeworkState.getResources('solution')]
     });
 
     if (response.status === 'success') {
+      homeworkState.clearResources('solution');
       showHomeworkToast(response.message || 'Solution submitted!', 'success');
       
       // Reload submission detail
@@ -615,6 +620,9 @@ export async function handleCancelSubmission(submissionId) {
     return;
   }
 
+  const flightKey = `cancel:${submissionId}`;
+  if (!beginFlight(flightKey)) return;
+
   try {
     const response = await homeworkAPI.cancelSubmission(submissionId);
 
@@ -639,5 +647,7 @@ export async function handleCancelSubmission(submissionId) {
   } catch (error) {
     console.error('Error cancelling submission:', error);
     showHomeworkToast(error.message || 'Failed to cancel request', 'error');
+  } finally {
+    endFlight(flightKey);
   }
 }

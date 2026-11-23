@@ -299,8 +299,9 @@ export const HomeworkHandlers = {
   'remove-resource': (target, event) => {
     event.preventDefault();
     const index = parseInt(target.dataset.resourceIndex);
+    const flow = target.dataset.resourceFlow === 'solution' ? 'solution' : 'create';
     if (!isNaN(index)) {
-      removeResource(index);
+      removeResource(index, flow);
     }
   },
 
@@ -489,20 +490,10 @@ export const HomeworkHandlers = {
 
         if (response.status === 'success') {
           const { homeworkState } = await import('./homework.state.js');
-          homeworkState.addUploadedResource(response.data);
+          homeworkState.addResource('solution', response.data);
 
-          // Update the solution resources preview
-          const preview = document.getElementById('hw-solution-resources-preview');
-          if (preview) {
-            const { renderResourceItem } = await import('./homework.templates.js');
-            const resources = homeworkState.getUploadedResources();
-            preview.classList.remove('hidden');
-            preview.innerHTML = `
-              <div class="hw-resources-list">
-                <div class="hw-resources-header">Attached Files (${resources.length}):</div>
-                ${resources.map((r, i) => renderResourceItem(r, i)).join('')}
-              </div>`;
-          }
+          const { updateSolutionResourcePreview } = await import('./homework.modals.js');
+          updateSolutionResourcePreview();
 
           showHomeworkToast('File attached! ✅', 'success');
         } else {

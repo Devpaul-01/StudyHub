@@ -80,8 +80,9 @@ export const homeworkState = {
   currentSubmission: null,
   currentAssignment: null,
   
-  // Upload state
-  uploadedResources: [],
+  // Upload state — one list per flow so attachments can never leak between a
+  // new-assignment draft and a solution submission (audit F-29).
+  resources: { create: [], solution: [] },
   statsData: null,
   
   setStatsData(data) {
@@ -226,33 +227,32 @@ forceRefresh(type) {
   },
   
   /**
-   * Add uploaded resource
+   * Resource lists are per flow: 'create' (new assignment) or 'solution'.
    */
-  addUploadedResource(resource) {
-    this.uploadedResources.push(resource);
+  _resourceList(flow) {
+    if (!Object.prototype.hasOwnProperty.call(this.resources, flow)) {
+      throw new Error(`Unknown resource flow: ${flow}`);
+    }
+    return this.resources[flow];
   },
-  
-  /**
-   * Clear uploaded resources
-   */
-  clearUploadedResources() {
-    this.uploadedResources = [];
+
+  addResource(flow, resource) {
+    this._resourceList(flow).push(resource);
   },
-  
-  /**
-   * Get uploaded resources
-   */
-  getUploadedResources() {
-    return this.uploadedResources;
+
+  getResources(flow) {
+    return this._resourceList(flow);
   },
-  
-  /**
-   * Remove uploaded resource
-   */
-  removeUploadedResource(index) {
-    this.uploadedResources.splice(index, 1);
+
+  clearResources(flow) {
+    this.resources[flow] = [];
+    this._resourceList(flow);
   },
-  
+
+  removeResource(flow, index) {
+    this._resourceList(flow).splice(index, 1);
+  },
+
   /**
    * Set current submission
    */
@@ -295,7 +295,7 @@ getEditResources() {
     this.connectionsHomework = [];
     this.connectionsCursor = null;
     this.connectionsHasMore = false;
-    this.uploadedResources = [];
+    this.resources = { create: [], solution: [] };
     this.currentSubmission = null;
     this.currentAssignment = null;
     // Batch 3

@@ -7,7 +7,7 @@
 
 import { homeworkState } from './homework.state.js';
 import { homeworkAPI } from './homework.api.js';
-import { showHomeworkToast, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl } from './homework.utils.js';
+import { showHomeworkToast, getStatusBadgeClass, getStatusDisplayText, escapeHtml, safeUrl, beginFlight, endFlight } from './homework.utils.js';
 import { refreshCurrentTab, updateAssignmentCard, removeAssignmentCard } from './homework.render.js';
 import { renderResourceItem } from './homework.templates.js';
 import {
@@ -338,6 +338,9 @@ export async function handleDeleteHomework(assignmentId) {
     return;
   }
 
+  const flightKey = `delete:${assignmentId}`;
+  if (!beginFlight(flightKey)) return;
+
   try {
     const response = await homeworkAPI.deleteAssignment(assignmentId);
 
@@ -350,6 +353,8 @@ export async function handleDeleteHomework(assignmentId) {
   } catch (error) {
     console.error('Error deleting homework:', error);
     showHomeworkToast(error.message || 'Failed to delete assignment', 'error');
+  } finally {
+    endFlight(flightKey);
   }
 }
 
@@ -365,6 +370,9 @@ export async function handleOfferHelp(homeworkId) {
     return;
   }
 
+  const flightKey = `offer:${homeworkId}`;
+  if (!beginFlight(flightKey)) return;
+
   try {
     const response = await homeworkAPI.offerHelp(homeworkId);
 
@@ -376,6 +384,8 @@ export async function handleOfferHelp(homeworkId) {
   } catch (error) {
     console.error('Error offering help:', error);
     showHomeworkToast(error.message || 'Failed to offer help', 'error');
+  } finally {
+    endFlight(flightKey);
   }
 }
 
