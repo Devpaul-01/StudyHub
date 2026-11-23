@@ -215,6 +215,20 @@ def _job_weekly(app):
     _run_locked("weekly_leaderboard_snapshot", _work)
 
 
+def _job_weekly_champions(app):
+    """Compute the just-finished week's homework champions. Idempotent
+    (upsert on a unique key), so the lock only avoids wasted duplicate work
+    - see services/champion_service.py (audit F-15)."""
+    def _work():
+        logger.info("[Scheduler] ▶ Running weekly champions job")
+        with app.app_context():
+            from services.champion_service import compute_weekly_champions, previous_week_start
+            result = compute_weekly_champions(previous_week_start())
+            logger.info("[Scheduler] ✅ weekly champions done — %s", result)
+
+    _run_locked("weekly_champions", _work)
+
+
 def _job_monthly(app):
     """See _job_weekly's docstring — identical locking rationale."""
     def _work():
@@ -391,6 +405,18 @@ def init_scheduler(app) -> None:
         trigger=CronTrigger(day_of_week="sun", hour=0, minute=20, timezone="UTC"),
         id="counter_reconciliation",
         name="Denormalized Counter Reconciliation",
+        replace_existing=True,
+    )
+
+    # Weekly homework champions: every Monday 00:35 UTC, for the week that
+    # just ended (Mon-Sun). After the leaderboard snapshot slots to keep DB
+    # load spread out.
+    scheduler.add_job(
+        func=_job_weekly_champions,
+        args=[app],
+        trigger=CronTrigger(day_of_week="mon", hour=0, minute=35, timezone="UTC"),
+        id="weekly_champions",
+        name="Weekly Homework Champions",
         replace_existing=True,
     )
 
