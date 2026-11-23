@@ -111,18 +111,38 @@ def app():
     from config import TestingConfig
     from extensions import db
 
-    flask_app, socketio = create_app(config_class=TestingConfig)
+    # Opt-in: point the whole integration suite at a real database (e.g.
+    # PostgreSQL) with TEST_DATABASE_URL. Needed for tests that depend on row
+    # locks / real concurrency, which SQLite's single shared connection
+    # cannot exercise. Use an empty, throwaway database: tables are created
+    # at start and dropped at the end. The engine is built inside
+    # create_app(), so the URL must be in the config class passed to it.
+    import os
+    external_db_url = os.environ.get("TEST_DATABASE_URL")
+    if external_db_url:
+        class _ExternalDbConfig(TestingConfig):
+            SQLALCHEMY_DATABASE_URI = external_db_url
+            # Plain options: Config's defaults carry sslmode / PgBouncer
+            # settings meant for the production pooler.
+            SQLALCHEMY_ENGINE_OPTIONS = {"pool_size": 20, "max_overflow": 20}
+        flask_app, socketio = create_app(config_class=_ExternalDbConfig)
+    else:
+        flask_app, socketio = create_app(config_class=TestingConfig)
+
+    if not external_db_url:
+        flask_app.config.update(
+            SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
+            # Identical Postgres-only connect_args strip as tests/unit/conftest.py
+            # — Config.SQLALCHEMY_ENGINE_OPTIONS hardcodes sslmode=require /
+            # PgBouncer statement_timeout, which raises TypeError against
+            # SQLite's DBAPI.
+            SQLALCHEMY_ENGINE_OPTIONS={
+                "poolclass": StaticPool,
+                "connect_args": {"check_same_thread": False},
+            },
+        )
 
     flask_app.config.update(
-        SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
-        # Identical Postgres-only connect_args strip as tests/unit/conftest.py
-        # — Config.SQLALCHEMY_ENGINE_OPTIONS hardcodes sslmode=require /
-        # PgBouncer statement_timeout, which raises TypeError against
-        # SQLite's DBAPI.
-        SQLALCHEMY_ENGINE_OPTIONS={
-            "poolclass": StaticPool,
-            "connect_args": {"check_same_thread": False},
-        },
         TESTING=True,
         SERVER_NAME="test.local",  # needed for url_for(..., _external=True)
                                     # call sites (auth.py's verification/reset

@@ -659,8 +659,7 @@ def visibility_settings(current_user):
     try:
         # Lock the row so two concurrent partial updates cannot overwrite
         # each other's keys (the whole JSON value is rewritten on save).
-        user = (User.query.filter_by(id=current_user.id)
-                .with_for_update().first())
+        user = _locked_user(current_user.id)
         if not user:
             return error_response("User not found")
 
@@ -1031,7 +1030,11 @@ def _locked_user(user_id):
     otherwise overwrite each other or exceed a limit. SQLite ignores the
     lock, which is fine for tests.
     """
-    return User.query.filter_by(id=user_id).with_for_update().first()
+    # populate_existing(): the request's user object is already in the
+    # session (loaded before the lock), and without it the locked SELECT
+    # would hand back that stale copy instead of the row as it is now.
+    return (User.query.filter_by(id=user_id)
+            .with_for_update().populate_existing().first())
 
 
 def _json_object():
