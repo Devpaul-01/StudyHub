@@ -203,6 +203,10 @@ class WeeklyChampion(db.Model):
         db.Index('idx_champion_week',    'week_start', 'week_end'),
         db.Index('idx_champion_type',    'champion_type'),
         db.Index('idx_champion_subject', 'subject'),
+        # One champion per (week, type, subject). Overall/speed champions
+        # store subject='' (not NULL: NULLs are distinct in a unique index),
+        # which is what makes the weekly job idempotent (audit F-15).
+        db.Index('uq_champion_week_type_subject', 'week_start', 'champion_type', 'subject', unique=True),
     )
 
     def __repr__(self):

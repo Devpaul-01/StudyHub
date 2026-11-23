@@ -21,8 +21,13 @@ MIGRATION = os.path.join(
 )
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("hw_migration", MIGRATION)
+CHAMPIONS_MIGRATION = os.path.join(
+    ROOT, "migrations", "versions", "e6c1b4d7a903_weekly_champions_unique_key.py"
+)
+
+
+def _load(path=MIGRATION):
+    spec = importlib.util.spec_from_file_location("hw_migration_" + os.path.basename(path)[:6], path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -37,8 +42,8 @@ def engine():
     return eng
 
 
-def _run(engine, fn_name):
-    module = _load()
+def _run(engine, fn_name, path=MIGRATION):
+    module = _load(path)
     with engine.begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
@@ -176,8 +181,49 @@ def test_migration_matches_models(engine, table):
     from extensions import db
 
     _run(engine, "upgrade")
+    _run(engine, "upgrade", CHAMPIONS_MIGRATION)
     insp = sa.inspect(engine)
     model_table = db.metadata.tables[table]
 
     assert {c["name"] for c in insp.get_columns(table)} == {c.name for c in model_table.columns}
     assert {i["name"] for i in insp.get_indexes(table)} == {i.name for i in model_table.indexes}
+
+
+class TestChampionsKeyMigration:
+    def _insert(self, conn, week, ctype, subject, user=1):
+        conn.execute(sa.text(
+            "INSERT INTO weekly_champions (user_id, subject, help_count, week_start, week_end, "
+            "champion_type, created_at) VALUES (:u, :s, 1, :w, :w, :t, '2030-01-01')"
+        ), {"u": user, "s": subject, "w": week, "t": ctype})
+
+    def test_null_subjects_normalised_and_duplicates_removed(self, engine):
+        _run(engine, "upgrade")
+        with engine.begin() as conn:
+            self._insert(conn, "2030-01-07", "most_helpful_overall", None)
+            self._insert(conn, "2030-01-07", "most_helpful_overall", None, user=2)   # duplicate key
+            self._insert(conn, "2030-01-07", "subject_champion", "Math")
+
+        _run(engine, "upgrade", CHAMPIONS_MIGRATION)
+
+        with engine.connect() as conn:
+            rows = conn.execute(sa.text(
+                "SELECT champion_type, subject, user_id FROM weekly_champions ORDER BY id")).fetchall()
+        assert len(rows) == 2
+        assert ("most_helpful_overall", "", 2) in [tuple(r) for r in rows]  # newest kept
+
+    def test_unique_key_enforced_and_idempotent(self, engine):
+        _run(engine, "upgrade")
+        _run(engine, "upgrade", CHAMPIONS_MIGRATION)
+        _run(engine, "upgrade", CHAMPIONS_MIGRATION)   # re-run is a no-op
+        with engine.begin() as conn:
+            self._insert(conn, "2030-01-07", "fastest_helper", "")
+        with pytest.raises(sa.exc.IntegrityError):
+            with engine.begin() as conn:
+                self._insert(conn, "2030-01-07", "fastest_helper", "")
+
+    def test_downgrade_drops_only_the_index(self, engine):
+        _run(engine, "upgrade")
+        _run(engine, "upgrade", CHAMPIONS_MIGRATION)
+        _run(engine, "downgrade", CHAMPIONS_MIGRATION)
+        assert "uq_champion_week_type_subject" not in _indexes(engine, "weekly_champions")
+        assert "weekly_champions" in sa.inspect(engine).get_table_names()
