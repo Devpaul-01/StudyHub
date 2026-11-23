@@ -28,3 +28,4 @@ lupa==2.8
 # isn't already there, since this is a genuine runtime dependency of
 # thread_message_service.py, not test-only.
 bleach==6.4.0
+pgserver>=0.1.4        # optional: real-PostgreSQL tests (tests/integration/test_connections_postgres.py)
