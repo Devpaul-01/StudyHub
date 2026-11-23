@@ -1878,7 +1878,7 @@ paths:
     get:
       tags: [Connections]
       summary: Onboarding connection suggestions by email
-      description: Pre-auth. SENSITIVE_AUTH tier, per IP.
+      description: Requires proof of ownership of {email} (Google OAuth session or JWT cookie for that email); 401 otherwise. Only for accounts still onboarding (403 otherwise). SENSITIVE_AUTH tier, per IP.
       security: []
       parameters: [{ name: email, in: path, required: true, schema: { type: string } }]
       responses:
@@ -1971,7 +1971,7 @@ paths:
     post:
       tags: [Connections]
       summary: Broadcast a help request to relevant connections
-      description: Scores connections by subject relevance and notifies the top 10 (push + in-app).
+      description: Scores connections by subject relevance (> 0 only) and notifies the top 10 (push + in-app) after the request is committed. subject is required (<=100 chars), message optional (<=300 chars); HTML is stripped. One active request per user.
       requestBody:
         required: true
         content:
@@ -2003,6 +2003,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /student/connections/help/{request_id}:
+    get:
+      tags: [Connections]
+      summary: View a help request
+      description: Target of the help-request notification link. Visible to the requester and their accepted connections.
+      parameters: [{ name: request_id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success] }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      subject: { type: string }
+                      message: { type: string, nullable: true }
+                      status: { type: string, description: "'expired' once expires_at has passed." }
+                      expires_at: { type: string, format: date-time, nullable: true }
+                      is_requester: { type: boolean }
+                      requester: { type: object, nullable: true }
+                      total_volunteers: { type: integer }
+                      has_volunteered: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /student/connections/help/{request_id}/volunteer:
     post:
       tags: [Connections]
@@ -2024,7 +2054,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: Missing request, OR the caller is not an accepted connection of the requester (blocked/unconnected users get the same 404).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /student/connections/help/{request_id}/volunteers:
     get:
@@ -2092,9 +2125,12 @@ paths:
     get:
       tags: [Connections]
       summary: List pending connection requests received
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, description: Opaque value from the previous next_cursor., schema: { type: string } }
       responses:
         '200':
-          description: OK, capped at 100, no pagination.
+          description: OK. Paginated.
           content:
             application/json:
               schema:
@@ -2102,15 +2138,20 @@ paths:
                 properties:
                   status: { type: string, enum: [success] }
                   data: { type: array, items: { type: object } }
-                  total: { type: integer }
+                  total: { type: integer, description: True total, not the page size. }
+                  has_more: { type: boolean }
+                  next_cursor: { type: string, nullable: true }
 
   /student/connections/requests/sent:
     get:
       tags: [Connections]
       summary: List pending connection requests sent
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, description: Opaque value from the previous next_cursor., schema: { type: string } }
       responses:
         '200':
-          description: OK, capped at 100, no pagination.
+          description: OK. Paginated.
           content:
             application/json:
               schema:
@@ -2118,15 +2159,21 @@ paths:
                 properties:
                   status: { type: string, enum: [success] }
                   data: { type: array, items: { type: object } }
-                  total: { type: integer }
+                  total: { type: integer, description: True total, not the page size. }
+                  has_more: { type: boolean }
+                  next_cursor: { type: string, nullable: true }
 
   /student/connections/list:
     get:
       tags: [Connections]
       summary: List accepted connections
+      description: Most recently connected first. Paginated with limit/cursor.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, description: Opaque value from the previous next_cursor., schema: { type: string } }
       responses:
         '200':
-          description: OK, capped at 200, no pagination.
+          description: OK.
           content:
             application/json:
               schema:
@@ -2134,7 +2181,9 @@ paths:
                 properties:
                   status: { type: string, enum: [success] }
                   data: { type: array, items: { $ref: '#/components/schemas/Connection' } }
-                  total: { type: integer }
+                  total: { type: integer, description: True total, not the page size. }
+                  has_more: { type: boolean }
+                  next_cursor: { type: string, nullable: true }
 
   /student/connections/unseen/received:
     get:
@@ -2165,42 +2214,6 @@ paths:
                 properties:
                   status: { type: string, enum: [success] }
                   data: { type: object, properties: { count: { type: integer } } }
-
-  /student/connections/unseen/all:
-    get:
-      tags: [Connections]
-      summary: Combined unseen connection-activity count
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  data:
-                    type: object
-                    properties:
-                      total: { type: integer }
-                      received: { type: integer }
-                      sent_responses: { type: integer }
-
-  /student/connections/mark-seen/{connection_id}:
-    post:
-      tags: [Connections]
-      summary: Mark one connection request as seen
-      parameters: [{ name: connection_id, in: path, required: true, schema: { type: integer } }]
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   /student/connections/mark-received-seen:
     post:
@@ -2233,27 +2246,6 @@ paths:
                   status: { type: string, enum: [success] }
                   message: { type: string }
                   data: { type: object, properties: { updated_count: { type: integer } } }
-
-  /student/connections/mark-all-seen:
-    post:
-      tags: [Connections]
-      summary: Mark all unseen connection activity as seen
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  message: { type: string }
-                  data:
-                    type: object
-                    properties:
-                      total_updated: { type: integer }
-                      received_updated: { type: integer }
-                      sent_updated: { type: integer }
 
   /student/connections/request/{user_id}:
     post:
@@ -2383,29 +2375,6 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /student/connections/status/{user_id}:
-    get:
-      tags: [Connections]
-      summary: Get connection status with a specific user
-      parameters: [{ name: user_id, in: path, required: true, schema: { type: integer } }]
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  data:
-                    type: object
-                    properties:
-                      status: { type: string, enum: [self, none, pending_sent, pending_received, connected, blocked, rejected] }
-                      can_message: { type: boolean }
-                      can_connect: { type: boolean }
-                      connection_id: { type: integer, nullable: true }
-                      connected_at: { type: string, format: date-time, nullable: true }
-
   /student/connections/settings:
     post:
       tags: [Connections]
@@ -2484,25 +2453,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-
-  /student/connections/blocked:
-    get:
-      tags: [Connections]
-      summary: List blocked users (summary)
-      responses:
-        '200':
-          description: OK.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [success] }
-                  data:
-                    type: object
-                    properties:
-                      blocked_users: { type: array, items: { type: object } }
-                      total: { type: integer }
 
   /student/connections/mutual/{user_id}:
     get:

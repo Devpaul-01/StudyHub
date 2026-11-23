@@ -500,19 +500,36 @@ Connections are StudyHub's mutual "friend" relationship. Status flows are `pendi
 `blocked`.
 
 ### `GET /student/connections/suggestions-by-email/{email}` / `POST /student/connections/onboard-connect/{email}/{target_user_id}` / `POST /student/connections/onboard-connect-all/{email}`
-Pre-auth onboarding variants — connect instantly (idempotent) with one or many users while
-setting up an account, before full login exists. **Auth:** none. **Rate limit:**
-`SENSITIVE_AUTH` per IP.
+Onboarding variants — connect instantly (idempotent) with one or many users while setting up an
+account. **Auth:** proof of ownership of `{email}` is **required** (the Google OAuth session or the
+JWT cookie for that email — same guard as `/student/onboard/*`); anything else is **401**. Only
+accounts still onboarding (`pending_onboarding` / `pending_verification`, or created <48 h ago)
+may use them (**403** otherwise). They are **create-only**: an existing pending/rejected/blocked
+row is never modified (**409**). `onboard-connect-all` takes `{ "ids": [...] }` (max 25 integers,
+**400** otherwise) and returns `connected_ids` / `skipped_ids`. **Rate limit:** `SENSITIVE_AUTH`
+per IP.
 
 ### `POST /student/connections/help/broadcast`
-Broadcasts "I need help with X" to your most relevant connections (scored by subject match,
-notified via push + in-app, top 10). **Auth:** required.
+Broadcasts "I need help with X" to your most relevant connections (scored by subject match;
+only connections with relevance > 0 are notified, top 10, via push + in-app *after* the request is
+committed). **Auth:** required.
 
-**Request:** `{ "subject": "Linear Algebra", "message": "Stuck on eigenvalues, anyone free?" }`
+**Request:** `{ "subject": "Linear Algebra", "message": "Stuck on eigenvalues, anyone free?" }` —
+`subject` required, plain text, ≤100 chars; `message` optional, ≤300 chars. HTML is stripped.
+**400** on invalid input. A user can only have one active request: a new broadcast expires the
+previous one (**409** if two race). Requests expire after 2 hours; a scheduled job (every 15 min)
+flips `status` to `expired`.
+
+### `GET /student/connections/help/{request_id}`
+View a help request (the target of the help-request notification link). Visible to the requester
+and their accepted connections; **404** for anyone else. **Auth:** required.
 
 ### `POST /student/connections/help/{request_id}/volunteer` / `GET /student/connections/help/{request_id}/volunteers`
 Volunteer for (or, as the requester, view volunteers for) a broadcast help request. **Auth:**
-required. **400** on volunteering for your own/expired/already-volunteered request.
+required. Only the requester's **accepted connections** may volunteer; anyone else (including
+blocked users) gets the same **404** as a missing id. **400** on volunteering for your own /
+expired / already-volunteered request (stored atomically, unique per user). The volunteers list
+reports `status: "expired"` once `expires_at` has passed.
 
 ### `POST /student/connections/help/find`
 Find the top 10 users (by expertise score) who can help with a subject, independent of the
@@ -521,16 +538,21 @@ broadcast flow. **Auth:** required.
 **Request:** `{ "subject": "Organic Chemistry" }`
 
 ### `GET /student/connections/requests/received` / `GET /student/connections/requests/sent`
-Pending connection requests, capped at 100, no pagination. **Auth:** required.
+Pending connection requests (`message` is the request message the sender attached). Ordered
+newest first. **Auth:** required. Paginated: `?limit` (1–200, default 200) and `?cursor`
+(opaque, from `next_cursor`); responses include `total` (true count), `has_more`, `next_cursor`.
 
 ### `GET /student/connections/list`
-Accepted connections, capped at 200. **Auth:** required.
+Accepted connections, most recently connected first. Same `?limit` / `?cursor` pagination and
+`total` / `has_more` / `next_cursor` fields as above. **Auth:** required.
 
-### `GET /student/connections/unseen/received` / `GET /student/connections/unseen/sent` / `GET /student/connections/unseen/all`
-Unseen-count badges for the connections UI. **Auth:** required.
+### `GET /student/connections/unseen/received` / `GET /student/connections/unseen/sent`
+Unseen-count badges. Each party has its own flag: *received* counts pending requests **you** haven't
+seen; *sent* counts accept/reject responses to requests **you** sent that you haven't seen.
+**Auth:** required.
 
-### `POST /student/connections/mark-seen/{connection_id}` / `POST /student/connections/mark-received-seen` / `POST /student/connections/mark-sent-seen` / `POST /student/connections/mark-all-seen`
-Clear the various unseen badges. **Auth:** required.
+### `POST /student/connections/mark-received-seen` / `POST /student/connections/mark-sent-seen`
+Clear the corresponding badge (only the caller's own flag is touched). **Auth:** required.
 
 ### `POST /student/connections/request/{user_id}`
 Send a connection request. If computed compatibility between you and the target is ≥70%, this
@@ -541,35 +563,38 @@ Send a connection request. If computed compatibility between you and the target 
 
 **Request (optional):** `{ "message": "Saw we're both in Data Structures, want to connect?" }`
 
+`message` is plain text, ≤300 chars (HTML stripped; **400** if longer or not a string).
+
 **404** — user not found. **403** — target has blocked you. **429** — you're inside the 24-hour
-cooldown after this user rejected a previous request from you.
+cooldown after this user rejected a previous request from you; after the cooldown a new request is
+allowed in either direction (the row's direction follows the new requester).
 
 ### `POST /student/connections/accept/{request_id}` / `POST /student/connections/reject/{request_id}`
-**Auth:** required. **400** — not found, not yours to act on, or not pending.
+**Auth:** required. **404** — not found. **403** — not yours to act on. **400** — not pending.
+**409** — lost a race with a concurrent cancel/block/accept (transitions are atomic).
 
 ### `DELETE /student/connections/cancel/{request_id}`
-Cancel a request you sent. **Auth:** required. **403** if it's not yours.
+Cancel a request you sent. **Auth:** required. **403** if it's not yours, **409** if it was
+accepted/blocked in the meantime (a cancel can never delete an accepted connection).
 
 ### `DELETE /student/connections/remove/{user_id}`
 Remove an accepted connection. **Auth:** required.
 
-### `GET /student/connections/status/{user_id}`
-Quick status check — `self`/`none`/`pending_sent`/`pending_received`/`connected`/`blocked`/`rejected`,
-plus `can_message`/`can_connect` flags. **Auth:** required.
-
 ### `POST /student/connections/settings`
 Toggle the connection-request notification sound. **Auth:** required.
 
-**Request:** `{ "enable_sound": true }`
+**Request:** `{ "enable_sound": true }` — must be a JSON object with a boolean (**400** otherwise).
 
-### `GET /student/connections/blocked/list` / `GET /student/connections/blocked`
-Two endpoints, slightly different response shapes, both list users you've blocked. **Auth:**
-required.
+### `GET /student/connections/blocked/list`
+Users you've blocked. Response `data` is `{ "blocked_users": [...], "total": N }`. **Auth:**
+required. (The duplicate `GET /student/connections/blocked` was removed.)
 
 ### `POST /student/connections/block/{user_id}` / `POST /student/connections/unblock/{user_id}`
-Block removes any existing connection and records who initiated it. Unblock deletes the
-connection row entirely — you'd need to send a fresh request to reconnect, it doesn't restore
-`accepted` status. **Auth:** required. **400** on blocking yourself.
+Block turns any existing connection into a block and records who initiated it; blocking is
+idempotent and an existing block is never taken over by the other user. Unblock (here **and** at
+`POST /student/messages/unblock/{user_id}`) deletes the connection row entirely — you'd need to
+send a fresh request to reconnect; it never restores `accepted` status. Only the user who blocked
+can unblock (**403** otherwise). **Auth:** required. **400** on blocking yourself.
 
 ### `GET /student/connections/mutual/{user_id}`
 Mutual connections with another user, capped at 50. **Auth:** required.
@@ -602,17 +627,19 @@ if no AI provider is up — still a `200`, not an error.
 
 ### `GET /student/connections/{connection_id}/details`
 Full detail view: connection row, partner's public profile, mutual connections, shared threads,
-interaction metrics, and a health score together (the response's `study_history` key is always
-an empty shape now — the study-sessions feature it covered has been removed). **Auth:** required
-(must be a party to the connection). **403** otherwise.
+interaction metrics, and a health score together (the always-empty `study_history` and the
+constant `connection_type` fields were removed). **Auth:** required (must be a party to the
+connection, **403** otherwise). **404** unless the connection is `accepted` — a pending, rejected
+or blocked party cannot read the other user's profile, presence or last-message preview.
 
 ### `GET /student/connections/online?time_window=30` / `GET /student/connections/online/count` / `GET /student/connections/online/department`
 Online connections (optionally scoped to your department), using a configurable "last active
 within N minutes" window (max 120). **Auth:** required.
 
 ### `GET /student/connections/{connection_id}/notes` / `PUT /student/connections/{connection_id}/notes/update` (also `POST`, same behavior)
-Private notes you keep on a connection — not visible to the other party. 500-char cap. **Auth:**
-required, must be a party to the connection.
+Private notes you keep on an **accepted** connection — not visible to the other party and
+separate from the request message (**404** for any other status). Plain text, 500-char cap
+(**400** over). **Auth:** required, must be a party to the connection.
 
 ---
 
@@ -668,8 +695,8 @@ required.
 
 ### `POST /student/messages/block/{user_id}` / `POST /student/messages/unblock/{user_id}`
 Same underlying block relationship as the Connections endpoints — this is a convenience alias
-reachable from the messaging surface. Unblock restores `accepted` status here (unlike the
-Connections unblock, which deletes the row). **Auth:** required.
+reachable from the messaging surface. Unblock behaves identically to the Connections unblock: it
+deletes the row and never restores `accepted` status. **Auth:** required.
 
 ### `POST /student/messages/report/{message_id}`
 Report a message for moderation. Currently just logs server-side — there's no `MessageReport`
