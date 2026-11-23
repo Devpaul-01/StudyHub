@@ -49,6 +49,7 @@ from services.homework_validation import (
     validate_feedback,
     validate_solution_submit,
     REACTION_LABELS,
+    safe_resources_for_output,
 )
 from services.activity_service import (
     record_live_activity,
@@ -1081,6 +1082,10 @@ def get_homework_feed(current_user):
                 "subject": hw.subject,
                 "description": hw.description,
                 "difficulty": hw.difficulty,
+                # Problem sheets etc. (audit F-14). The feed is already
+                # limited to the owner's connections (Q-10: all connections
+                # who can see the card).
+                "resources": safe_resources_for_output(hw.resources),
                 "due_date": hw.due_date.isoformat(),
                 "estimated_hours": hw.estimated_hours,
                 "hours_until_due": round(hours_until_due, 1),
@@ -1364,6 +1369,7 @@ def get_homework_im_helping_with(current_user):
                 "feedback_given": hw.feedback_at is not None,
                 "created_at": hw.created_at.isoformat(),
                 "submitted_at": hw.submitted_at.isoformat() if hw.submitted_at else None,
+                "assignment_resources": safe_resources_for_output(assignment.resources) if assignment else [],
                 "assignment_due_date": assignment.due_date.isoformat() if assignment else None,
                 "hours_until_due": round((assignment.due_date - datetime.utcnow()).total_seconds() / 3600, 1) if assignment else None
             })
@@ -1442,7 +1448,9 @@ def get_submission_details(current_user, submission_id):
                 "assignment": {
                     "id": assignment.id,
                     "due_date": assignment.due_date.isoformat(),
-                    "status": assignment.status
+                    "status": assignment.status,
+                    "estimated_hours": assignment.estimated_hours,
+                    "resources": safe_resources_for_output(assignment.resources),
                 } if assignment else None,
                 "created_at": submission.created_at.isoformat(),
                 "i_am_requester": submission.requester_id == current_user.id,

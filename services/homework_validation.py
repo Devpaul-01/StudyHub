@@ -327,3 +327,21 @@ def validate_feedback(data) -> dict:
         "is_helpful": is_helpful,
         "mark_complete": clean_bool(data.get("mark_complete", True), "mark_complete"),
     }
+
+
+def safe_resources_for_output(value) -> list[dict]:
+    """Defensive read-side filter for stored attachments (audit F-14, F-01).
+
+    New writes are validated by ``clean_resources``, but rows written before
+    that existed may hold anything. Return only well-formed http(s) entries
+    and silently drop the rest, so a bad legacy row can never reach a client
+    as a link."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        try:
+            out.extend(clean_resources([item]))
+        except HomeworkValidationError:
+            continue
+    return out[:MAX_RESOURCES]

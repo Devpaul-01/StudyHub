@@ -235,3 +235,68 @@ class TestListPayloads:
         data = resp.get_json()["data"]
         assert [h["subject"] for h in data["homework"]] == ["Math"]
         assert data["available_subjects"] == ["Math", "Physics"]
+
+
+class TestAttachmentsVisibleToHelpers:
+    RES = [{"url": "https://cdn.test/sheet.pdf", "type": "pdf", "filename": "sheet.pdf"}]
+
+    def test_feed_includes_resources_for_connections_only(
+        self, client, make_user, make_assignment, make_connection, auth_headers
+    ):
+        owner, friend, stranger = make_user(), make_user(), make_user()
+        make_connection(owner, friend)
+        make_assignment(owner, is_shared_for_help=True, resources=self.RES)
+
+        seen = client.get("/student/homework/feed", headers=auth_headers(friend)).get_json()["data"]
+        hidden = client.get("/student/homework/feed", headers=auth_headers(stranger)).get_json()["data"]
+
+        assert seen["homework"][0]["resources"] == self.RES
+        assert hidden["homework"] == []
+
+    def test_legacy_unsafe_resources_never_reach_the_client(
+        self, client, make_user, make_assignment, make_connection, auth_headers
+    ):
+        owner, friend = make_user(), make_user()
+        make_connection(owner, friend)
+        make_assignment(
+            owner, is_shared_for_help=True,
+            resources=[{"url": "javascript:alert(1)", "type": "image"}, *self.RES, "junk"],
+        )
+
+        data = client.get("/student/homework/feed", headers=auth_headers(friend)).get_json()["data"]
+
+        assert data["homework"][0]["resources"] == self.RES
+
+    def test_submission_detail_exposes_assignment_resources_to_participants(
+        self, client, db_session, make_user, make_assignment, auth_headers
+    ):
+        from models import HomeworkSubmission
+
+        owner, helper, outsider = make_user(), make_user(), make_user()
+        a = make_assignment(owner, is_shared_for_help=True, resources=self.RES)
+        sub = HomeworkSubmission(requester_id=owner.id, helper_id=helper.id, assignment_id=a.id,
+                                 title="T", status="pending")
+        db_session.add(sub)
+        db_session.flush()
+
+        ok = client.get(f"/student/homework/submission/{sub.id}", headers=auth_headers(helper))
+        denied = client.get(f"/student/homework/submission/{sub.id}", headers=auth_headers(outsider))
+
+        assert ok.get_json()["data"]["assignment"]["resources"] == self.RES
+        assert denied.status_code == 403
+
+    def test_helping_list_includes_assignment_resources(
+        self, client, db_session, make_user, make_assignment, auth_headers
+    ):
+        from models import HomeworkSubmission
+
+        owner, helper = make_user(), make_user()
+        a = make_assignment(owner, is_shared_for_help=True, resources=self.RES)
+        db_session.add(HomeworkSubmission(requester_id=owner.id, helper_id=helper.id,
+                                          assignment_id=a.id, title="T", status="pending"))
+        db_session.flush()
+
+        resp = client.get("/student/homework/helping", headers=auth_headers(helper))
+
+        rows = resp.get_json()["data"]["helping_with"]
+        assert rows[0]["assignment_resources"] == self.RES
