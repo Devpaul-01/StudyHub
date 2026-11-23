@@ -140,6 +140,60 @@ def slice_by_cursor(items: list, cursor, limit: int) -> tuple[list, bool, str | 
     return page, has_more, next_cursor
 
 
+def slice_by_keyset(
+    items: list,
+    key_fn,
+    cursor,
+    limit: int,
+    *,
+    descending: bool,
+    encode,
+    decode,
+) -> tuple[list, bool, str | None]:
+    """
+    Stable cursor pagination over an in-memory list that is ALREADY sorted by
+    ``(key_fn(item), item.id)`` (ascending, or descending when ``descending``)
+    (audit F-20).
+
+    The cursor encodes the last row's sort key AND id (``"<key>:<id>"``), and
+    the next page is "everything strictly after that position". Unlike the
+    old id lookup it therefore:
+      * never restarts from the top when the cursor row has since been
+        completed/deleted/filtered out of the list;
+      * is unaffected by rows that appear or disappear elsewhere.
+    For time-dependent keys (priority) rows whose score crosses the cursor
+    between requests may shift by a position; nothing is lost from the start.
+
+    A legacy cursor (a bare id, no ``:``) falls back to ``slice_by_cursor``
+    so clients holding an old cursor keep working.
+    """
+    if cursor and ":" not in str(cursor):
+        return slice_by_cursor(items, cursor, limit)
+
+    start = 0
+    if cursor:
+        try:
+            raw_key, raw_id = str(cursor).rsplit(":", 1)
+            cursor_pos = (decode(raw_key), int(raw_id))
+        except (TypeError, ValueError):
+            cursor_pos = None
+        if cursor_pos is not None:
+            start = len(items)
+            for index, item in enumerate(items):
+                pos = (key_fn(item), item.id)
+                if (pos < cursor_pos) if descending else (pos > cursor_pos):
+                    start = index
+                    break
+
+    page = items[start:start + limit]
+    has_more = (start + limit) < len(items)
+    next_cursor = None
+    if page and has_more:
+        last = page[-1]
+        next_cursor = f"{encode(key_fn(last))}:{last.id}"
+    return page, has_more, next_cursor
+
+
 # ============================================================================
 # SMART SUGGESTIONS  (pure — operates on already-loaded assignment list)
 # ============================================================================
