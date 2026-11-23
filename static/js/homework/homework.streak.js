@@ -165,40 +165,6 @@ export function showStreakCelebration(streakDays, isNewRecord = false) {
 }
 
 /**
- * Initialize streak WebSocket listeners
- */
-export function initStreakWebSocket() {
-  if (!window.socket) {
-    console.warn('Socket not initialized for streak tracking');
-    return;
-  }
-  
-  // Listen for real-time streak updates
-  window.socket.on('streak_updated', (data) => {
-    console.log('Streak updated:', data);
-    
-    // Update state
-    homeworkState.setStreakData({
-      current_streak: data.current_streak,
-      longest_streak: data.longest_streak || data.current_streak,
-      streak_at_risk: false,
-      helped_today: true
-    });
-    
-    // Update UI
-    updateStreakWidget(homeworkState.streakData);
-    
-    // Show celebration
-    if (data.current_streak > 0) {
-      showStreakCelebration(data.current_streak, data.is_new_record);
-    }
-    
-    // Show toast
-    showHomeworkToast(data.message || `🔥 ${data.current_streak}-day streak!`, 'success');
-  });
-}
-
-/**
  * Render streak stats for dashboard
  */
 export function renderStreakStats(streakData) {

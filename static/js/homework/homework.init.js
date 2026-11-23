@@ -6,7 +6,7 @@
  */
 
 import { initializeHomeworkSection } from './homework.render.js';
-import { loadStreakData, initStreakWebSocket } from './homework.streak.js';
+import { loadStreakData } from './homework.streak.js';
 import { loadChampions } from './homework.champions.js';
 
 
@@ -37,7 +37,6 @@ export async function initHomework() {
     // Initialize the homework section
     await initializeHomeworkSection();
     await loadStreakData();
-    //initStreakWebSocket();
 
     console.log('✅ Homework section initialized');
   } catch (error) {

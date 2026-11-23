@@ -169,13 +169,6 @@ export const homeworkAPI = {
   },
 
   /**
-   * Quick actions on assignment (start, complete, reopen, etc.)
-   */
-  async quickAction(assignmentId, action) {
-    return await api.post(`/assignments/${assignmentId}/quick-actions`, { action });
-  },
-
-  /**
    * Cancel submission (before solution submitted)
    */
   async cancelSubmission(submissionId) {

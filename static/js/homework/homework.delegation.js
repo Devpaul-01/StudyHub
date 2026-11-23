@@ -40,15 +40,6 @@ import {
   handleSubmitFeedback,
   handleCancelSubmission
 } from './homework.submission.js';
-import {
-  handleQuickAction,
-  enableBulkMode,
-  disableBulkMode,
-  handleBulkAction,
-  selectAllAssignments,
-  deselectAllAssignments,
-  updateSelectedCount
-} from './homework.quick-actions.js';
 
 /**
  * All homework click handlers
@@ -246,17 +237,6 @@ export const HomeworkHandlers = {
 'close-streak-warning': async (target, event) => {
   const { closeStreakWarning } = await import('./homework.streak.js');
   closeStreakWarning();
-},
-
-'give-reaction': async (target, event) => {
-  const submissionId = target.dataset.submissionId;
-  const reactionType = target.dataset.reaction;
-  
-  if (!submissionId || !reactionType) return;
-  
-  // Import submission module
-  const { handleReactionClick } = await import('./homework.submission.js');
-  await handleReactionClick(submissionId, reactionType);
 },
 
   /**
@@ -468,61 +448,6 @@ export const HomeworkHandlers = {
     if (submissionId) {
       await handleCancelSubmission(submissionId);
     }
-  },
-
-  /**
-   * Quick action
-   */
-  'quick-action': async (target, event) => {
-    event.preventDefault();
-    const assignmentId = target.dataset.assignmentId;
-    const action = target.dataset.quickAction;
-    if (assignmentId && action) {
-      await handleQuickAction(assignmentId, action);
-    }
-  },
-
-  /**
-   * Enable bulk mode
-   */
-  'enable-bulk-mode': (target, event) => {
-    event.preventDefault();
-    enableBulkMode();
-  },
-
-  /**
-   * Cancel bulk mode
-   */
-  'cancel-bulk-mode': (target, event) => {
-    event.preventDefault();
-    disableBulkMode();
-  },
-
-  /**
-   * Bulk action
-   */
-  'bulk-action': async (target, event) => {
-    event.preventDefault();
-    const action = target.dataset.bulkAction;
-    if (action) {
-      await handleBulkAction(action);
-    }
-  },
-
-  /**
-   * Select all homework
-   */
-  'select-all-homework': (target, event) => {
-    event.preventDefault();
-    selectAllAssignments();
-  },
-
-  /**
-   * Deselect all homework
-   */
-  'deselect-all-homework': (target, event) => {
-    event.preventDefault();
-    deselectAllAssignments();
   },
 
   /**
