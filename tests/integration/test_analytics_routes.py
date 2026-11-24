@@ -691,3 +691,31 @@ class TestPlatformAverages:
         data = resp.get_json()["data"]
         assert data["average_stats"]["connections"] == 1.0
         assert data["comparison"]["connections"]["multiplier"] == 1.0
+
+
+# ============================================================================
+# Soft-deleted comments are excluded (AN-16)
+# ============================================================================
+
+class TestSoftDeletedComments:
+    def test_deleted_comments_do_not_count_in_engagement_or_impact(
+        self, client, make_user, make_post, make_comment, auth_headers
+    ):
+        user = make_user()
+        author = make_user()
+        question = make_post(author, post_type="question")
+        make_comment(question, user, is_solution=True)
+        make_comment(question, user, is_solution=True, is_deleted=True)
+
+        engagement = client.get(
+            "/student/analytics/engagement", headers=auth_headers(user)
+        ).get_json()["data"]
+        impact = client.get(
+            "/student/analytics/impact", headers=auth_headers(user)
+        ).get_json()["data"]
+
+        assert engagement["comments"]["total_created"] == 1
+        assert engagement["comments"]["marked_solution"] == 1
+        # questions_answered / questions_solved each count only the live comment
+        assert impact["impact"]["questions_answered"] == 1
+        assert impact["impact"]["questions_solved"] == 1

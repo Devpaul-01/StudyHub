@@ -131,7 +131,8 @@ def generate_insights(user_id):
     avg_response_time = db.session.query(
         _avg_hours_between(Comment.posted_at, Post.posted_at)
     ).join(Post, Comment.post_id == Post.id).filter(
-        Comment.student_id == user_id
+        Comment.student_id == user_id,
+        Comment.is_deleted.isnot(True)
     ).scalar()
     if avg_response_time is not None:
         avg_response_time = float(avg_response_time)
@@ -541,7 +542,10 @@ def get_engagement_stats(current_user):
             func.count(Comment.id).label('total'),
             func.sum(Comment.likes_count).label('total_likes'),
             func.count(case((Comment.is_solution == True, 1))).label('solutions')
-        ).filter(Comment.student_id == current_user.id).first()
+        ).filter(
+            Comment.student_id == current_user.id,
+            Comment.is_deleted.isnot(True)
+        ).first()
 
         # Thread participation
         thread_stats = db.session.query(
@@ -624,13 +628,15 @@ def get_impact_metrics(current_user):
         # Questions you answered
         questions_answered = Comment.query.join(Post).filter(
             Comment.student_id == current_user.id,
+            Comment.is_deleted.isnot(True),
             Post.post_type.in_(["question", "problem"])
         ).count()
 
         # Questions you solved
-        questions_solved = Comment.query.filter_by(
-            student_id=current_user.id,
-            is_solution=True
+        questions_solved = Comment.query.filter(
+            Comment.student_id == current_user.id,
+            Comment.is_solution == True,
+            Comment.is_deleted.isnot(True)
         ).count()
 
         # Resources shared
