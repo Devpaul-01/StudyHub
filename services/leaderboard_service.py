@@ -486,7 +486,7 @@ def _dept_key(department: str | None) -> str:
 
 
 @cache_service.cached(
-    "sh:1:lb:global:{period}:{department_key}:{page}:{limit}", ttl_seconds=60
+    "sh:1:lb:global:{period}:{department_key}:{page}:{limit}", ttl_seconds=60, single_flight=True
 )
 def _get_global_leaderboard_page(
     period: str, department_key: str, page: int, limit: int
@@ -971,7 +971,9 @@ def get_connections_leaderboard(user_id: int, period: str = "weekly") -> dict:
 # 5. RISING STARS
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:rising:{limit}:{department_key}", ttl_seconds=300)
+@cache_service.cached(
+    "sh:1:lb:rising:{limit}:{department_key}", ttl_seconds=300, single_flight=True
+)
 def _get_rising_stars_page(limit: int, department_key: str) -> dict:
     """
     Viewer-INDEPENDENT rising-stars page. Cached, shared across every
@@ -1084,7 +1086,7 @@ def get_rising_stars(limit: int = 10, department: str | None = None, *, viewer_i
 # 6. LEADERBOARD STATS
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:stats", ttl_seconds=300)
+@cache_service.cached("sh:1:lb:stats", ttl_seconds=300, single_flight=True)
 def get_leaderboard_stats() -> dict:
     """Platform-wide engagement statistics.
 
@@ -1197,7 +1199,7 @@ def get_leaderboard_stats() -> dict:
 # 7. FILTERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-@cache_service.cached("sh:1:lb:filters:shared", ttl_seconds=1800)
+@cache_service.cached("sh:1:lb:filters:shared", ttl_seconds=1800, single_flight=True)
 def _get_leaderboard_filters_shared() -> dict:
     """
     The department list + static periods list — shared across every
