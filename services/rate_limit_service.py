@@ -136,7 +136,7 @@ def user_or_ip_key() -> str:
     shared campus/NAT network would otherwise rate-limit unrelated students
     together).
     """
-    user_id = _user_id_from_request_token()
+    user_id = _user_id_from_request_token() or getattr(g, "current_user_id", None)
     if user_id:
         key = f"user:{user_id}"
         logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")
