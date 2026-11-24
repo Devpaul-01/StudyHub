@@ -39,3 +39,34 @@ def test_unblocked_user_still_notifies(
     client.post(f"/student/comments/{comment.id}/like", headers=headers)
 
     assert _types(author) == ["comment", "like"]
+
+
+def test_blocked_user_cannot_notify_thread_creator_with_a_join_request(
+    client, db_session, make_user, make_thread, make_thread_member, make_connection, auth_headers, csrf_headers
+):
+    creator = make_user(status="approved")
+    abuser = make_user(status="approved")
+    make_connection(creator, abuser, status="blocked", blocked_by_id=creator.id)
+    thread = make_thread(creator)
+    make_thread_member(thread, creator, role="creator")
+    headers = {**auth_headers(abuser), **csrf_headers(client)}
+
+    resp = client.post(f"/student/threads/{thread.id}/join", json={}, headers=headers)
+
+    assert resp.status_code in (200, 201), resp.get_json()
+    assert _types(creator) == []
+
+
+def test_thread_join_request_still_notifies_when_not_blocked(
+    client, db_session, make_user, make_thread, make_thread_member, auth_headers, csrf_headers
+):
+    creator = make_user(status="approved")
+    requester = make_user(status="approved")
+    thread = make_thread(creator)
+    make_thread_member(thread, creator, role="creator")
+    headers = {**auth_headers(requester), **csrf_headers(client)}
+
+    resp = client.post(f"/student/threads/{thread.id}/join", json={}, headers=headers)
+
+    assert resp.status_code in (200, 201), resp.get_json()
+    assert _types(creator) == ["thread_join_request"]

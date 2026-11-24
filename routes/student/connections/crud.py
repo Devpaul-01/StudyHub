@@ -272,6 +272,7 @@ def broadcast_help_request(current_user):
                 related_type='help_request',
                 related_id=help_request.id,
                 link=f'/help-request/{help_request.id}',
+                actor_id=current_user.id,
             )
 
         help_request.broadcast_sent = True
@@ -372,6 +373,7 @@ def volunteer_for_help(current_user, request_id):
             related_type='help_request',
             related_id=request_id,
             link=f'/help-request/{request_id}',
+            actor_id=current_user.id,
         )
 
         # Emit websocket event to requester if they're online
@@ -1376,6 +1378,7 @@ def send_connection_request(current_user, user_id):
                     notification_type="connection_request",
                     related_type="user",
                     related_id=current_user.id,
+                    actor_id=current_user.id,
                 )
                 db.session.commit()
                 

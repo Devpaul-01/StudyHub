@@ -93,6 +93,7 @@ def leave_thread(current_user, thread_id):
             notification_type="thread_member_left",
             related_type="thread",
             related_id=thread_id,
+            actor_id=current_user.id,
         )
         db.session.commit()
 
@@ -150,6 +151,7 @@ def remove_member(current_user, thread_id, user_id):
             notification_type="thread_removed",
             related_type="thread",
             related_id=thread_id,
+            actor_id=current_user.id,
         )
         db.session.commit()
 
@@ -365,6 +367,7 @@ def update_member_role(current_user, thread_id, user_id):
                 notification_type="thread_role_updated",
                 related_type="thread",
                 related_id=thread_id,
+                actor_id=current_user.id,
             )
             db.session.commit()
 
@@ -478,6 +481,7 @@ def request_join_thread(current_user, resource_id):
                     notification_type="thread_join_request",
                     related_type="thread",
                     related_id=thread_id,
+                    actor_id=current_user.id,
                 )
                 db.session.commit()
                 return success_response("Re-request submitted", data={"request_id": existing_request.id}), 201
@@ -500,6 +504,7 @@ def request_join_thread(current_user, resource_id):
             notification_type="thread_join_request",
             related_type="thread",
             related_id=thread_id,
+            actor_id=current_user.id,
         )
         db.session.commit()
         return success_response("Join request sent", data={"request_id": join_request.id}), 201
@@ -567,6 +572,7 @@ def approve_join_request(current_user, thread_id, request_id):
             notification_type="thread_join_approved",
             related_type="thread",
             related_id=thread_id,
+            actor_id=current_user.id,
         )
         db.session.commit()
 
@@ -748,6 +754,7 @@ def invite_to_thread(current_user, thread_id, user_id):
             notification_type="thread_invite",
             related_type="thread",
             related_id=thread_id,
+            actor_id=current_user.id,
         )
         db.session.commit()
 
@@ -874,6 +881,7 @@ def accept_thread_invite(current_user, invite_id):
             notification_type="thread_invite_accepted",
             related_type="thread",
             related_id=thread.id,
+            actor_id=current_user.id,
         )
         db.session.commit()
 
@@ -1113,6 +1121,7 @@ def add_members_to_thread(current_user, thread_id):
                 notification_type="thread_member_added",
                 related_type="thread",
                 related_id=thread_id,
+                actor_id=current_user.id,
             )
             added.append({"id": user.id, "username": user.username, "name": user.name, "avatar": user.avatar})
 

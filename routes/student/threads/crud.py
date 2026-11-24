@@ -150,6 +150,7 @@ def create_thread(current_user):
                     notification_type="thread_member_added",
                     related_type="thread",
                     related_id=new_thread.id,
+                    actor_id=current_user.id,
                 )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
@@ -271,6 +272,7 @@ def create_standalone_thread(current_user):
                     notification_type="thread_member_added",
                     related_type="thread",
                     related_id=new_thread.id,
+                    actor_id=current_user.id,
                 )
                 added_members.append({"id": member_user.id, "username": member_user.username, "name": member_user.name})
 
@@ -566,6 +568,7 @@ def delete_thread(current_user, thread_id):
                     notification_type="thread_deleted",
                     related_type="thread",
                     related_id=thread_id,
+                    actor_id=current_user.id,
                 )
 
         # FIX: broadcast BEFORE delete so WS manager can still find the room
