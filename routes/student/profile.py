@@ -17,6 +17,7 @@ from models import (
     PostReaction, Bookmark, OnboardingDetails,
 )
 from extensions import db
+from services import badge_service
 from errors import ValidationError
 from routes.student.helpers import (
     token_required, success_response, error_response,
@@ -787,7 +788,7 @@ def get_own_profile(current_user):
             UserBadge.query
             .filter_by(user_id=current_user.id)
             .join(Badge)
-            .order_by(UserBadge.is_featured.desc(), Badge.rarity.desc())
+            .order_by(UserBadge.is_featured.desc(), badge_service.rarity_rank_expr().desc())
             .limit(6)
             .all()
         )
@@ -1077,7 +1078,7 @@ def view_profile(current_user, username):
             UserBadge.query
             .filter_by(user_id=user.id)
             .join(Badge)
-            .order_by(UserBadge.is_featured.desc(), Badge.rarity.desc())
+            .order_by(UserBadge.is_featured.desc(), badge_service.rarity_rank_expr().desc())
             .limit(6)
             .all()
         )

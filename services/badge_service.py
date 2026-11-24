@@ -246,6 +246,18 @@ class BadgeProgress:
 # SEEDING
 # ============================================================================
 
+# Rarity ordering for display. ORDER BY Badge.rarity DESC sorts the strings
+# alphabetically (rare > legendary > epic > common), which is not a rarity
+# order, so sort by this rank instead.
+RARITY_RANK = {"common": 1, "rare": 2, "epic": 3, "legendary": 4}
+
+
+def rarity_rank_expr():
+    """SQL CASE expression mapping Badge.rarity to RARITY_RANK (unknown -> 0)."""
+    from sqlalchemy import case
+    return case(RARITY_RANK, value=Badge.rarity, else_=0)
+
+
 _SEEDED_FIELDS = ("description", "icon", "category", "rarity", "criteria")
 
 
