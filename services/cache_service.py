@@ -25,6 +25,7 @@ boundary is entirely inside this file.
 """
 
 import functools
+import time
 import json
 import logging
 import os
@@ -257,7 +258,22 @@ def clear():
 # DECORATOR
 # ============================================================================
 
-def cached(key_template, ttl_seconds, version_key=None):
+_SINGLE_FLIGHT_LOCK_TTL_SECONDS = 15     # a crashed computer's lock expires on its own
+_SINGLE_FLIGHT_WAIT_SECONDS = 2.0        # longest a waiter holds out before computing itself
+_SINGLE_FLIGHT_POLL_SECONDS = 0.05
+
+
+def _try_lock(lock_key):
+    """Claim the right to recompute an entry. True means "go ahead": either we
+    got the lock or Redis could not be asked, and not caching smartly must
+    never stop a request from being served."""
+    try:
+        return bool(redis_client.set(lock_key, "1", nx=True, ex=_SINGLE_FLIGHT_LOCK_TTL_SECONDS))
+    except Exception:
+        return True
+
+
+def cached(key_template, ttl_seconds, version_key=None, single_flight=False):
     """
     Decorator for service-layer functions. Unchanged in behavior from the
     original in-memory version — it only ever calls the get()/set()
@@ -291,6 +307,14 @@ def cached(key_template, ttl_seconds, version_key=None):
     naming an integer counter. Its current value is appended to the cache key
     as ":v<n>", so bumping the counter with incr() invalidates every entry
     that embeds it in O(1). A missing counter is version 0.
+
+    single_flight (optional) protects against a stampede on a SHARED entry:
+    when it expires, every concurrent request would otherwise recompute it.
+    With single_flight=True one caller takes a short-lived Redis lock and
+    computes while the others wait (bounded, see _SINGLE_FLIGHT_WAIT_SECONDS)
+    for its result to appear. Anyone who times out simply computes for
+    themselves, and if Redis is unreachable everyone does, so this can only
+    ever reduce duplicate work, never block a request or change a result.
     """
     def decorator(func):
         # Map positional args to parameter names so key_template can
@@ -330,15 +354,35 @@ def cached(key_template, ttl_seconds, version_key=None):
                 return cached_value
 
             log.debug(f"[CACHE] WRAPPER: {func.__name__} — CACHE MISS ❌ (executing)")
-            result = func(*args, **kwargs)
-            
-            if result is not None:
-                log.debug(f"[CACHE] WRAPPER: {func.__name__} — caching result")
-                set(key, result, ttl_seconds)
-            else:
-                log.debug(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
-            
-            return result
+
+            lock_key = None
+            if single_flight:
+                lock_key = f"{key}:computing"
+                if not _try_lock(lock_key):
+                    # Another request is already recomputing this entry.
+                    waited = 0.0
+                    while waited < _SINGLE_FLIGHT_WAIT_SECONDS:
+                        time.sleep(_SINGLE_FLIGHT_POLL_SECONDS)
+                        waited += _SINGLE_FLIGHT_POLL_SECONDS
+                        cached_value = get(key)
+                        if cached_value is not None:
+                            log.debug(f"[CACHE] WRAPPER: {func.__name__} — filled by another request")
+                            return cached_value
+                    lock_key = None      # timed out: compute for ourselves, do not touch their lock
+
+            try:
+                result = func(*args, **kwargs)
+
+                if result is not None:
+                    log.debug(f"[CACHE] WRAPPER: {func.__name__} — caching result")
+                    set(key, result, ttl_seconds)
+                else:
+                    log.debug(f"[CACHE] WRAPPER: {func.__name__} — result is None, not caching")
+
+                return result
+            finally:
+                if lock_key:
+                    delete(lock_key)
 
         # Expose the underlying function and manual cache controls for
         # callers/tests that need to bypass or invalidate deliberately.

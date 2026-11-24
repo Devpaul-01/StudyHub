@@ -6,6 +6,7 @@ explicit "fails open on any Redis exception" contract -- both the happy
 path (fakeredis) and the failure path (raising mock) need coverage.
 """
 
+import pytest
 from unittest.mock import Mock
 
 from services import cache_service
@@ -187,3 +188,57 @@ def test_versioned_cache_is_invalidated_by_bumping_the_version(fakeredis_client)
     assert compute(5) == {"n": 2}          # recomputed under the new version
     assert compute(6) == {"n": 3}          # other users keep their own versions
     assert compute(6) == {"n": 3}
+
+
+# ---------------------------------------------------------------------------
+# single_flight (stampede protection)
+# ---------------------------------------------------------------------------
+
+def test_single_flight_computes_once_for_concurrent_misses(fakeredis_client):
+    import threading
+    import time
+    calls = []
+
+    @cache_service.cached("sh:1:sf:{x}", ttl_seconds=60, single_flight=True)
+    def slow(x):
+        calls.append(x)
+        time.sleep(0.3)
+        return {"x": x}
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(slow(1))) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join(10) for t in threads]
+
+    assert len(calls) == 1
+    assert results == [{"x": 1}] * 8
+
+
+def test_single_flight_releases_its_lock_when_the_computation_raises(fakeredis_client):
+    @cache_service.cached("sh:1:sf2:{x}", ttl_seconds=60, single_flight=True)
+    def boom(x):
+        raise RuntimeError("db down")
+
+    with pytest.raises(RuntimeError):
+        boom(1)
+    assert fakeredis_client.get("sh:1:sf2:1:computing") is None
+
+
+def test_single_flight_waiter_computes_itself_if_the_holder_never_finishes(fakeredis_client, monkeypatch):
+    monkeypatch.setattr(cache_service, "_SINGLE_FLIGHT_WAIT_SECONDS", 0.2)
+    fakeredis_client.set("sh:1:sf3:1:computing", "1")            # a stuck/crashed holder
+
+    @cache_service.cached("sh:1:sf3:{x}", ttl_seconds=60, single_flight=True)
+    def compute(x):
+        return {"x": x}
+
+    assert compute(1) == {"x": 1}                                 # served, not blocked
+    assert fakeredis_client.get("sh:1:sf3:1:computing") == "1"    # their lock is left alone
+
+
+def test_single_flight_fails_open_when_redis_is_down(raising_redis_client):
+    @cache_service.cached("sh:1:sf4:{x}", ttl_seconds=60, single_flight=True)
+    def compute(x):
+        return {"x": x}
+
+    assert compute(1) == {"x": 1}
