@@ -567,3 +567,34 @@ class TestExportAnalytics:
         data = resp.get_json()["data"]
         assert data["export_type"] == "posts"
         assert data["records"][0]["title"] == "Exported Post"
+
+
+# ============================================================================
+# Failure handling (AN-03)
+# ============================================================================
+
+class TestAnalyticsFailureHandling:
+    @pytest.mark.parametrize("path", [
+        "overview", "activity-heatmap", "engagement", "impact", "insights",
+        "weekly-summary",
+    ])
+    def test_unexpected_exception_returns_500_not_400(
+        self, client, make_user, auth_headers, monkeypatch, path
+    ):
+        # Regression (AN-03): server-side failures used to come back as
+        # HTTP 400, which hid real outages from monitoring and clients.
+        from routes.student import analytics
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated backend failure")
+
+        monkeypatch.setattr(analytics.cache_service, "get", boom)
+        user = make_user()
+
+        resp = client.get(f"/student/analytics/{path}", headers=auth_headers(user))
+
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert body["status"] == "error"
+        # The user-facing message must not leak the internal exception text.
+        assert "simulated backend failure" not in body["message"]

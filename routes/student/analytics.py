@@ -375,8 +375,9 @@ def get_analytics_overview(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Analytics overview error: {str(e)}")
-        return error_response("Failed to load analytics overview")
+        db.session.rollback()
+        current_app.logger.exception("Analytics overview error")
+        return error_response("Failed to load analytics overview", 500)
 
 
 @analytics_bp.route("/analytics/activity-heatmap", methods=["GET"])
@@ -483,8 +484,9 @@ def get_activity_heatmap(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Activity heatmap error: {str(e)}")
-        return error_response("Failed to load activity heatmap")
+        db.session.rollback()
+        current_app.logger.exception("Activity heatmap error")
+        return error_response("Failed to load activity heatmap", 500)
 
 
 @analytics_bp.route("/analytics/engagement", methods=["GET"])
@@ -573,8 +575,9 @@ def get_engagement_stats(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Engagement stats error: {str(e)}")
-        return error_response("Failed to load engagement stats")
+        db.session.rollback()
+        current_app.logger.exception("Engagement stats error")
+        return error_response("Failed to load engagement stats", 500)
 
 
 @analytics_bp.route("/analytics/impact", methods=["GET"])
@@ -660,8 +663,9 @@ def get_impact_metrics(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Impact metrics error: {str(e)}")
-        return error_response("Failed to load impact metrics")
+        db.session.rollback()
+        current_app.logger.exception("Impact metrics error")
+        return error_response("Failed to load impact metrics", 500)
 
 
 @analytics_bp.route("/analytics/insights", methods=["GET"])
@@ -696,8 +700,9 @@ def get_insights(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Insights error: {str(e)}")
-        return error_response("Failed to generate insights")
+        db.session.rollback()
+        current_app.logger.exception("Insights error")
+        return error_response("Failed to generate insights", 500)
 
 
 @analytics_bp.route("/analytics/comparison", methods=["GET"])
@@ -769,8 +774,9 @@ def get_comparison_stats(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Comparison stats error: {str(e)}")
-        return error_response("Failed to load comparison")
+        db.session.rollback()
+        current_app.logger.exception("Comparison stats error")
+        return error_response("Failed to load comparison", 500)
 
 
 @analytics_bp.route("/analytics/post/<int:post_id>", methods=["GET"])
@@ -847,8 +853,9 @@ def get_post_analytics(current_user, post_id):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Post analytics error: {str(e)}")
-        return error_response("Failed to load post analytics")
+        db.session.rollback()
+        current_app.logger.exception("Post analytics error")
+        return error_response("Failed to load post analytics", 500)
 
 
 @analytics_bp.route("/analytics/weekly-summary", methods=["GET"])
@@ -927,8 +934,9 @@ def get_weekly_summary(current_user):
         return jsonify({"status": "success", "data": data})
 
     except Exception as e:
-        current_app.logger.error(f"Weekly summary error: {str(e)}")
-        return error_response("Failed to load weekly summary")
+        db.session.rollback()
+        current_app.logger.exception("Weekly summary error")
+        return error_response("Failed to load weekly summary", 500)
 
 
 @analytics_bp.route("/analytics/export", methods=["GET"])
@@ -1024,5 +1032,6 @@ def export_analytics(current_user):
         })
 
     except Exception as e:
-        current_app.logger.error(f"Export analytics error: {str(e)}")
-        return error_response("Failed to export analytics")
+        db.session.rollback()
+        current_app.logger.exception("Export analytics error")
+        return error_response("Failed to export analytics", 500)
