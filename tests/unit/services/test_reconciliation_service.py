@@ -16,7 +16,7 @@ from models import Comment, Bookmark, PostView, PostReaction, ThreadMember, Thre
 
 
 def test_reconcile_post_counters_no_drift_not_flagged(db_session, make_user, make_post):
-    user = make_user()
+    user = make_user(total_posts=1)   # consistent with the one post below
     make_post(user, comments_count=0, bookmark_count=0, views_count=0, positive_reactions_count=0)
 
     report = recon.reconcile_denormalized_counts()
@@ -110,7 +110,7 @@ def test_reconcile_thread_message_count_excludes_deleted_messages(db_session, ma
 
 
 def test_reconcile_denormalized_counts_no_drift_anywhere(db_session, make_user, make_post, make_thread):
-    user = make_user()
+    user = make_user(total_posts=1)
     make_post(user, comments_count=0, bookmark_count=0, views_count=0, positive_reactions_count=0)
     # make_thread's factory does not insert a backing ThreadMember row --
     # member_count=0 matches that (zero real members, zero stored),
@@ -124,3 +124,79 @@ def test_reconcile_denormalized_counts_no_drift_anywhere(db_session, make_user, 
     assert report.corrected_count == 0
     assert report.alerted_only_count == 0
     assert report.counters_checked > 0
+
+
+# ============================================================================
+# reputation & badge counters
+# ============================================================================
+
+def test_badge_awarded_count_drift_is_auto_corrected(db_session, make_user):
+    from models import Badge, UserBadge
+    user = make_user()
+    badge = Badge(name="B", description="d", icon="i", category="c", rarity="common",
+                  criteria={}, awarded_count=5)           # stale: only 1 real award
+    db_session.add(badge)
+    db_session.flush()
+    db_session.add(UserBadge(user_id=user.id, badge_id=badge.id))
+    db_session.commit()
+
+    report = recon.reconcile_denormalized_counts()
+
+    drift = [d for d in report.drifts_found if d.model == "Badge" and d.column == "awarded_count"]
+    assert len(drift) == 1 and drift[0].auto_corrected
+    assert (drift[0].stored_value, drift[0].actual_value) == (5, 1)
+    assert Badge.query.get(badge.id).awarded_count == 1
+
+
+def test_helpful_counters_count_active_marks_only(db_session, make_user, make_post, make_comment):
+    from models import CommentHelpfulMark
+    author, a, b = make_user(total_posts=1), make_user(), make_user()
+    comment = make_comment(make_post(author), author)
+    db_session.add_all([
+        CommentHelpfulMark(comment_id=comment.id, user_id=a.id, is_active=True),
+        CommentHelpfulMark(comment_id=comment.id, user_id=b.id, is_active=False),  # soft-deleted
+    ])
+    comment.helpful_count = 2           # stale
+    author.total_helpful = 2            # stale
+    db_session.commit()
+
+    report = recon.reconcile_denormalized_counts()
+
+    assert report.corrected_count >= 2
+    db_session.refresh(comment)
+    db_session.refresh(author)
+    assert comment.helpful_count == 1 and author.total_helpful == 1
+
+
+def test_reputation_ledger_mismatch_is_alerted_never_corrected(db_session, make_user):
+    from models import ReputationHistory
+    user = make_user(reputation=120)                    # legacy balance, no history
+    db_session.commit()
+
+    report = recon.reconcile_denormalized_counts()
+
+    drift = [d for d in report.drifts_found if d.column == "reputation" and d.row_id == user.id]
+    assert len(drift) == 1 and drift[0].auto_corrected is False
+    assert (drift[0].stored_value, drift[0].actual_value) == (120, 0)
+    db_session.refresh(user)
+    assert user.reputation == 120                       # never silently rewritten
+
+
+def test_reputation_matching_ledger_is_clean(db_session, make_user):
+    from services.reputation_service import award_reputation
+    user = make_user(reputation=0)
+    award_reputation(user.id, "comment_marked_helpful")
+    db_session.commit()
+    report = recon.reconcile_denormalized_counts()
+    assert not [d for d in report.drifts_found if d.column == "reputation"]
+
+
+def test_total_posts_mismatch_is_alert_only(db_session, make_user, make_post):
+    user = make_user(total_posts=5)
+    make_post(user)
+    db_session.commit()
+    report = recon.reconcile_denormalized_counts()
+    drift = [d for d in report.drifts_found if d.column == "total_posts"]
+    assert len(drift) == 1 and drift[0].auto_corrected is False
+    db_session.refresh(user)
+    assert user.total_posts == 5

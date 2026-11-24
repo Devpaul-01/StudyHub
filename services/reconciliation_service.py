@@ -30,7 +30,10 @@ import logging
 import datetime
 from dataclasses import dataclass, field
 
-from models import Post, Comment, Bookmark, PostView, PostReaction, Thread, ThreadMember, ThreadMessage
+from models import (
+    Post, Comment, Bookmark, PostView, PostReaction, Thread, ThreadMember, ThreadMessage,
+    User, Badge, UserBadge, CommentHelpfulMark, ReputationHistory,
+)
 from extensions import db
 
 logger = logging.getLogger(__name__)
@@ -289,6 +292,96 @@ def _reconcile_thread_counters(report):
 # ENTRY POINT
 # ============================================================================
 
+# ============================================================================
+# RECONCILIATION — REPUTATION & BADGES
+#
+#   Auto-corrected (display-only):
+#     Badge.awarded_count      == COUNT(user_badges)
+#     Comment.helpful_count    == COUNT(active helpful marks)
+#     User.total_helpful       == active helpful marks on the user's comments
+#   Alert-only (business-significant, never silently rewritten):
+#     User.reputation          == SUM(reputation_history.points_change)
+#     User.total_posts         == COUNT(posts) (badge input; soft-deleted or
+#                                 moderated posts make a blind fix unsafe)
+#
+# A non-zero reputation difference is EXPECTED for accounts that pre-date the
+# effective-delta ledger (older rows stored the requested delta, and seeded
+# or legacy balances have no history); it is reported, never "fixed" -- an
+# operator decides whether to write an opening-balance row.
+# ============================================================================
+
+def _record(report, model, row_id, column, stored, actual, auto_corrected):
+    report.counters_checked += 1
+    if stored == actual:
+        return False
+    report.drifts_found.append(CounterDrift(
+        model=model, row_id=row_id, column=column,
+        stored_value=stored, actual_value=actual, auto_corrected=auto_corrected,
+    ))
+    if auto_corrected:
+        report.corrected_count += 1
+    else:
+        report.alerted_only_count += 1
+    return True
+
+
+def _reconcile_reputation_and_badge_counters(report):
+    corrected = False
+
+    # Badge.awarded_count
+    awarded_actual = dict(
+        db.session.query(UserBadge.badge_id, db.func.count(UserBadge.id))
+        .group_by(UserBadge.badge_id).all()
+    )
+    for badge_id, stored in db.session.query(Badge.id, Badge.awarded_count).all():
+        actual = awarded_actual.get(badge_id, 0)
+        if _record(report, "Badge", badge_id, "awarded_count", stored or 0, actual, True):
+            Badge.query.filter_by(id=badge_id).update({"awarded_count": actual})
+            corrected = True
+
+    # Comment.helpful_count and User.total_helpful (active marks only)
+    mark_counts = dict(
+        db.session.query(CommentHelpfulMark.comment_id, db.func.count(CommentHelpfulMark.id))
+        .filter(CommentHelpfulMark.is_active.is_(True))
+        .group_by(CommentHelpfulMark.comment_id).all()
+    )
+    author_totals = {}
+    for comment_id, author_id, stored in db.session.query(
+        Comment.id, Comment.student_id, Comment.helpful_count
+    ).all():
+        actual = mark_counts.get(comment_id, 0)
+        author_totals[author_id] = author_totals.get(author_id, 0) + actual
+        if _record(report, "Comment", comment_id, "helpful_count", stored or 0, actual, True):
+            Comment.query.filter_by(id=comment_id).update({"helpful_count": actual})
+            corrected = True
+
+    for user_id, stored in db.session.query(User.id, User.total_helpful).all():
+        actual = author_totals.get(user_id, 0)
+        if _record(report, "User", user_id, "total_helpful", stored or 0, actual, True):
+            User.query.filter_by(id=user_id).update({"total_helpful": actual})
+            corrected = True
+
+    # User.total_posts (alert-only)
+    post_counts = dict(
+        db.session.query(Post.student_id, db.func.count(Post.id)).group_by(Post.student_id).all()
+    )
+    # User.reputation vs ledger (alert-only)
+    ledger = dict(
+        db.session.query(ReputationHistory.user_id, db.func.sum(ReputationHistory.points_change))
+        .group_by(ReputationHistory.user_id).all()
+    )
+    for user_id, reputation, total_posts in db.session.query(
+        User.id, User.reputation, User.total_posts
+    ).all():
+        _record(report, "User", user_id, "total_posts", total_posts or 0,
+                post_counts.get(user_id, 0), False)
+        _record(report, "User", user_id, "reputation", reputation or 0,
+                int(ledger.get(user_id, 0) or 0), False)
+
+    if corrected:
+        db.session.commit()
+
+
 def reconcile_denormalized_counts():
     """
     Compare stored denormalized counters against fresh COUNT(*) queries and
@@ -304,6 +397,7 @@ def reconcile_denormalized_counts():
 
     _reconcile_post_counters(report)
     _reconcile_thread_counters(report)
+    _reconcile_reputation_and_badge_counters(report)
 
     if report.has_drift():
         logger.warning(
