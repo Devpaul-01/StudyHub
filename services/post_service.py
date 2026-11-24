@@ -21,7 +21,9 @@ the multi-reaction system this function belonged to; see that route's own
 docstring). It also contained a latent bug — `post.helpful_count` doesn't
 exist as an attribute on the Post model — confirming it was never
 actually exercised in practice.
-    - check_helpful_milestones (moved in the Phase 1 remediation pass, now
+    - (check_helpful_milestones was removed: it had no callers, and helpful
+      badges are evaluated by services/badge_triggers.py. It was moved in
+      the Phase 1 remediation pass, now
       that services/badge_service.py exists — it previously stayed in
       posts.py because moving it here would have made this service import
       from routes/*, violating Document 2 §2's dependency rule. Now calls
@@ -52,9 +54,8 @@ import re
 import datetime
 from collections import Counter
 
-from models import User, Post, Comment, Mention, UserActivity, PostReaction
+from models import User, Post, Comment, Mention, UserActivity
 from extensions import db
-from services import badge_service
 from services import notification_service
 from services.cache_service import cached
 
@@ -212,65 +213,6 @@ def update_user_activity(user_id, activity_type):
         activity.activity_score = (activity.activity_score or 0) + 2
 
     return activity
-
-
-def check_helpful_milestones(user_id):
-    """
-    Check if user reached helpful count milestones and award the
-    corresponding badge if so.
-
-    Moved from posts.py in the Phase 1 remediation pass now that
-    services/badge_service.py exists — calls badge_service directly
-    instead of importing routes.student.badges.
-
-    LIVE ACTIVITY NOTE: this function currently has zero call sites
-    anywhere in the app (confirmed by grepping every .py file for
-    check_helpful_milestones( outside this definition and its own unit
-    tests) — react_to_post, the route this was presumably meant to be
-    called from, never invokes it. That's a pre-existing gap, not
-    something introduced or being silently fixed here; it's out of scope
-    for the Live Activity backend work this change belongs to. The
-    badge_earned activity call below is wired in so it's correct and
-    ready the moment this function does get a real caller, matching
-    mark_solution's badge_earned wiring (routes/student/posts/comments.py)
-    — but until something actually calls check_helpful_milestones, this
-    activity type can never fire in production, same as the badges
-    themselves can never be awarded.
-    """
-    user = User.query.get(user_id)
-    if not user:
-        return
-
-    helpful_count = PostReaction.query.filter_by(
-        reaction_type="helpful"
-    ).join(Post).filter(
-        Post.student_id == user_id
-    ).count()
-
-    # Check badge criteria
-    badge_name = None
-    if helpful_count == 10:
-        badge_name = "Helpful Contributor"
-    elif helpful_count == 50:
-        badge_name = "Helpful Hero"
-
-    if badge_name:
-        awarded_badge = badge_service.check_and_award_badge(user_id, badge_name)
-        # check_and_award_badge commits internally (commit=True default —
-        # see its own docstring), so by the time it returns this is
-        # already a separately-committed transaction, same reasoning as
-        # mark_solution's badge_earned wiring.
-        if awarded_badge is not None:
-            from services.activity_service import record_live_activity
-            record_live_activity(
-                user_id,
-                'badge_earned',
-                {
-                    'badge_id': awarded_badge.badge_id,
-                    'badge_name': badge_name,
-                },
-                scope='global',
-            )
 
 
 @cached("popular_tags", ttl_seconds=300)

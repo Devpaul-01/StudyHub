@@ -189,11 +189,9 @@ def notify_level_up(user_id: int, new_level: dict) -> Notification:
     """
     Reputation level-up notification.
 
-    Not yet called from any of the currently-migrated route files (none
-    of badges.py/leaderboard.py/analytics.py currently construct this
-    notification inline), but specified here per Document 2 §3.1 /§3.9 so
-    reputation_service.award_reputation has a stable named function to
-    call once that service is wired in.
+    Called by reputation_service.award_reputation when an award moves a
+    user across a level boundary. Like every notify() call, the unread
+    counter and WebSocket push are delivered after the transaction commits.
     """
     level_name = new_level.get("name", "a new level")
     icon = new_level.get("icon", "🎉")
