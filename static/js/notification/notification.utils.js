@@ -1,5 +1,21 @@
 // Notification Utility Functions
 
+/**
+ * Returns `link` only if it is a same-origin, app-relative path ("/foo?x=1#y");
+ * otherwise ''. Rejects absolute and protocol-relative URLs, "javascript:" and
+ * other schemes, backslash tricks and control characters. Notification links
+ * are server-generated, but they are stored data: anything that ends up in an
+ * href/location must be re-validated on the client as well (audit NOTIF-01).
+ */
+export function safeNotificationLink(link) {
+  if (typeof link !== 'string') return '';
+  const value = link.trim();
+  if (!value.startsWith('/') || value.startsWith('//')) return '';
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\u0000-\u001f\u007f\s]/.test(value)) return '';
+  return value;
+}
+
 export function formatHudTime(isoDate) {
   const date = new Date(isoDate);
   const now = new Date();

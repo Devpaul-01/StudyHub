@@ -10,7 +10,7 @@ import {
   handleMarkAllRead, handleClearReadNotifications, handleFilterNotifications,
 } from './notification.events.js';
 import { notificationAPI } from './notification.api.js';
-import { updateBadgeCount } from './notification.utils.js';
+import { updateBadgeCount, safeNotificationLink } from './notification.utils.js';
 
 /**
  * All notification click handlers
@@ -22,7 +22,7 @@ export const NotificationHandlers = {
    */
   'view-notification': async (target, event, containerType) => {
     const notificationId = target.dataset.notificationId;
-    const link = target.dataset.link;
+    const link = safeNotificationLink(target.dataset.link);
     const isRead = target.classList.contains('read');
     
     // Mark as read if unread
@@ -53,8 +53,8 @@ export const NotificationHandlers = {
       }
     }
     
-    // Navigate to link if present
-    if (link && link !== '' && link !== 'null' && link !== 'undefined') {
+    // Navigate only to a validated same-origin path (audit NOTIF-01)
+    if (link) {
       window.location.href = link;
     }
   },
