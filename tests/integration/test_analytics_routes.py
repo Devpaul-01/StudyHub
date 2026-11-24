@@ -338,6 +338,42 @@ class TestInsights:
         types = [i["type"] for i in data["insights"]]
         assert "consistency" in types
 
+    def test_best_posting_day_uses_dialect_safe_weekday(
+        self, client, make_user, make_post, auth_headers
+    ):
+        # Regression (AN-01): the weekday/latency SQL used SQLite-only
+        # strftime()/julianday() and failed with HTTP 400 on PostgreSQL.
+        user = make_user(login_streak=0)
+        now = datetime.datetime.utcnow().replace(microsecond=0)
+        wednesday = now - datetime.timedelta(days=(now.weekday() - 2) % 7)
+        tuesday = wednesday - datetime.timedelta(days=1)
+        make_post(user, posted_at=wednesday, positive_reactions_count=4)
+        make_post(user, posted_at=tuesday, positive_reactions_count=1)
+
+        resp = client.get("/student/analytics/insights", headers=auth_headers(user))
+
+        assert resp.status_code == 200
+        timing = [i for i in resp.get_json()["data"]["insights"] if i["type"] == "timing"]
+        assert len(timing) == 1
+        assert "4.0 likes on Wednesdays" in timing[0]["message"]
+        assert "160% above average" in timing[0]["message"]
+
+    def test_quick_responder_reports_average_latency_in_hours(
+        self, client, make_user, make_post, make_comment, auth_headers
+    ):
+        user = make_user(login_streak=0)
+        author = make_user()
+        now = datetime.datetime.utcnow().replace(microsecond=0)
+        post = make_post(author, posted_at=now - datetime.timedelta(hours=1))
+        make_comment(post, user, posted_at=now)
+
+        resp = client.get("/student/analytics/insights", headers=auth_headers(user))
+
+        assert resp.status_code == 200
+        quick = [i for i in resp.get_json()["data"]["insights"] if i["title"] == "Quick Responder"]
+        assert len(quick) == 1
+        assert "1.0 hours" in quick[0]["message"]
+
 
 # ============================================================================
 # GET /analytics/comparison

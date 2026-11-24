@@ -52,14 +52,37 @@ from services import cache_service
 analytics_bp = Blueprint("student_analytics", __name__)
 
 # ---------------------------------------------------------------------------
-# SQLite's strftime('%w', …) returns 0=Sunday … 6=Saturday.
-# Python's calendar.day_name is 0=Monday … 6=Sunday — a different mapping.
-# This explicit list avoids that off-by-one entirely.
+# Both SQLite's strftime('%w', …) and PostgreSQL's EXTRACT(dow FROM …) return
+# 0=Sunday … 6=Saturday. Python's calendar.day_name is 0=Monday … 6=Sunday —
+# a different mapping. This explicit list avoids that off-by-one entirely.
 # ---------------------------------------------------------------------------
-_SQLITE_WEEKDAY_NAMES = [
+_WEEKDAY_NAMES = [
     "Sunday", "Monday", "Tuesday", "Wednesday",
     "Thursday", "Friday", "Saturday",
 ]
+
+
+def _is_postgres():
+    """True when the active session is bound to PostgreSQL.
+
+    Production runs on PostgreSQL while the test suite's default database is
+    SQLite; a handful of date functions differ between the two.
+    """
+    return db.session.get_bind().dialect.name == "postgresql"
+
+
+def _weekday_expr(column):
+    """SQL expression for the weekday of ``column`` (0=Sunday … 6=Saturday)."""
+    if _is_postgres():
+        return func.extract("dow", column)
+    return func.strftime("%w", column)
+
+
+def _avg_hours_between(later, earlier):
+    """SQL expression for AVG(``later`` - ``earlier``) expressed in hours."""
+    if _is_postgres():
+        return func.avg(func.extract("epoch", later - earlier)) / 3600.0
+    return func.avg(func.julianday(later) - func.julianday(earlier)) * 24
 
 # Allowed values for the export endpoint's ?type= query parameter.
 _VALID_EXPORT_TYPES = {"activity", "reputation", "posts", "overview"}
@@ -74,40 +97,44 @@ def generate_insights(user_id):
         return insights
 
     # Insight 1: Best posting day
+    weekday = _weekday_expr(Post.posted_at)
     posts_by_day = db.session.query(
-        func.strftime('%w', Post.posted_at).label('day'),
+        weekday.label('day'),
         func.count(Post.id).label('count'),
         func.avg(Post.positive_reactions_count).label('avg_likes')
     ).filter(
         Post.student_id == user_id,
         Post.posted_at >= datetime.datetime.utcnow() - datetime.timedelta(days=30)
-    ).group_by('day').all()
+    ).group_by(weekday).all()
 
     if posts_by_day:
-        # Filter out rows where avg_likes is None before any math
-        valid_days = [p for p in posts_by_day if p.avg_likes is not None]
+        # Filter out rows where avg_likes is None before any math. PostgreSQL
+        # returns Decimal from AVG() and a Decimal/float from EXTRACT, so
+        # normalise to plain Python numbers up front.
+        valid_days = [
+            (int(p.day), float(p.avg_likes))
+            for p in posts_by_day if p.avg_likes is not None
+        ]
         if valid_days:
-            best_day = max(valid_days, key=lambda x: x.avg_likes)
-            # FIX: use _SQLITE_WEEKDAY_NAMES — strftime('%w') gives 0=Sunday…6=Saturday,
-            # which does NOT match Python's calendar.day_name (0=Monday…6=Sunday).
-            day_name = _SQLITE_WEEKDAY_NAMES[int(best_day.day)]
-            avg_likes_overall = sum(p.avg_likes for p in valid_days) / len(valid_days)
-            pct_above = int(best_day.avg_likes / avg_likes_overall * 100) if avg_likes_overall else 0
+            best_day, best_avg_likes = max(valid_days, key=lambda x: x[1])
+            day_name = _WEEKDAY_NAMES[best_day]
+            avg_likes_overall = sum(v for _, v in valid_days) / len(valid_days)
+            pct_above = int(best_avg_likes / avg_likes_overall * 100) if avg_likes_overall else 0
             insights.append({
                 "type": "timing",
                 "icon": "📅",
                 "title": "Best Posting Day",
-                "message": f"Your posts get {best_day.avg_likes:.1f} likes on {day_name}s - {pct_above}% above average!",
+                "message": f"Your posts get {best_avg_likes:.1f} likes on {day_name}s - {pct_above}% above average!",
                 "actionable": f"Try posting more on {day_name}s"
             })
 
     avg_response_time = db.session.query(
-        func.avg(
-            func.julianday(Comment.posted_at) - func.julianday(Post.posted_at)
-        ) * 24
+        _avg_hours_between(Comment.posted_at, Post.posted_at)
     ).join(Post, Comment.post_id == Post.id).filter(
         Comment.student_id == user_id
     ).scalar()
+    if avg_response_time is not None:
+        avg_response_time = float(avg_response_time)
 
     if avg_response_time is not None and avg_response_time < 3:
         insights.append({
