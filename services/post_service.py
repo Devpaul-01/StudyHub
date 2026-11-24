@@ -139,6 +139,7 @@ def detect_and_create_mentions(text_content, created_by_id, content_type, conten
                     notification_type="mention",
                     related_type=content_type,
                     related_id=content_id,
+                    actor_id=created_by_id,
                 )
 
                 mentioned_users.append(mentioned_user.id)

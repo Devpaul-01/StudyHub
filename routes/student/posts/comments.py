@@ -203,6 +203,7 @@ def mark_solution(current_user, post_id):
                 notification_type="solution_accepted",
                 related_type="post",
                 related_id=post_id,
+                actor_id=current_user.id,
             )
         
         db.session.commit()
@@ -285,6 +286,7 @@ def like_comment(current_user, comment_id):
                     notification_type="like",
                     related_type="comment",
                     related_id=comment_id,
+                    actor_id=current_user.id,
                 )
         db.session.commit()
         return success_response("Comment liked", data={"liked": True, "count": comment.likes_count})
@@ -632,6 +634,7 @@ def create_comment(current_user):
                 notification_type="comment",
                 related_type="post",
                 related_id=post_id,
+                actor_id=current_user.id,
             )
         
         # Update activity
