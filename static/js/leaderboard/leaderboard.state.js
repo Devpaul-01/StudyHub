@@ -24,6 +24,14 @@ class LeaderboardState {
     this.myRankData   = null; // latest /leaderboard/me response data
     this.statsData    = null; // latest /leaderboard/stats response data
 
+    // ── Request sequencing ─────────────────────────────────────────────────────
+    // Each filter/view/period change starts a new "generation". A response
+    // that arrives for an older generation is dropped, so a fast second click
+    // is never overwritten by the slower first request.
+    this.listGeneration  = 0;
+    this.stripGeneration = 0;
+    this.lastLoadedAt    = 0;
+
     // ── Panel visibility ───────────────────────────────────────────────────────
     this.breakdownVisible = false;
     this.nearbyVisible    = false;
@@ -34,6 +42,15 @@ class LeaderboardState {
   setView(view)               { this.activeView = view; }
   setPeriod(period)           { this.activePeriod = period; }
   setDepartment(dept)         { this.activeDepartment = dept; }
+
+  // ── Request sequencing ───────────────────────────────────────────────────────
+
+  newListGeneration()         { return ++this.listGeneration; }
+  isCurrentListGeneration(g)  { return g === this.listGeneration; }
+  newStripGeneration()        { return ++this.stripGeneration; }
+  isCurrentStripGeneration(g) { return g === this.stripGeneration; }
+  markLoaded()                { this.lastLoadedAt = Date.now(); }
+  isStale(maxAgeMs)           { return this.lastLoadedAt > 0 && Date.now() - this.lastLoadedAt > maxAgeMs; }
 
   // ── Loading ──────────────────────────────────────────────────────────────────
 

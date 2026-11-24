@@ -851,3 +851,14 @@
     font-size: 2.5rem;
   }
 }
+
+/* Shown above the "Load more" button when a page fails to load */
+.lb-inline-error {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  text-align: center;
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+}

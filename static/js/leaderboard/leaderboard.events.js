@@ -10,7 +10,7 @@ import { leaderboardState }  from './leaderboard.state.js';
 import { leaderboardAPI }    from './leaderboard.api.js';
 import {
   createMyRankStrip, createMyRankStripSkeleton,
-  createPodium, createEntryRow, createRisingRow,
+  createPodium, podiumSize, createEntryRow, createRisingRow,
   createNearbySection, createBreakdownPanel,
   createStatsBanner, createEmptyState, createErrorState,
   createSkeletonList, createLoadMoreBtn, createMyRankView,
@@ -37,12 +37,14 @@ export async function loadMyRankStrip() {
   if (!wrapper) return;
 
   wrapper.innerHTML = createMyRankStripSkeleton();
+  const generation = leaderboardState.newStripGeneration();
 
   try {
     const res = await leaderboardAPI.getMyRank({
       period:     leaderboardState.activePeriod,
       department: leaderboardState.activeDepartment,
     });
+    if (!leaderboardState.isCurrentStripGeneration(generation)) return;   // superseded
 
     if (res?.status === 'success') {
       leaderboardState.setMyRankData(res.data);
@@ -52,7 +54,7 @@ export async function loadMyRankStrip() {
     }
   } catch (err) {
     console.error('lb: failed to load my rank strip', err);
-    wrapper.innerHTML = '';
+    if (leaderboardState.isCurrentStripGeneration(generation)) wrapper.innerHTML = '';
   }
 }
 
@@ -82,11 +84,17 @@ export async function loadStatsBanner() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loadLeaderboard(append = false) {
-  if (leaderboardState.isLoading()) return;
+  // One "load more" at a time. A fresh (non-append) load is never dropped:
+  // it starts a new generation that supersedes whatever is in flight, so a
+  // period/department/view change made during a load still takes effect.
+  if (append && leaderboardState.isLoading()) return;
 
   const list = $list();
   if (!list) return;
 
+  const generation = append
+    ? leaderboardState.listGeneration
+    : leaderboardState.newListGeneration();
   leaderboardState.setLoading(true);
 
   // Show skeleton on first load
@@ -97,9 +105,11 @@ export async function loadLeaderboard(append = false) {
     // Append mode: disable the load-more btn
     const loadMoreBtn = list.querySelector('[data-action="lb-load-more"]');
     if (loadMoreBtn) {
+      loadMoreBtn.dataset.label = loadMoreBtn.textContent.trim();
       loadMoreBtn.disabled = true;
       loadMoreBtn.textContent = 'Loading…';
     }
+    list.querySelector('.lb-inline-error')?.remove();
   }
 
   try {
@@ -131,7 +141,8 @@ export async function loadLeaderboard(append = false) {
         } else {
           // Show podium only on first page
           const podiumHTML = page === 1 ? createPodium(entries) : '';
-          const rows        = entries.map(createEntryRow).join('');
+          const onPodium    = page === 1 ? podiumSize(entries) : 0;
+          const rows        = entries.map((e, i) => createEntryRow(e, { inPodium: i < onPodium })).join('');
           html = podiumHTML + `<div class="lb-list">${rows}</div>`;
 
           // Show nearby section if user is not in top entries
@@ -141,7 +152,7 @@ export async function loadLeaderboard(append = false) {
           }
         }
       } else {
-        html = entries.map(createEntryRow).join('');
+        html = entries.map((e) => createEntryRow(e)).join('');
       }
     }
 
@@ -150,7 +161,8 @@ export async function loadLeaderboard(append = false) {
       if (res?.status !== 'success') throw new Error(res?.message || 'Unknown error');
 
       const { leaderboard: entries } = res.data;
-      const rows = entries.map(createEntryRow).join('');
+      const onPodium = podiumSize(entries);
+      const rows = entries.map((e, i) => createEntryRow(e, { inPodium: i < onPodium })).join('');
       html = createPodium(entries) + `<div class="lb-list">${rows}</div>`;
       hasMore = false; // connections always returns full list
     }
@@ -180,6 +192,10 @@ export async function loadLeaderboard(append = false) {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
+    // The user changed view/period/department while this was in flight; a newer
+    // load owns the list now, so drop this response instead of painting it.
+    if (!leaderboardState.isCurrentListGeneration(generation)) return;
+
     if (!append) {
       list.innerHTML = html || createEmptyState(view);
     } else {
@@ -190,6 +206,7 @@ export async function loadLeaderboard(append = false) {
     }
 
     leaderboardState.setHasMore(hasMore);
+    leaderboardState.markLoaded();
 
     if (hasMore) {
       list.insertAdjacentHTML('beforeend', createLoadMoreBtn());
@@ -197,11 +214,28 @@ export async function loadLeaderboard(append = false) {
 
   } catch (err) {
     console.error('lb: load error', err);
+    if (!leaderboardState.isCurrentListGeneration(generation)) return;   // stale failure: ignore
+
     if (!append) {
       list.innerHTML = createErrorState(err.message || 'Failed to load leaderboard.');
+    } else {
+      // Give the page number back and make the button usable again, so the
+      // user can retry instead of being stuck on a disabled "Loading…".
+      leaderboardState.setPage(Math.max(1, leaderboardState.page - 1));
+      const btn = list.querySelector('[data-action="lb-load-more"]');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = btn.dataset.label || 'Load more';
+        btn.closest('.lb-load-more-wrap')?.insertAdjacentHTML(
+          'beforebegin',
+          '<div class="lb-inline-error" role="alert">Couldn\u2019t load more. Please try again.</div>'
+        );
+      }
     }
   } finally {
-    leaderboardState.setLoading(false);
+    if (leaderboardState.isCurrentListGeneration(generation)) {
+      leaderboardState.setLoading(false);
+    }
   }
 }
 
@@ -283,6 +317,10 @@ export async function setPeriod(period) {
 
   leaderboardState.setPeriod(period);
   leaderboardState.resetPagination();
+  if (leaderboardState.breakdownVisible) {        // its numbers belong to the old period
+    leaderboardState.setBreakdownVisible(false);
+    _closeBreakdown();
+  }
 
   await Promise.all([
     loadLeaderboard(),
@@ -406,3 +444,4 @@ export async function initialLoad() {
     loadDeptFilterOptions(),
   ]);
 }
+

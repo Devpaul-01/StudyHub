@@ -113,8 +113,13 @@ export function createMyRankStripSkeleton() {
 // TOP-3 PODIUM
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** How many leading entries the podium takes over (0 when there are fewer than 3). */
+export function podiumSize(entries) {
+  return entries && entries.length >= 3 ? 3 : 0;
+}
+
 export function createPodium(entries) {
-  if (!entries || entries.length < 3) return '';
+  if (!podiumSize(entries)) return '';
 
   const [first, second, third] = entries;
 
@@ -156,7 +161,13 @@ export function createPodium(entries) {
 // Source: _build_entry() in leaderboard.py
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function createEntryRow(entry) {
+/**
+ * @param {object}  entry
+ * @param {{inPodium?: boolean}} [opts] inPodium: this row is already shown on the
+ *   podium, so hide it from the list. Decided by position, not rank: with tied
+ *   scores several rows can share rank 2, and only the first three are on the podium.
+ */
+export function createEntryRow(entry, { inPodium = false } = {}) {
   const { rank, rank_change, is_you, user, score, reputation, streaks } = entry;
 
   const youClass    = is_you ? 'lb-row-you' : '';
@@ -166,8 +177,8 @@ export function createEntryRow(entry) {
   const lvlColor    = getLevelColor(reputation?.level?.name);
   const dept        = user.department ? `<span class="lb-row-dept">${escapeHtml(truncate(user.department, 18))}</span>` : '';
 
-  // Hide top-3 rows from list — they live in the podium
-  const hideIfTop3  = rank <= 3 ? 'lb-row-in-podium' : '';
+  // Hide rows that the podium already shows
+  const hideIfTop3  = inPodium ? 'lb-row-in-podium' : '';
 
   return `
 <div class="lb-row ${youClass} ${hideIfTop3}" data-rank="${rank}" data-user-id="${user.id}">
