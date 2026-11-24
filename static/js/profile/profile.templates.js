@@ -10,6 +10,17 @@ import { formatTime } from '../feed/feed.utils.js';
 import { buildPostResourcesContainer, buildResourceLinks, buildBookmarkButton } from '../feed/feed.templates.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Escaping for text AND attribute contexts (the DOM textContent→innerHTML trick
+// does not escape quotes, which matters for alt="…" / title="…" values that
+// carry other users' display names).
+// ─────────────────────────────────────────────────────────────────────────────
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -784,7 +795,6 @@ export function buildScheduleGrid(schedule) {
 
 const RARITY_COLORS = {
   common:    '#9ca3af',
-  uncommon:  '#22c55e',
   rare:      '#3b82f6',
   epic:      '#a855f7',
   legendary: '#f59e0b',
@@ -809,9 +819,9 @@ export function buildBadgesTab(myBadges, progress) {
                        padding:0.6rem 0.3rem;background:var(--p-card-bg,var(--bg-secondary));
                        border:1px solid ${b.is_featured ? _rarityColor(b.rarity) : 'var(--border)'};
                        border-radius:10px;cursor:pointer;font-family:inherit;">
-          <div style="font-size:1.6rem;">${b.icon || '🏅'}</div>
+          <div style="font-size:1.6rem;">${escapeHtml(b.icon || '🏅')}</div>
           <div style="font-size:0.68rem;font-weight:600;color:var(--text-primary);text-align:center;
-                      line-height:1.2;">${b.name}</div>
+                      line-height:1.2;">${escapeHtml(b.name)}</div>
           ${b.is_featured ? `<div style="font-size:0.6rem;color:${_rarityColor(b.rarity)};">★ Featured</div>` : ''}
         </button>
       `).join('')}
@@ -821,10 +831,10 @@ export function buildBadgesTab(myBadges, progress) {
     <div data-action="profile-open-badge-details" data-badge-id="${p.badge.id}"
          style="padding:0.5rem 0;border-bottom:1px solid var(--border);cursor:pointer;">
       <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.3rem;">
-        <span style="font-size:1.1rem;opacity:0.5;">${p.badge.icon || '🏅'}</span>
-        <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text-primary);">${p.badge.name}</span>
+        <span style="font-size:1.1rem;opacity:0.5;">${escapeHtml(p.badge.icon || '🏅')}</span>
+        <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text-primary);">${escapeHtml(p.badge.name)}</span>
         <span style="font-size:0.72rem;color:var(--text-secondary);">
-          ${p.progress.message || `${p.progress.current}/${p.progress.required} ${p.progress.type}`}
+          ${escapeHtml(p.progress.message || `${p.progress.current}/${p.progress.required} ${p.progress.type}`)}
         </span>
       </div>
       <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden;">
@@ -864,10 +874,10 @@ export function buildBadgeDetailsModal(data) {
   return `
     <div style="display:flex;flex-direction:column;gap:0.9rem;">
       <div style="text-align:center;">
-        <div style="font-size:3rem;">${b.icon || '🏅'}</div>
-        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:0.3rem;">${b.name}</div>
-        <div style="font-size:0.78rem;color:${color};text-transform:capitalize;font-weight:600;">${b.rarity}</div>
-        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.4rem;">${b.description}</div>
+        <div style="font-size:3rem;">${escapeHtml(b.icon || '🏅')}</div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:0.3rem;">${escapeHtml(b.name)}</div>
+        <div style="font-size:0.78rem;color:${color};text-transform:capitalize;font-weight:600;">${escapeHtml(b.rarity)}</div>
+        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.4rem;">${escapeHtml(b.description)}</div>
       </div>
 
       ${data.has_earned ? `
@@ -875,7 +885,7 @@ export function buildBadgeDetailsModal(data) {
           <div style="font-size:0.78rem;color:var(--text-secondary);">
             Earned ${data.earned_at ? new Date(data.earned_at).toLocaleDateString() : ''}
           </div>
-          <button data-action="profile-toggle-feature-badge" data-badge-id="${b.id}"
+          <button data-action="profile-toggle-feature-badge" data-badge-id="${b.id}" data-featured="${data.is_featured ? 'true' : 'false'}"
                   style="margin-top:0.5rem;padding:0.4rem 1rem;border-radius:999px;border:1px solid ${color};
                          background:transparent;color:${color};cursor:pointer;font-size:0.78rem;font-weight:600;">
             ${data.is_featured ? '★ Unfeature' : '☆ Feature on profile'}
@@ -884,7 +894,7 @@ export function buildBadgeDetailsModal(data) {
       ` : data.progress ? `
         <div class="p-card">
           <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.3rem;">
-            ${data.progress.message || `${data.progress.current} / ${data.progress.required} ${data.progress.type}`}
+            ${escapeHtml(data.progress.message || `${data.progress.current} / ${data.progress.required} ${data.progress.type}`)}
           </div>
           <div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden;">
             <div style="height:100%;width:${Math.min(100, data.progress.percentage || 0)}%;background:${color};"></div>
@@ -897,7 +907,7 @@ export function buildBadgeDetailsModal(data) {
           <div style="font-size:0.78rem;font-weight:700;margin-bottom:0.4rem;">Recently earned by</div>
           <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
             ${data.recent_earners.map(e => `
-              <img src="${e.avatar || '/static/default-avatar.png'}" alt="${e.name}" title="${e.name}"
+              <img src="${escapeHtml(e.avatar || '/static/default-avatar.png')}" alt="${escapeHtml(e.name)}" title="${escapeHtml(e.name)}"
                    style="width:28px;height:28px;border-radius:50%;object-fit:cover;">
             `).join('')}
           </div>
@@ -920,10 +930,10 @@ export function buildAllBadgesModal(data) {
                        background:none;border:none;border-bottom:1px solid var(--border);
                        cursor:pointer;text-align:left;font-family:inherit;
                        opacity:${b.has_earned ? '1' : '0.5'};">
-          <span style="font-size:1.4rem;">${b.icon || '🏅'}</span>
+          <span style="font-size:1.4rem;">${escapeHtml(b.icon || '🏅')}</span>
           <div style="flex:1;">
-            <div style="font-size:0.84rem;font-weight:600;color:var(--text-primary);">${b.name}</div>
-            <div style="font-size:0.72rem;color:var(--text-secondary);">${b.description}</div>
+            <div style="font-size:0.84rem;font-weight:600;color:var(--text-primary);">${escapeHtml(b.name)}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary);">${escapeHtml(b.description)}</div>
           </div>
           ${b.has_earned ? '<span style="font-size:0.9rem;">✅</span>' : ''}
         </button>
