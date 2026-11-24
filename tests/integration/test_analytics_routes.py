@@ -598,3 +598,58 @@ class TestAnalyticsFailureHandling:
         assert body["status"] == "error"
         # The user-facing message must not leak the internal exception text.
         assert "simulated backend failure" not in body["message"]
+
+
+# ============================================================================
+# JSON types + cache writes (AN-04)
+# ============================================================================
+
+@pytest.fixture
+def cache_redis(monkeypatch):
+    """Back cache_service with fakeredis so cache writes can be observed."""
+    import fakeredis
+    from services import cache_service
+
+    fake = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(cache_service, "redis_client", fake)
+    return fake
+
+
+class TestNumericTypesAndCaching:
+    def test_comparison_values_are_numbers_and_platform_average_is_cached(
+        self, client, make_user, auth_headers, cache_redis
+    ):
+        # Regression (AN-04): PostgreSQL AVG() returns Decimal, which made
+        # the cache write fail silently and the API emit numeric strings.
+        me = make_user(total_posts=3, reputation=10, total_helpful=1)
+        make_user(total_posts=2, reputation=5, total_helpful=0)
+
+        resp = client.get("/student/analytics/comparison", headers=auth_headers(me))
+
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        values = list(data["average_stats"].items()) + [
+            (f"comparison.{key}", entry["multiplier"])
+            for key, entry in data["comparison"].items()
+        ]
+        for key, value in values:
+            assert isinstance(value, (int, float)) and not isinstance(value, bool), (
+                f"{key} should be a JSON number, got {value!r}"
+            )
+        assert cache_redis.get("sh:1:an:platform_avg") is not None
+
+    def test_engagement_values_are_numbers_and_payload_is_cached(
+        self, client, make_user, make_post, auth_headers, cache_redis
+    ):
+        user = make_user()
+        make_post(user, views_count=7, positive_reactions_count=2, comments_count=1)
+        make_post(user, views_count=3, positive_reactions_count=1, comments_count=0)
+
+        resp = client.get("/student/analytics/engagement", headers=auth_headers(user))
+
+        assert resp.status_code == 200
+        posts = resp.get_json()["data"]["posts"]
+        assert posts["avg_likes_per_post"] == 1.5
+        assert posts["avg_views_per_post"] == 5.0
+        assert isinstance(posts["total_views"], int)
+        assert cache_redis.get(f"sh:1:an:engage:{user.id}") is not None

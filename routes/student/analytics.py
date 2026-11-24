@@ -261,13 +261,16 @@ def get_average_user_stats():
             "avg_connections": 0,
         }
 
+    # PostgreSQL returns Decimal from AVG(); Decimal is not JSON serializable
+    # (the cache write would be silently dropped) and jsonify() would emit it
+    # as a string. Cast to float at the query boundary.
     avg_stats = {
-        "avg_posts": db.session.query(func.avg(User.total_posts)).scalar() or 0,
-        "avg_reputation": db.session.query(func.avg(User.reputation)).scalar() or 0,
-        "avg_helpful": db.session.query(func.avg(User.total_helpful)).scalar() or 0,
-        "avg_connections": db.session.query(
+        "avg_posts": float(db.session.query(func.avg(User.total_posts)).scalar() or 0),
+        "avg_reputation": float(db.session.query(func.avg(User.reputation)).scalar() or 0),
+        "avg_helpful": float(db.session.query(func.avg(User.total_helpful)).scalar() or 0),
+        "avg_connections": float(db.session.query(
             func.count(Connection.id)
-        ).filter(Connection.status == "accepted").scalar() / total_users,
+        ).filter(Connection.status == "accepted").scalar() / total_users),
     }
 
     return avg_stats
@@ -319,12 +322,12 @@ def get_analytics_overview(current_user):
         # (hero_stats.helpful_count) is unchanged — still honestly 0.
         this_week_helpful = 0
 
-        this_week_rep = db.session.query(
+        this_week_rep = int(db.session.query(
             func.sum(ReputationHistory.points_change)
         ).filter(
             ReputationHistory.user_id == current_user.id,
             ReputationHistory.created_at >= week_ago
-        ).scalar() or 0
+        ).scalar() or 0)
 
         # FIX: guard against missing profile — previously crashed with
         # AttributeError when a user had no StudentProfile row.
@@ -338,12 +341,12 @@ def get_analytics_overview(current_user):
             dept_rank = None
 
         # Activity level this week
-        week_activity = db.session.query(
+        week_activity = int(db.session.query(
             func.sum(UserActivity.activity_score)
         ).filter(
             UserActivity.user_id == current_user.id,
             UserActivity.activity_date >= datetime.date.today() - datetime.timedelta(days=7)
-        ).scalar() or 0
+        ).scalar() or 0)
 
         activity_level = get_activity_level(week_activity)
 
@@ -535,19 +538,19 @@ def get_engagement_stats(current_user):
 
         # Calculate engagement rate
         engagement_rate = calculate_engagement_rate(
-            post_stats.total_views or 0,
-            post_stats.total_likes or 0,
-            post_stats.total_comments or 0
+            int(post_stats.total_views or 0),
+            int(post_stats.total_likes or 0),
+            int(post_stats.total_comments or 0)
         )
 
         data = {
             "posts": {
-                "total_created": post_stats.total or 0,
-                "total_views": post_stats.total_views or 0,
-                "total_likes": post_stats.total_likes or 0,
-                "total_comments": post_stats.total_comments or 0,
-                "avg_likes_per_post": round(post_stats.avg_likes or 0, 1),
-                "avg_views_per_post": round(post_stats.avg_views or 0, 1),
+                "total_created": int(post_stats.total or 0),
+                "total_views": int(post_stats.total_views or 0),
+                "total_likes": int(post_stats.total_likes or 0),
+                "total_comments": int(post_stats.total_comments or 0),
+                "avg_likes_per_post": round(float(post_stats.avg_likes or 0), 1),
+                "avg_views_per_post": round(float(post_stats.avg_views or 0), 1),
                 "engagement_rate": engagement_rate,
                 "best_post": {
                     "id": best_post.id,
@@ -558,15 +561,15 @@ def get_engagement_stats(current_user):
                 } if best_post else None
             },
             "comments": {
-                "total_created": comment_stats.total or 0,
-                "total_likes": comment_stats.total_likes or 0,
+                "total_created": int(comment_stats.total or 0),
+                "total_likes": int(comment_stats.total_likes or 0),
                 "marked_helpful": current_user.total_helpful,
                 "marked_solution": comment_stats.solutions or 0
             },
             "threads": {
                 "created": threads_created,
-                "joined": thread_stats.joined or 0,
-                "messages_sent": thread_stats.messages_sent or 0
+                "joined": int(thread_stats.joined or 0),
+                "messages_sent": int(thread_stats.messages_sent or 0)
             }
         }
 
@@ -877,12 +880,12 @@ def get_weekly_summary(current_user):
         week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
 
         # New reputation earned
-        rep_change = db.session.query(
+        rep_change = int(db.session.query(
             func.sum(ReputationHistory.points_change)
         ).filter(
             ReputationHistory.user_id == current_user.id,
             ReputationHistory.created_at >= week_ago
-        ).scalar() or 0
+        ).scalar() or 0)
 
         # New badges earned
         new_badges = UserBadge.query.filter(
