@@ -311,12 +311,6 @@ def get_rank_history(current_user):
         data = leaderboard_service.get_rank_history(current_user.id, weeks)
         return jsonify({"status": "success", "data": data})
 
-    except ImportError:
-        return jsonify({
-            "status": "success",
-            "data": {"history": [], "weeks_back": 0,
-                     "note": "Snapshots table not yet created. Run migration first."},
-        })
     except Exception as e:
         current_app.logger.error(f"Rank history error: {e}")
         return error_response("Failed to load rank history")
@@ -341,9 +335,6 @@ def create_snapshot(current_user):
     Body (JSON): {"type": "weekly" | "monthly"}  (default: "weekly")
     """
     try:
-        if current_user.role not in ("admin", "moderator"):
-            return error_response("Admin access required", 403)
-
         data = request.get_json() or {}
         snapshot_type = data.get("type", "weekly")
         if snapshot_type not in {"weekly", "monthly"}:

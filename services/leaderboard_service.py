@@ -15,19 +15,15 @@ instead of read from Flask context — this is the pattern used consistently
 across every service in this migration, so this module has zero Flask
 dependency despite needing "who is asking" for connection-status annotation.
 
-Bug fix bundled in per Document 1 §4 point 5: _old_rank_map's bare
-`except Exception: return {}` is narrowed to `except (ImportError, ...)`
-so a genuine bug elsewhere doesn't get silently swallowed as "no snapshot
-data" — see the function below for the exact exception set used, chosen
-because LeaderboardSnapshot may not exist yet (ImportError) or the table
-may not exist yet at the DB level (OperationalError-equivalent, caught via
-SQLAlchemyError since the DB-API-specific exception varies by backend).
+Snapshot lookups (_old_rank_map and the /me rank change) only swallow
+SQLAlchemyError, e.g. the snapshot table not existing yet, so a genuine bug
+elsewhere is not silently reported as "no snapshot data".
 """
 
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import func, desc, asc, and_, or_, case
@@ -36,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from extensions import db
 from models import (
     User, StudentProfile, ReputationHistory, UserActivity,
-    Connection, UserBadge, Badge, WeeklyChampion,
+    Connection, LeaderboardSnapshot, WeeklyChampion,
 )
 from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 from services import cache_service
@@ -192,16 +188,11 @@ def _old_rank_map(user_ids: list, snapshot_type: str = "weekly") -> dict:
     Batch-fetch last week's global_rank for each user from LeaderboardSnapshot.
     Returns {user_id -> old_global_rank}.
 
-    Document 1 §4 point 5 fix: narrowed from a bare `except Exception` to
-    the specific failure modes this can actually hit — the snapshot model
-    not existing yet (ImportError, e.g. pre-migration) or a DB-level
-    failure querying it (SQLAlchemyError, e.g. table not created yet). A
-    genuine bug elsewhere (a NameError from a typo, say) is no longer
-    silently swallowed as "no snapshot data."
+    Only a database-level failure (SQLAlchemyError, e.g. the snapshot table
+    not created yet) is treated as "no snapshot data"; a genuine bug such as
+    a NameError is not silently swallowed.
     """
     try:
-        from models import LeaderboardSnapshot  # noqa
-
         week_ago = datetime.datetime.utcnow() - timedelta(days=6)
         two_weeks_ago = datetime.datetime.utcnow() - timedelta(days=15)
 
@@ -221,29 +212,10 @@ def _old_rank_map(user_ids: list, snapshot_type: str = "weekly") -> dict:
             if s.user_id not in result:
                 result[s.user_id] = s.global_rank
         return result
-    except (ImportError, SQLAlchemyError) as exc:
+    except SQLAlchemyError as exc:
         import logging
         logging.getLogger(__name__).warning(f"_old_rank_map unavailable: {exc}")
         return {}
-
-
-def _top_badge(user_id: int) -> dict | None:
-    """Return the user's highest-rarity badge (for leaderboard display card)."""
-    RARITY_ORDER = {"legendary": 0, "epic": 1, "rare": 2, "common": 3}
-    ub = (
-        UserBadge.query
-        .filter_by(user_id=user_id)
-        .join(Badge, Badge.id == UserBadge.badge_id)
-        .filter(Badge.is_active.is_(True))
-        .order_by(case(RARITY_ORDER, value=Badge.rarity, else_=99).asc())
-        .first()
-    )
-    if not ub:
-        return None
-    b = Badge.query.get(ub.badge_id)
-    if not b:
-        return None
-    return {"name": b.name, "icon": b.icon, "rarity": b.rarity}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -780,7 +752,6 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
     rank_change = None
     if _rank_change_applies(period, None) and global_rank:
         try:
-            from models import LeaderboardSnapshot
             week_ago = datetime.datetime.utcnow() - timedelta(days=6)
             two_weeks_ago = datetime.datetime.utcnow() - timedelta(days=15)
             snap = (
@@ -795,7 +766,7 @@ def _get_my_rank_cached(user_id: int, period: str, department_key: str) -> dict:
             )
             if snap and snap.global_rank:
                 rank_change = snap.global_rank - global_rank
-        except (ImportError, SQLAlchemyError):
+        except SQLAlchemyError:
             pass
 
     level = rep_level(user.reputation)
@@ -1270,8 +1241,6 @@ def get_rank_history(user_id: int, weeks: int = 8) -> dict:
     entire point is a long TTL; the 3600s TTL already guarantees the new
     snapshot is visible within an hour of the job running.
     """
-    from models import LeaderboardSnapshot
-
     weeks = min(weeks, 26)
 
     snaps = (
@@ -1378,8 +1347,6 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 
     Returns a plain dict via SnapshotResult.to_dict().
     """
-    from models import LeaderboardSnapshot
-
     now = datetime.datetime.utcnow()
     today = now.date()
 
