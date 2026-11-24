@@ -584,3 +584,51 @@ No product or architecture decision above was made on your behalf.
 - **Q8 still open:** production `pg_indexes` / duplicate-pair query output not yet provided. CON-05 stays "Unverified risk"; the migration must be idempotent (`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS`) and run the de-dup step first.
 - **Q14 resolved:** no external/mobile consumers. All "Potentially unused" items in §5 are re-classified **Confirmed unused** and may be removed in M7 (`/connections/blocked`, `/unseen/all`, `/mark-seen/<id>`, `/mark-all-seen`, `/status/<uid>`, `connection_type`, `study_history`, `broadcast_sent`). Column drops still follow the two-release pattern.
 - **Q12 resolved:** production runs multiple workers with Redis. CON-18's per-instance counter risk is therefore not a current issue if `RATE_LIMIT_STORAGE_URI`/`REDIS_URL` is set (verify the env var is actually set); the IP-keyed authenticated reads and fail-open behavior remain. Severity of CON-18 lowered to **Low**. Because multiple workers are live, CON-08, CON-09 and CON-16 are **current** problems, not future risks.
+
+---
+
+## 12. Implementation Status
+
+All 25 findings were implemented on branch `audit/connections-hardening` in small commits. Verification: the full suite passes (**1,582 passed, 2 skipped**), plus 10 Node frontend tests (`node --test tests/frontend/*.test.mjs`) and 53 real-PostgreSQL tests (`tests/integration/test_connections_postgres.py`, via the optional `pgserver` package). New regression tests fail against the old code.
+
+| Finding | Status | Commit(s) |
+|---|---|---|
+| CON-01 unauthenticated onboarding connect | Fixed (auth proof + onboarding-only + create-only + cap) | `eb18957`, `4bd3d89` |
+| CON-02 `/messages/unblock` auto-accept | Fixed (always deletes) | `e0153d7` |
+| CON-03 re-request after rejection | Fixed (+ direction swap) | `8c88024` |
+| CON-04 XSS sink / unbounded message | Fixed (server sanitize + length; client `escapeHtml`) | `8c88024`, `76c719f` |
+| CON-05 pair index not guaranteed | Fixed (idempotent migration, de-dup, `CONCURRENTLY`); verified on real Postgres | `c745b72`, `94380f7` |
+| CON-06 volunteer IDOR | Fixed (accepted connection required, uniform 404) | `799d660` |
+| CON-07 shared `is_seen` | Fixed (`receiver_seen` / `requester_seen`) | `c745b72`, `646491f` |
+| CON-08 non-atomic transitions | Fixed (compare-and-set); verified under real parallel transactions | `e0153d7`, `185119a`, `94380f7` |
+| CON-09 side effects before commit | Fixed (`notify_after_commit`) | `8c88024`, `185119a`, `4bd3d89` |
+| CON-10 block takeover | Fixed (idempotent, ownership kept) | `e0153d7`, `baaff13` |
+| CON-11 details/notes not gated | Fixed (404 unless accepted) | `a9a9ed4` |
+| CON-12 frontend `ReferenceError` | Fixed (+ toast, block guard) | `d8e28fc` |
+| CON-13 blocked-list contract | Fixed | `d8e28fc` |
+| CON-14 available-now | Fixed (day casing, no "night", shared online service) | `77f8b74` |
+| CON-15 truncation / unbounded loads | Fixed (ordering, pagination, SQL mutuals, `NOT EXISTS`, batch loads) | `a943614`, `39b57a8`, `baaff13`, `8e35421`, `2fa9160`, `d8e28fc` |
+| CON-16 volunteers lost updates | Fixed (`help_request_volunteers` + UNIQUE) | `c745b72`, `799d660` |
+| CON-17 help-request lifecycle | Fixed (validation, one active, expiry job, real link target, commit-then-push) | `8e35421`, `4f70898`, `799d660` |
+| CON-18 rate limits | Fixed (verified-JWT user key everywhere; startup guard) | `1384c11`, `ce9984d` |
+| CON-19 notes vs message | Fixed (`request_message`; notes private + gated) | `c745b72`, `8c88024`, `a9a9ed4`, `39b57a8` |
+| CON-20 stale caches | Fixed (pair invalidation; mutual TTL 300s → 60s) | `e0153d7`, `a943614` |
+| CON-21 AI overview | Fixed (block check, 10-min cache, no DB conn held, no error echo) | `4451535` |
+| CON-22 status codes / validation | Fixed (404/403/409/500, validated bodies) | several |
+| CON-23 health score | Fixed (real message recency; one implementation) | `4de1327`, `39b57a8` |
+| CON-24 dead/duplicate code | Fixed (removed confirmed-unused endpoints/fields; lint) | `646491f`, `baaff13`, `a9a9ed4`, `087d34d`, `4e1ae3c` |
+| CON-25 activity privacy | Fixed (opt-in setting + UI toggle) | `02a81a0` |
+
+### Deliberately NOT done / follow-ups
+1. **Legacy columns are kept for one release** (two-step rollout, as planned): `connections.is_seen`, `connections.connection_type`, `help_requests.volunteers`, `help_requests.broadcast_sent` are no longer read or written. Drop them in a follow-up migration once this release is stable.
+2. **Old `requester_notes` content is not rewritten.** `request_message` was back-filled only for pending/rejected rows (excluding auto-generated "Instant connection…" text); older accepted rows keep whatever text they had as a *private* note visible only to the requester.
+3. **UTC only** for available-now slots (Q13: per-user timezone deferred).
+4. **The help-request notification link now points at `GET /student/connections/help/{id}`** (an API route that exists) — a dedicated UI page for it is a product follow-up.
+5. **Limiter startup guard** refuses to boot on in-memory storage only when `WEB_CONCURRENCY > 1` is set in the environment; otherwise it logs an ERROR. Confirm `RATE_LIMIT_STORAGE_URI`/`REDIS_URL` is set in production.
+6. Frontend changes were verified with Node tests (templates, API module), **not in a browser**.
+
+### Deployment notes (read before merging)
+- **Back up the database first.** The migration *deletes* duplicate connection pairs (precedence blocked > accepted > pending > rejected, oldest id on ties) and expires duplicate active help requests. Run the read-only checks from Q8 beforehand to see what will be affected.
+- The migration uses `CREATE INDEX CONCURRENTLY` (no table lock) and is idempotent.
+- **Behaviour changes users will notice:** unblocking (either endpoint) now deletes the connection; accept returns 404/403 instead of 400; onboarding connect needs a logged-in/verified session; "connected with" activity is off by default; unconnected users can no longer volunteer.
+- **Rate limiting:** `user_or_ip_key` now really keys on the user for *every* route that uses it (not only connections), which is the intended behaviour but is broader than this feature.
