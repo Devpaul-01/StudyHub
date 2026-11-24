@@ -44,62 +44,6 @@ import re as _re
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_messaging_bp = Blueprint("threads_messaging", __name__)
-def detect_mentions_in_thread(text_content, sender_id, thread_id, message_id):
-    """Detect @username mentions in thread messages."""
-    if not text_content:
-        return []
-
-    import re
-    mention_pattern = r'@([a-zA-Z0-9_]{3,20})'
-    matches = re.finditer(mention_pattern, text_content)
-    mentioned_users = []
-    sender = User.query.get(sender_id)
-
-    for match in matches:
-        username = match.group(1).lower()
-        mentioned_user = User.query.filter_by(username=username).first()
-
-        if mentioned_user and mentioned_user.id != sender_id:
-            is_member = ThreadMember.query.filter_by(
-                thread_id=thread_id,
-                student_id=mentioned_user.id
-            ).first()
-
-            if is_member:
-                existing = Mention.query.filter_by(
-                    mentioned_in_type="thread_message",
-                    mentioned_in_id=message_id,
-                    mentioned_user_id=mentioned_user.id,
-                    mentioned_by_user_id=sender_id
-                ).first()
-
-                if not existing:
-                    mention = Mention(
-                        mentioned_in_type="thread_message",
-                        mentioned_in_id=message_id,
-                        mentioned_user_id=mentioned_user.id,
-                        mentioned_by_user_id=sender_id
-                    )
-                    db.session.add(mention)
-
-                    # AUDIT ENG-3 FIX: migrated off a direct Notification(...)
-                    # construction to notification_service.notify() — see
-                    # post_service.py::detect_and_create_mentions for the
-                    # identical fix and full reasoning. Same fields, same
-                    # values, unchanged behavior otherwise.
-                    notification_service.notify(
-                        user_id=mentioned_user.id,
-                        title=f"{sender.name} mentioned you in a thread",
-                        body="",
-                        notification_type="mention",
-                        related_type="thread",
-                        related_id=thread_id,
-                    )
-                    mentioned_users.append(mentioned_user.id)
-
-    return mentioned_users
-
-
 # Document 1 §2.2 / Document 2 §3.8: _is_mod_or_creator_static moved to
 # services/thread_authorization.py as is_moderator_or_creator() — that
 # module is now the single implementation shared by this REST blueprint
@@ -688,10 +632,12 @@ def edit_thread_message(current_user, thread_id, message_id):
             return error_response(str(e), 403)
 
         # ── REST-specific: mention re-detection (see docstring above) ──
-        Mention.query.filter_by(
-            mentioned_in_type="thread_message", mentioned_in_id=message_id
-        ).delete()
-        detect_mentions_in_thread(result.message.text_content, current_user.id, thread_id, message_id)
+        # Same implementation as the send path: only newly mentioned members are
+        # notified, mentions removed from the text are dropped (audit NOTIF-06).
+        tms.sync_thread_mentions(
+            thread_id=thread_id, message_id=message_id,
+            sender_id=current_user.id, text_content=result.message.text_content,
+        )
         db.session.commit()
 
         # ── Broadcast, matching the WS handler's own event/payload exactly ──

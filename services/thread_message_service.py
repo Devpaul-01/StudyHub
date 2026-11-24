@@ -77,9 +77,9 @@ from sqlalchemy import func as _sa_func
 from extensions import db
 from models import (
     Thread, ThreadMember, ThreadMessage, ThreadMessageAttachment,
-    Mention, Notification, User,
+    Mention, User,
 )
-from services import presence_service
+from services import notification_service, presence_service
 
 MAX_MESSAGE_LENGTH = 5_000
 MAX_PINS_PER_THREAD = 5
@@ -187,9 +187,15 @@ def _is_moderator_or_creator(membership: "ThreadMember") -> bool:
     return membership.role in ("creator", "moderator")
 
 
-def _parse_mentions(text: str) -> list[int]:
+def _parse_mentions(text: str, thread_id: int) -> list[int]:
     """
-    Identical logic to ThreadWebSocketManager._parse_mentions, minus the
+    @usernames in `text` that belong to current members of `thread_id`.
+
+    Only members are returned (audit NOTIF-02): this used to resolve any
+    username on the platform, so a message in a private thread could notify
+    — and leak its text to — people who are not in the thread at all.
+
+    Originally identical to ThreadWebSocketManager._parse_mentions, minus the
     verbose per-token MENTION_DEBUG logging that function has (that
     logging was clearly added for interactively debugging the regex/
     lookup during development — kept in the WS file since removing
@@ -211,7 +217,9 @@ def _parse_mentions(text: str) -> list[int]:
         user = User.query.filter(
             _sa_func.lower(User.username) == username.lower()
         ).first()
-        if user:
+        if user and ThreadMember.query.filter_by(
+            thread_id=thread_id, student_id=user.id
+        ).first():
             found_ids.append(user.id)
         if len(found_ids) >= 20:
             current_app.logger.warning(
@@ -224,6 +232,60 @@ def _parse_mentions(text: str) -> list[int]:
             f"[MENTION_RESULT] text={text[:100]!r} found_mentions={found_ids}"
         )
     return found_ids
+
+
+def sync_thread_mentions(
+    *, thread_id: int, message_id: int, sender_id: int, text_content: str
+) -> list[int]:
+    """
+    Make the Mention rows of a message match its text, and notify only the
+    thread members who are newly mentioned. Does not commit.
+
+    One implementation for send and edit (audit NOTIF-06): editing used to
+    delete every Mention row and re-run a second, different implementation, so
+    each edit re-notified everyone already mentioned (and with a different
+    notification type, body and membership rule than the original send).
+
+    Notifications go through notification_service.notify(), so they honour the
+    recipient's settings and blocks and are pushed live. The body names the
+    thread instead of quoting the message: a notification should not copy
+    thread content to another person's inbox (audit NOTIF-02).
+
+    Returns the ids of every member currently mentioned (sender excluded).
+    """
+    current_ids = [uid for uid in _parse_mentions(text_content, thread_id) if uid != sender_id]
+
+    existing = {
+        row.mentioned_user_id: row
+        for row in Mention.query.filter_by(
+            mentioned_in_type="thread_message", mentioned_in_id=message_id
+        )
+    }
+    for uid, row in existing.items():
+        if uid not in current_ids:
+            db.session.delete(row)
+
+    new_ids = [uid for uid in current_ids if uid not in existing]
+    if new_ids:
+        sender = db.session.get(User, sender_id)
+        thread_title = db.session.query(Thread.title).filter(Thread.id == thread_id).scalar()
+        for uid in new_ids:
+            db.session.add(Mention(
+                mentioned_in_type="thread_message",
+                mentioned_in_id=message_id,
+                mentioned_user_id=uid,
+                mentioned_by_user_id=sender_id,
+            ))
+            notification_service.notify(
+                user_id=uid,
+                title=f"{sender.name} mentioned you in a thread",
+                body=f"in {thread_title}" if thread_title else "",
+                notification_type="thread_mention",
+                related_type="thread",
+                related_id=thread_id,
+                actor_id=sender_id,
+            )
+    return current_ids
 
 
 def _build_message_payload(msg: "ThreadMessage", sender: "User") -> dict:
@@ -497,24 +559,9 @@ def create_thread_message(
         synchronize_session=False,
     )
 
-    mentioned_ids = _parse_mentions(text_content)
-    for mid in mentioned_ids:
-        if mid == user_id:
-            continue
-        db.session.add(Mention(
-            mentioned_in_type    = "thread_message",
-            mentioned_in_id      = msg.id,
-            mentioned_user_id    = mid,
-            mentioned_by_user_id = user_id,
-        ))
-        db.session.add(Notification(
-            user_id           = mid,
-            title             = "You were mentioned in a thread",
-            body              = f"{text_content[:80]}...",
-            notification_type = "thread_mention",
-            related_type      = "thread",
-            related_id        = thread_id,
-        ))
+    mentioned_ids = sync_thread_mentions(
+        thread_id=thread_id, message_id=msg.id, sender_id=user_id, text_content=text_content,
+    )
 
     db.session.commit()
 
