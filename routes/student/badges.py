@@ -10,9 +10,9 @@ file is the thin HTTP layer: request parsing, auth, response envelope.
 from __future__ import annotations
 
 from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 
-from models import User, Badge, UserBadge
+from models import User, Badge, UserBadge, Connection
 from extensions import db
 from routes.student.helpers import (
     token_required, success_response, error_response
@@ -34,7 +34,7 @@ from services import cache_service
 # Phase 5b (Document 4 §1): BURST_OK for the feature-toggle/check-all write
 # actions (low-risk, small state changes); PUBLIC_READ for the top-earners
 # leaderboard-style read.
-from services.rate_limit_service import limiter, RateLimitTier, ip_key, user_or_ip_key
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 
 badges_bp = Blueprint("student_badges", __name__)
 
@@ -44,8 +44,8 @@ badges_bp = Blueprint("student_badges", __name__)
 # ============================================================================
 
 @badges_bp.route("/badges/available", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_available_badges(current_user):
     """
     Get all available badges in the system
@@ -67,8 +67,9 @@ def get_available_badges(current_user):
             query = query.filter_by(rarity=rarity)
 
         badges = query.order_by(
-            Badge.rarity.desc(),
-            Badge.awarded_count.desc()
+            badge_service.rarity_rank_expr().desc(),
+            Badge.awarded_count.desc(),
+            Badge.id.asc()
         ).all()
 
         all_user_badges = UserBadge.query.filter_by(user_id=current_user.id).all()
@@ -112,44 +113,50 @@ def get_available_badges(current_user):
         return error_response("Failed to load badges")
 
 
+def _earned_badges_payload(user_id):
+    """
+    Badges earned by ``user_id`` in the shape used by both
+    GET /badges/my-badges and GET /badges/user-badges/<id>: one joined
+    query (no per-row Badge lookup), newest first.
+    """
+    rows = (
+        db.session.query(UserBadge, Badge)
+        .join(Badge, Badge.id == UserBadge.badge_id)
+        .filter(UserBadge.user_id == user_id)
+        .order_by(UserBadge.earned_at.desc(), UserBadge.id.desc())
+        .all()
+    )
+    badges_data = [
+        {
+            "id": badge.id,
+            "name": badge.name,
+            "description": badge.description,
+            "icon": badge.icon,
+            "category": badge.category,
+            "rarity": badge.rarity,
+            "earned_at": ub.earned_at.isoformat(),
+            "is_featured": ub.is_featured,
+        }
+        for ub, badge in rows
+    ]
+    by_rarity = {}
+    for badge in badges_data:
+        by_rarity.setdefault(badge["rarity"], []).append(badge)
+    return {
+        "badges": badges_data,
+        "by_rarity": by_rarity,
+        "total_earned": len(badges_data),
+        "featured": [b for b in badges_data if b["is_featured"]],
+    }
+
+
 @badges_bp.route("/badges/my-badges", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_my_badges(current_user):
     """Get all badges earned by current user."""
     try:
-        user_badges = UserBadge.query.filter_by(
-            user_id=current_user.id
-        ).order_by(UserBadge.earned_at.desc()).all()
-
-        badges_data = []
-        for ub in user_badges:
-            badge = Badge.query.get(ub.badge_id)
-            if badge:
-                badges_data.append({
-                    "id": badge.id,
-                    "name": badge.name,
-                    "description": badge.description,
-                    "icon": badge.icon,
-                    "category": badge.category,
-                    "rarity": badge.rarity,
-                    "earned_at": ub.earned_at.isoformat(),
-                    "is_featured": ub.is_featured
-                })
-
-        by_rarity = {}
-        for badge in badges_data:
-            by_rarity.setdefault(badge["rarity"], []).append(badge)
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "badges": badges_data,
-                "by_rarity": by_rarity,
-                "total_earned": len(badges_data),
-                "featured": [b for b in badges_data if b["is_featured"]]
-            }
-        })
+        return jsonify({"status": "success", "data": _earned_badges_payload(current_user.id)})
 
     except Exception as e:
         current_app.logger.error(f"Get my badges error: {str(e)}")
@@ -202,8 +209,8 @@ def _compute_badge_progress(user_id):
 
 
 @badges_bp.route("/badges/progress", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_badge_progress(current_user):
     """Get progress toward all unearned badges."""
     try:
@@ -216,8 +223,8 @@ def get_badge_progress(current_user):
 
 
 @badges_bp.route("/badges/<int:badge_id>/details", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_badge_details(current_user, badge_id):
     """Get detailed information about a specific badge, including requirements and progress."""
     try:
@@ -243,7 +250,8 @@ def get_badge_details(current_user, badge_id):
 
         earner_ids = [ub.user_id for ub in recent_earners]
         earner_users = (
-            {u.id: u for u in User.query.filter(User.id.in_(earner_ids)).all()}
+            {u.id: u for u in User.query.filter(
+                User.id.in_(earner_ids), User.status == "approved").all()}
             if earner_ids else {}
         )
 
@@ -273,6 +281,7 @@ def get_badge_details(current_user, badge_id):
                 },
                 "has_earned": has_earned,
                 "earned_at": user_badge.earned_at.isoformat() if user_badge else None,
+                "is_featured": bool(user_badge and user_badge.is_featured),
                 "progress": progress,
                 "recent_earners": earners_data
             }
@@ -284,11 +293,27 @@ def get_badge_details(current_user, badge_id):
 
 
 @badges_bp.route("/badges/feature/<int:badge_id>", methods=["POST"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 def feature_badge(current_user, badge_id):
-    """Feature a badge on profile (show prominently). Max 3 featured badges per user."""
+    """
+    Feature / unfeature a badge on the profile (max 3 featured per user).
+
+    Body (JSON, optional): ``{"featured": true|false}`` sets the state
+    explicitly, which makes the call idempotent -- a retry or double-tap
+    cannot flip it back. Without a body it toggles (legacy behaviour).
+    The user's row is locked while counting so two concurrent requests
+    cannot both slip past the limit of 3.
+    """
     try:
+        payload = request.get_json(silent=True) or {}
+        desired = payload.get("featured")
+        if desired is not None and not isinstance(desired, bool):
+            return error_response("'featured' must be true or false", 400)
+
+        # Serialize concurrent feature requests for this user.
+        db.session.query(User.id).filter(User.id == current_user.id).with_for_update().first()
+
         user_badge = UserBadge.query.filter_by(
             user_id=current_user.id,
             badge_id=badge_id
@@ -297,15 +322,17 @@ def feature_badge(current_user, badge_id):
         if not user_badge:
             return error_response("You haven't earned this badge", 404)
 
-        featured_count = UserBadge.query.filter_by(
-            user_id=current_user.id,
-            is_featured=True
-        ).count()
+        target = (not user_badge.is_featured) if desired is None else desired
 
-        if featured_count >= 3 and not user_badge.is_featured:
-            return error_response("Maximum 3 featured badges allowed", 400)
+        if target and not user_badge.is_featured:
+            featured_count = UserBadge.query.filter_by(
+                user_id=current_user.id,
+                is_featured=True
+            ).count()
+            if featured_count >= 3:
+                return error_response("Maximum 3 featured badges allowed", 400)
 
-        user_badge.is_featured = not user_badge.is_featured
+        user_badge.is_featured = target
         db.session.commit()
 
         return success_response(
@@ -333,10 +360,14 @@ def feature_badge(current_user, badge_id):
 # ─────────────────────────────────────────────────────────────────────────
 
 
+TOP_EARNERS_DEFAULT = 20
+TOP_EARNERS_MAX = 50
+
+
 @cache_service.cached("sh:1:badge:top_earners", ttl_seconds=120)
 def _compute_top_earners():
     """
-    Viewer-INDEPENDENT top-20-by-badge-count computation, cache-aside per
+    Viewer-INDEPENDENT top-50-by-badge-count computation (the route slices to ?limit=), cache-aside per
     plan §4.3's row for this route (120s TTL fallback only — per-viewer
     connection-status component makes hard invalidation on every badge
     award impractical, same fan-out reasoning as plan §4.9). Key is
@@ -351,14 +382,24 @@ def _compute_top_earners():
     identity. top_earners() below overlays real per-viewer values after
     the cache lookup.
     """
+    # Only approved accounts are ranked (suspended/pending users must not
+    # appear on a public leaderboard). Ties on badge count break
+    # deterministically -- earliest first badge, then lowest user id -- so
+    # equal counts cannot reorder between cache refreshes.
     rank_rows = (
         db.session.query(
             UserBadge.user_id,
             func.count(UserBadge.id).label("badge_count"),
         )
+        .join(User, User.id == UserBadge.user_id)
+        .filter(User.status == "approved")
         .group_by(UserBadge.user_id)
-        .order_by(func.count(UserBadge.id).desc())
-        .limit(20)
+        .order_by(
+            func.count(UserBadge.id).desc(),
+            func.min(UserBadge.earned_at).asc(),
+            UserBadge.user_id.asc(),
+        )
+        .limit(TOP_EARNERS_MAX)
         .all()
     )
 
@@ -409,12 +450,12 @@ def _compute_top_earners():
 
 
 @badges_bp.route("/badges/top-earners", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def top_earners(current_user):
     """
-    Top 20 users by badge count, with connection status relative to
-    current_user.
+    Top users by badge count (default 20, ``?limit=`` up to 50), approved
+    accounts only, with connection status relative to current_user.
 
     A genuinely different leaderboard from reputation.py's/leaderboard.py's
     (badge-count-based, not reputation-based) so it's kept as its own
@@ -430,7 +471,13 @@ def top_earners(current_user):
     regardless of whether the shared list was a cache hit.
     """
     try:
-        leaderboard_data = _compute_top_earners()
+        try:
+            limit = int(request.args.get("limit", TOP_EARNERS_DEFAULT))
+        except (TypeError, ValueError):
+            limit = TOP_EARNERS_DEFAULT
+        limit = max(1, min(limit, TOP_EARNERS_MAX))
+
+        leaderboard_data = [dict(e) for e in (_compute_top_earners() or [])[:limit]]
 
         if not leaderboard_data:
             return jsonify({"status": "success", "data": []})
@@ -450,12 +497,13 @@ def top_earners(current_user):
 
 
 @badges_bp.route("/badges/check-all", methods=["POST"])
-@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 @token_required
+@limiter.limit(RateLimitTier.BURST_OK, key_func=user_or_ip_key)
 def check_all_badges(current_user):
     """Manually trigger badge check for current user."""
     try:
         awarded = badge_service.check_all_badges_for_user(current_user.id)
+        db.session.commit()   # the service never commits; this route owns the transaction
 
         if not awarded:
             return success_response("No new badges earned")
@@ -478,44 +526,28 @@ def check_all_badges(current_user):
 
 
 @badges_bp.route("/badges/user-badges/<int:id>", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
 @token_required
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 def get_user_badges(current_user, id):
-    """Get all badges earned by a particular user."""
+    """Get all badges earned by a particular (approved, non-blocked) user."""
     try:
-        user_badges = UserBadge.query.filter_by(
-            user_id=id
-        ).order_by(UserBadge.earned_at.desc()).all()
+        target = User.query.get(id)
+        if not target or target.status != "approved":
+            return error_response("User not found", 404)
 
-        badges_data = []
-        for ub in user_badges:
-            badge = Badge.query.get(ub.badge_id)
-            if badge:
-                badges_data.append({
-                    "id": badge.id,
-                    "name": badge.name,
-                    "description": badge.description,
-                    "icon": badge.icon,
-                    "category": badge.category,
-                    "rarity": badge.rarity,
-                    "earned_at": ub.earned_at.isoformat(),
-                    "is_featured": ub.is_featured
-                })
+        if id != current_user.id:
+            blocked = Connection.query.filter(
+                Connection.status == "blocked",
+                or_(
+                    and_(Connection.requester_id == current_user.id, Connection.receiver_id == id),
+                    and_(Connection.requester_id == id, Connection.receiver_id == current_user.id),
+                ),
+            ).first()
+            if blocked:
+                return error_response("User not found", 404)
 
-        by_rarity = {}
-        for badge in badges_data:
-            by_rarity.setdefault(badge["rarity"], []).append(badge)
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "badges": badges_data,
-                "by_rarity": by_rarity,
-                "total_earned": len(badges_data),
-                "featured": [b for b in badges_data if b["is_featured"]]
-            }
-        })
+        return jsonify({"status": "success", "data": _earned_badges_payload(id)})
 
     except Exception as e:
-        current_app.logger.error(f"Get my badges error: {str(e)}")
-        return error_response("Failed to load user badges badges")
+        current_app.logger.error(f"Get user badges error: {str(e)}")
+        return error_response("Failed to load user badges")

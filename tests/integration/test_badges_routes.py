@@ -337,12 +337,182 @@ class TestGetUserBadges:
         assert data["total_earned"] == 1
         assert data["badges"][0]["name"] == "Their Badge"
 
-    def test_nonexistent_user_returns_empty(self, client, make_user, auth_headers):
+    def test_nonexistent_user_returns_404(self, client, make_user, auth_headers):
         viewer = make_user()
 
         resp = client.get(
             "/student/badges/user-badges/999999", headers=auth_headers(viewer)
         )
 
-        assert resp.status_code == 200
-        assert resp.get_json()["data"]["badges"] == []
+        assert resp.status_code == 404
+
+    def test_non_approved_user_returns_404(self, client, make_user, auth_headers):
+        viewer = make_user()
+        suspended = make_user(status="suspended")
+
+        resp = client.get(
+            f"/student/badges/user-badges/{suspended.id}", headers=auth_headers(viewer)
+        )
+
+        assert resp.status_code == 404
+
+    def test_blocked_either_direction_returns_404(
+        self, client, db_session, make_user, make_connection, auth_headers
+    ):
+        viewer, other = make_user(), make_user()
+        make_connection(other, viewer, status="blocked", blocked_by_id=other.id)
+
+        resp = client.get(
+            f"/student/badges/user-badges/{other.id}", headers=auth_headers(viewer)
+        )
+
+        assert resp.status_code == 404
+
+
+# ============================================================================
+# Audit fixes: payload parity, feature idempotency, ordering, top-earners
+# ============================================================================
+
+class TestAuditFixes:
+    def test_details_reports_is_featured(
+        self, client, db_session, make_user, auth_headers
+    ):
+        user = make_user()
+        badge = _badge(db_session, name="Shown")
+        _user_badge(db_session, user, badge, is_featured=True)
+
+        data = client.get(
+            f"/student/badges/{badge.id}/details", headers=auth_headers(user)
+        ).get_json()["data"]
+
+        assert data["is_featured"] is True
+
+    def test_details_is_featured_false_when_unearned(
+        self, client, db_session, make_user, auth_headers
+    ):
+        user = make_user()
+        badge = _badge(db_session, name="Unearned")
+        data = client.get(
+            f"/student/badges/{badge.id}/details", headers=auth_headers(user)
+        ).get_json()["data"]
+        assert data["is_featured"] is False
+
+    def test_details_recent_earners_exclude_non_approved(
+        self, client, db_session, make_user, auth_headers
+    ):
+        viewer, good, bad = make_user(), make_user(), make_user(status="suspended")
+        badge = _badge(db_session, name="Popular")
+        _user_badge(db_session, good, badge)
+        _user_badge(db_session, bad, badge)
+        data = client.get(
+            f"/student/badges/{badge.id}/details", headers=auth_headers(viewer)
+        ).get_json()["data"]
+        assert [e["username"] for e in data["recent_earners"]] == [good.username]
+
+    def test_feature_with_explicit_state_is_idempotent(
+        self, client, db_session, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        badge = _badge(db_session, name="Idem")
+        _user_badge(db_session, user, badge)
+        headers = {**auth_headers(user), **csrf_headers(client)}
+
+        for _ in range(3):   # retries / double taps must not flip it back
+            resp = client.post(f"/student/badges/feature/{badge.id}",
+                               json={"featured": True}, headers=headers)
+            assert resp.get_json()["data"]["is_featured"] is True
+
+        resp = client.post(f"/student/badges/feature/{badge.id}",
+                           json={"featured": False}, headers=headers)
+        assert resp.get_json()["data"]["is_featured"] is False
+        resp = client.post(f"/student/badges/feature/{badge.id}",
+                           json={"featured": False}, headers=headers)
+        assert resp.get_json()["data"]["is_featured"] is False
+
+    def test_feature_rejects_non_boolean(
+        self, client, db_session, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        badge = _badge(db_session, name="Strict")
+        _user_badge(db_session, user, badge)
+        resp = client.post(f"/student/badges/feature/{badge.id}",
+                           json={"featured": "yes"},
+                           headers={**auth_headers(user), **csrf_headers(client)})
+        assert resp.status_code == 400
+
+    def test_explicit_feature_still_capped_at_three(
+        self, client, db_session, make_user, auth_headers, csrf_headers
+    ):
+        user = make_user()
+        badges = [_badge(db_session, name=f"Cap{i}") for i in range(4)]
+        for b in badges[:3]:
+            _user_badge(db_session, user, b, is_featured=True)
+        _user_badge(db_session, user, badges[3])
+        resp = client.post(f"/student/badges/feature/{badges[3].id}",
+                           json={"featured": True},
+                           headers={**auth_headers(user), **csrf_headers(client)})
+        assert resp.status_code == 400
+
+    def test_available_badges_sorted_by_real_rarity_rank(
+        self, client, db_session, make_user, auth_headers
+    ):
+        user = make_user()
+        for name, rarity in (("c", "common"), ("r", "rare"), ("e", "epic"), ("l", "legendary")):
+            _badge(db_session, name=name, rarity=rarity)
+        db_session.commit()
+        data = client.get("/student/badges/available", headers=auth_headers(user)).get_json()["data"]
+        assert [b["rarity"] for b in data["badges"]] == ["legendary", "epic", "rare", "common"]
+
+    def test_top_earners_excludes_suspended_users(
+        self, client, db_session, make_user, auth_headers
+    ):
+        viewer, good, bad = make_user(), make_user(), make_user(status="suspended")
+        for i in range(3):
+            _user_badge(db_session, bad, _badge(db_session, name=f"B{i}"))
+        _user_badge(db_session, good, _badge(db_session, name="G"))
+        db_session.commit()
+        data = client.get("/student/badges/top-earners", headers=auth_headers(viewer)).get_json()["data"]
+        assert [e["user"]["id"] for e in data] == [good.id]
+
+    def test_top_earners_honours_limit(self, client, db_session, make_user, auth_headers):
+        viewer = make_user()
+        badge = _badge(db_session, name="Shared")
+        for _ in range(4):
+            _user_badge(db_session, make_user(), badge)
+        db_session.commit()
+        data = client.get("/student/badges/top-earners?limit=2", headers=auth_headers(viewer)).get_json()["data"]
+        assert len(data) == 2
+        data = client.get("/student/badges/top-earners?limit=junk", headers=auth_headers(viewer)).get_json()["data"]
+        assert len(data) == 4
+
+    def test_top_earners_ties_break_deterministically(
+        self, client, db_session, make_user, auth_headers
+    ):
+        viewer = make_user()
+        badge = _badge(db_session, name="Tie")
+        now = datetime.datetime.utcnow()
+        late = make_user()
+        early = make_user()
+        _user_badge(db_session, late, badge, earned_at=now)
+        _user_badge(db_session, early, badge, earned_at=now - datetime.timedelta(days=1))
+        db_session.commit()
+        ids = []
+        for _ in range(3):
+            data = client.get("/student/badges/top-earners", headers=auth_headers(viewer)).get_json()["data"]
+            ids.append([e["user"]["id"] for e in data])
+        assert ids[0] == [early.id, late.id]
+        assert ids[0] == ids[1] == ids[2]
+
+    def test_check_all_persists_awarded_badges(
+        self, client, db_session, seeded_badges, make_user, auth_headers, csrf_headers
+    ):
+        """The service no longer commits, so the route must."""
+        from extensions import db
+        from models import UserBadge
+        user = make_user(total_posts=1)
+        db.session.commit()
+        resp = client.post("/student/badges/check-all",
+                           headers={**auth_headers(user), **csrf_headers(client)})
+        assert resp.status_code == 201
+        db.session.rollback()          # drop anything uncommitted
+        assert UserBadge.query.filter_by(user_id=user.id).count() >= 1
