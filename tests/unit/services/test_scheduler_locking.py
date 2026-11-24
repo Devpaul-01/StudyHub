@@ -24,9 +24,12 @@ class _FakeLock:
     controllable .acquired flag -- matches the plan's own guidance to
     mock the lock class here rather than drive real Redis contention."""
 
-    def __init__(self, acquired):
+    def __init__(self, acquired, failure_reason=None):
         self._acquired = acquired
         self.acquired = acquired
+        # Mirrors DistributedLock.failure_reason: a lock that was not acquired
+        # because another owner holds it (the normal multi-instance case).
+        self.failure_reason = None if acquired else (failure_reason or "already_held")
 
     def __enter__(self):
         return self
