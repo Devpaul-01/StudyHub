@@ -13,7 +13,7 @@ Features:
 """
 
 from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import func, desc, and_, or_, case
+from sqlalchemy import func, desc, and_, or_, case, select
 import datetime
 
 from models import (
@@ -264,13 +264,28 @@ def get_average_user_stats():
     # PostgreSQL returns Decimal from AVG(); Decimal is not JSON serializable
     # (the cache write would be silently dropped) and jsonify() would emit it
     # as a string. Cast to float at the query boundary.
+    # Every aggregate must use the same population as ``total_users`` above
+    # (approved users). Previously the AVG() queries had no status filter, so
+    # pending/rejected accounts diluted the averages.
+    approved = User.status == "approved"
+    approved_ids = select(User.id).where(approved)
+
+    # A connection involves two users, so the per-user average is the number
+    # of accepted-connection *endpoints* held by approved users divided by the
+    # number of approved users. (Dividing the raw connection count by the
+    # user count understated the average by 2x.) This matches how the viewer's
+    # own count is computed in get_comparison_stats (either side of the row).
+    accepted = Connection.status == "accepted"
+    connection_endpoints = (
+        Connection.query.filter(accepted, Connection.requester_id.in_(approved_ids)).count()
+        + Connection.query.filter(accepted, Connection.receiver_id.in_(approved_ids)).count()
+    )
+
     avg_stats = {
-        "avg_posts": float(db.session.query(func.avg(User.total_posts)).scalar() or 0),
-        "avg_reputation": float(db.session.query(func.avg(User.reputation)).scalar() or 0),
-        "avg_helpful": float(db.session.query(func.avg(User.total_helpful)).scalar() or 0),
-        "avg_connections": float(db.session.query(
-            func.count(Connection.id)
-        ).filter(Connection.status == "accepted").scalar() / total_users),
+        "avg_posts": float(db.session.query(func.avg(User.total_posts)).filter(approved).scalar() or 0),
+        "avg_reputation": float(db.session.query(func.avg(User.reputation)).filter(approved).scalar() or 0),
+        "avg_helpful": float(db.session.query(func.avg(User.total_helpful)).filter(approved).scalar() or 0),
+        "avg_connections": float(connection_endpoints / total_users),
     }
 
     return avg_stats

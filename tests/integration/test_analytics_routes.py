@@ -653,3 +653,41 @@ class TestNumericTypesAndCaching:
         assert posts["avg_views_per_post"] == 5.0
         assert isinstance(posts["total_views"], int)
         assert cache_redis.get(f"sh:1:an:engage:{user.id}") is not None
+
+
+# ============================================================================
+# Platform averages use the right population (AN-06)
+# ============================================================================
+
+class TestPlatformAverages:
+    def test_average_ignores_non_approved_users(
+        self, client, make_user, auth_headers
+    ):
+        # Regression (AN-06): AVG() had no status filter, so pending users
+        # (0 posts) dragged the average of the only approved user down.
+        me = make_user(total_posts=10, status="approved")
+        for _ in range(3):
+            make_user(total_posts=0, status="pending")
+
+        resp = client.get("/student/analytics/comparison", headers=auth_headers(me))
+
+        data = resp.get_json()["data"]
+        assert data["average_stats"]["posts"] == 10.0
+        assert data["comparison"]["posts"]["multiplier"] == 1.0
+
+    def test_average_connections_is_the_per_user_mean(
+        self, client, make_user, make_connection, auth_headers
+    ):
+        # Regression (AN-06): 2 accepted connections among 4 users means every
+        # user has exactly 1 connection. The average was reported as 0.5
+        # (each connection was counted once instead of once per endpoint), so
+        # an exactly-average user was shown as "2.0x above average".
+        a, b, c, d = (make_user(status="approved") for _ in range(4))
+        make_connection(a, b)
+        make_connection(c, d)
+
+        resp = client.get("/student/analytics/comparison", headers=auth_headers(a))
+
+        data = resp.get_json()["data"]
+        assert data["average_stats"]["connections"] == 1.0
+        assert data["comparison"]["connections"]["multiplier"] == 1.0
