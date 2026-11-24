@@ -193,6 +193,11 @@ pytest
 
 `pytest.ini` sets `testpaths = tests/unit tests/integration`, so a bare `pytest` run collects and runs both suites together (1,440 passing as of this writing: 650 unit and 790 integration, plus 2 skipped). Both run against an in-memory SQLite database and `fakeredis`. A root-level `conftest.py` sets placeholder environment variables before test collection, since `config.py` validates `SECRET_KEY`/`DATABASE_NEW_URL` at import time. `distributed_lock.py`'s Lua-scripted release is tested against real Lua execution via `fakeredis` + `lupa`, not mocked around. `freezegun` backs deterministic time-dependent tests (streaks, token expiry, cooldown windows).
 
+Two opt-in suites sit outside the default run:
+
+- **PostgreSQL-only tests** (`tests/postgres`) cover behaviour SQLite cannot reproduce: row locks and genuinely concurrent transactions (reputation awards, snapshot runs, cache invalidation races). They are skipped unless `TEST_POSTGRES_URL` points at an empty, throwaway database whose name contains `test` (the fixture refuses anything else and drops its tables afterwards): `TEST_POSTGRES_URL=postgresql+psycopg2://user:pw@localhost/studyhub_pg_test pytest tests/postgres`.
+- **Frontend tests** (`tests/frontend`) use Node's built-in runner: `node --test tests/frontend/*.test.mjs`. The escaping tests need nothing installed; the events tests drive the real leaderboard modules under jsdom (`npm install --prefix tests/frontend`) and are skipped without it.
+
 Test coverage is still growing — more tests, across both the unit and integration suites, are planned as coverage gaps are identified.
 
 ### Database migrations
