@@ -310,3 +310,26 @@ def test_milestone_pays_once_when_the_count_passes_through_the_threshold_repeate
             reputation_service.check_and_award_milestone(user.id, post_id=post.id)
     assert _count(db_session, user.id, "post_10_likes") == 1
     assert user.reputation == 5
+
+
+def test_every_advertised_action_exists_and_pays_a_positive_amount():
+    tips = reputation_service.scoring_tips()
+    assert len(tips) == len(reputation_service.AWARDED_ACTION_KEYS)
+    for key in reputation_service.AWARDED_ACTION_KEYS:
+        assert reputation_service.REPUTATION_ACTIONS[key]["points"] > 0
+    for tip, key in zip(tips, reputation_service.AWARDED_ACTION_KEYS):
+        assert str(reputation_service.REPUTATION_ACTIONS[key]["points"]) in tip
+
+
+def test_awarded_actions_really_have_call_sites():
+    """If someone removes a call site (or adds an action to the tips without
+    wiring it), this fails instead of the UI quietly advertising points that
+    cannot be earned."""
+    import pathlib
+    routes = pathlib.Path(reputation_service.__file__).resolve().parents[1] / "routes"
+    route_source = "\n".join(p.read_text() for p in routes.rglob("*.py"))
+    milestone_actions = set(reputation_service._POST_LIKE_MILESTONES.values())
+
+    for key in reputation_service.AWARDED_ACTION_KEYS:
+        wired = key in milestone_actions or f'"{key}"' in route_source
+        assert wired, f"{key} is advertised but has no award call site"

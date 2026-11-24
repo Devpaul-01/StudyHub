@@ -101,6 +101,36 @@ REPUTATION_ACTIONS = {
 }
 
 
+# Actions that currently have a call site (award_reputation / check_and_award_milestone).
+# The remaining entries above are defined but not wired to any behaviour yet, so
+# nothing may advertise them as a way to earn points.
+AWARDED_ACTION_KEYS = (
+    "comment_marked_solution",
+    "comment_marked_helpful",
+    "post_10_likes",
+    "post_50_likes",
+    "post_100_likes",
+)
+
+_TIP_TEMPLATES = {
+    "comment_marked_solution": "💡 Answers marked as solutions earn {points} pts",
+    "comment_marked_helpful": "⚡ Helpful comments earn {points} pts each",
+    "post_10_likes": "📝 Posts reaching 10 likes earn {points} pts",
+    "post_50_likes": "🏆 Posts reaching 50 likes earn {points} pts",
+    "post_100_likes": "🌟 Posts reaching 100 likes earn {points} pts",
+}
+
+
+def scoring_tips():
+    """Human-readable ways to earn points, built from REPUTATION_ACTIONS so the
+    amounts cannot drift from what award_reputation actually pays, and limited
+    to actions that are really awarded."""
+    return [
+        _TIP_TEMPLATES[key].format(points=REPUTATION_ACTIONS[key]["points"])
+        for key in AWARDED_ACTION_KEYS
+    ]
+
+
 # ── Post-commit cache invalidation ───────────────────────────────────────────
 _PENDING_INVALIDATIONS_KEY = "reputation_pending_cache_invalidations"
 # Long enough to outlive every per-user cache entry (max TTL is 1 h).
