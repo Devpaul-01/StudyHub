@@ -239,3 +239,43 @@ class TestRisingAndStats:
         data = client.get("/student/leaderboard/stats", headers=auth_headers(viewer)).get_json()["data"]
 
         assert data["week_rep_earned"] == 10
+
+
+class TestBreakdown:
+    def test_breakdown_totals_cover_the_whole_period_not_the_latest_50_events(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        u = make_user(reputation=0)
+        for i in range(60):
+            _hist(db_session, u, 1, days_ago=0.1 + i * 0.001)
+        _hist(db_session, u, -5, action="content_reported")
+
+        card = client.get("/student/leaderboard/me?period=weekly", headers=auth_headers(u)).get_json()["data"]
+        bk = client.get("/student/leaderboard/breakdown?period=weekly", headers=auth_headers(u)).get_json()["data"]
+
+        assert bk["total_period_score"] == card["score"]["period_score"] == 55
+        assert bk["total_positive"] == 60 and bk["total_negative"] == -5
+        assert bk["by_action"]["comment_marked_helpful"] == {"count": 60, "total_points": 60}
+        assert bk["by_action"]["content_reported"] == {"count": 1, "total_points": -5}
+        assert len(bk["recent_events"]) == 10
+
+    def test_breakdown_respects_the_period_window(
+        self, client, make_user, auth_headers, fakeredis_client, db_session
+    ):
+        u = make_user()
+        _hist(db_session, u, 7, days_ago=1)
+        _hist(db_session, u, 100, days_ago=20)
+
+        weekly = client.get("/student/leaderboard/breakdown?period=weekly", headers=auth_headers(u)).get_json()["data"]
+        monthly = client.get("/student/leaderboard/breakdown?period=monthly", headers=auth_headers(u)).get_json()["data"]
+
+        assert weekly["total_period_score"] == 7 and monthly["total_period_score"] == 107
+
+    def test_scoring_tips_only_advertise_actions_that_are_awarded(
+        self, client, make_user, auth_headers, fakeredis_client
+    ):
+        u = make_user()
+        tips = " ".join(client.get("/student/leaderboard/breakdown", headers=auth_headers(u)).get_json()["data"]["scoring_tips"])
+
+        assert "streak" not in tips.lower()                 # helpful_streak_7 is never awarded
+        assert "15 pts" in tips and "3 pts" in tips         # amounts come from REPUTATION_ACTIONS

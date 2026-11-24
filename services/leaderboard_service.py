@@ -40,6 +40,7 @@ from models import (
 )
 from services.reputation_levels import REPUTATION_LEVELS, get_reputation_level
 from services import cache_service
+from services.reputation_service import scoring_tips
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1477,43 +1478,54 @@ def take_snapshot(snapshot_type: str = "weekly") -> dict:
 def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
     """Transparent breakdown of how a user's score is composed.
 
-    Cache-aside per plan §4.2's `/leaderboard/breakdown` row: 120s TTL
-    fallback + hard invalidation on the viewing user's own reputation
-    change. Key matches plan §3.2's `sh:1:lb:breakdown:{user_id}:{period}`
-    exactly, which is what reputation_service.py::award_reputation
-    pattern-deletes via `sh:1:lb:breakdown:{user_id}:*` (plan §5.1).
-    Entirely scoped to user_id — no viewer/subject split needed.
+    Cache-aside per plan §4.2's `/leaderboard/breakdown` row: 120s TTL,
+    retired by the viewing user's own cache version when their reputation
+    changes. Entirely scoped to user_id, so no viewer/subject split.
+
+    Totals and per-action figures are aggregated in SQL over the WHOLE
+    period. (They used to be summed over only the latest 50 events, so for an
+    active user the breakdown disagreed with the score shown everywhere else.)
     """
     user = User.query.get(user_id)
     if not user:
         raise LookupError("User not found")
 
-    history_q = ReputationHistory.query.filter_by(user_id=user_id)
+    window = [ReputationHistory.user_id == user_id]
     if period != "all_time":
-        history_q = history_q.filter(ReputationHistory.created_at >= _period_start(period))
-
-    history_rows = history_q.order_by(ReputationHistory.created_at.desc()).limit(50).all()
+        window.append(ReputationHistory.created_at >= _period_start(period))
 
     by_action = {}
     total_positive = 0
     total_negative = 0
-    for h in history_rows:
-        action = h.action
-        by_action.setdefault(action, {"count": 0, "total_points": 0})
-        by_action[action]["count"] += 1
-        by_action[action]["total_points"] += h.points_change
-        if h.points_change > 0:
-            total_positive += h.points_change
-        else:
-            total_negative += h.points_change
+    for action, count, points, positive, negative in (
+        db.session.query(
+            ReputationHistory.action,
+            func.count(ReputationHistory.id),
+            func.coalesce(func.sum(ReputationHistory.points_change), 0),
+            func.coalesce(func.sum(case((ReputationHistory.points_change > 0, ReputationHistory.points_change), else_=0)), 0),
+            func.coalesce(func.sum(case((ReputationHistory.points_change < 0, ReputationHistory.points_change), else_=0)), 0),
+        )
+        .filter(*window)
+        .group_by(ReputationHistory.action)
+        .all()
+    ):
+        by_action[action] = {"count": int(count), "total_points": int(points)}
+        total_positive += int(positive)
+        total_negative += int(negative)
 
+    recent_rows = (
+        ReputationHistory.query.filter(*window)
+        .order_by(ReputationHistory.created_at.desc(), ReputationHistory.id.desc())
+        .limit(10)
+        .all()
+    )
     recent = [
         {
             "action": h.action, "points_change": h.points_change,
             "created_at": h.created_at.isoformat(),
             "related_type": h.related_type, "related_id": h.related_id,
         }
-        for h in history_rows[:10]
+        for h in recent_rows
     ]
 
     consistency_bonus_explanation = (
@@ -1537,11 +1549,5 @@ def get_score_breakdown(user_id: int, period: str = "weekly") -> dict:
             "help_streak_longest": user.help_streak_longest,
         },
         "consistency_note": consistency_bonus_explanation,
-        "scoring_tips": [
-            "💡 Answers marked as solutions earn 15 pts",
-            "🔥 7-day help streak earns a bonus 10 pts",
-            "⚡ Helpful comments earn 3 pts each",
-            "📝 Posts reaching 10 likes earn 5 pts",
-            "🏆 Posts reaching 50 likes earn 20 pts",
-        ],
+        "scoring_tips": scoring_tips(),
     }
