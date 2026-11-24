@@ -6,7 +6,7 @@
  * ============================================================================
  */
 
-import { initialLoad }           from './leaderboard.events.js';
+import { initialLoad, refreshIfStale } from './leaderboard.events.js';
 import { setupDeptFilter }       from './leaderboard.delegation.js';
 import { leaderboardState }      from './leaderboard.state.js';
 
@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
         if (lbSection.classList.contains('active')) {
           initializeLeaderboard();
+          refreshIfStale();   // no-op on first activation and while data is fresh
         }
       }
     }

@@ -113,3 +113,16 @@ test('with tied ranks only the three podium entries are hidden from the list', {
   assert.equal(document.querySelectorAll('.lb-row-in-podium').length, 3, 'exactly the podium entries');
   assert.equal(document.querySelectorAll('.lb-row').length, 5);
 });
+
+test('stale data is refreshed when the section is re-opened, fresh data is not', { skip }, async () => {
+  await setup();
+  state.markLoaded();
+  await events.refreshIfStale();
+  assert.equal(calls.length, 0, 'fresh data: no requests');
+
+  state.lastLoadedAt = Date.now() - 120_000;
+  const refresh = events.refreshIfStale(); await tick();
+  assert.ok(calls.length >= 1, 'stale data triggers a reload');
+  pending.forEach((p) => p.reject(new Error('stop')));
+  await refresh.catch(() => {});
+});

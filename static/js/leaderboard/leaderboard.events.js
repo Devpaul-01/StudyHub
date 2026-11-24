@@ -445,3 +445,20 @@ export async function initialLoad() {
   ]);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. REFRESH ON RE-ACTIVATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STALE_AFTER_MS = 60 * 1000;   // matches the server-side cache TTL
+
+/**
+ * The section is initialised once, so coming back to it used to show whatever
+ * was loaded the first time, including a rank card that predates the points the
+ * user has since earned. Reload (in the user's current view/period) if the data
+ * is older than the server cache would serve anyway.
+ */
+export async function refreshIfStale() {
+  if (leaderboardState.isLoading() || !leaderboardState.isStale(STALE_AFTER_MS)) return;
+  await Promise.all([loadStatsBanner(), loadMyRankStrip(), loadLeaderboard()]);
+}
