@@ -451,7 +451,8 @@ export const ProfileHandlers = {
   'profile-toggle-feature-badge': async (target) => {
     const badgeId = target.dataset.badgeId;
     if (!badgeId) return;
-    const res = await profileApi.toggleFeatureBadge(badgeId);
+    const wantFeatured = target.dataset.featured !== 'true';   // flip the state the modal showed
+    const res = await profileApi.toggleFeatureBadge(badgeId, wantFeatured);
     if (res?.status === 'success') {
       showToast(res.message || 'Updated', 'success');
       profileState.invalidate('badges'); // featured state changed — refetch next visit

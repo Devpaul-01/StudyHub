@@ -249,9 +249,10 @@ export async function fetchBadgeDetails(badgeId) {
   }
 }
 
-export async function toggleFeatureBadge(badgeId) {
+// `featured` is the DESIRED state (explicit, so a retry/double-tap is idempotent).
+export async function toggleFeatureBadge(badgeId, featured) {
   try {
-    return await api.post(`/badges/feature/${badgeId}`);
+    return await api.post(`/badges/feature/${badgeId}`, { featured });
   } catch (e) {
     console.error('[profile.api] toggleFeatureBadge:', e);
     return null;
