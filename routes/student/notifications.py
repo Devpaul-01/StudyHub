@@ -51,21 +51,11 @@ def get_notifications(current_user):
         notification_settings = user.notification_settings or {}
         enable_notification_sound = notification_settings.get("enable_notification_sound", True)
         enable_notification = notification_settings.get("enable_notification", True)
-        
+
+        # The setting is enforced when notifications are CREATED (see
+        # notification_service.notify). Existing history stays visible and the
+        # unread count stays truthful (audit NOTIF-05).
         current_app.logger.info(f"Fetching all notifications for user {current_user.id}")
-        
-        # Check if notifications are globally disabled
-        if not enable_notification:
-            return jsonify({
-                "status": "success",
-                "message": "Notifications are disabled in settings",
-                "data": {
-                    "notifications": [],
-                    'enable_notification_sound': enable_notification_sound,
-                    'enable_notification': enable_notification,
-                    "unread_count": 0
-                }
-            })
         
         # Base query - fetch ALL notifications
         query = Notification.query.filter_by(user_id=current_user.id)

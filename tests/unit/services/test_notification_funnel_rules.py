@@ -37,3 +37,33 @@ def test_same_origin_links_are_kept(db_session, make_user, link):
         notification_service.notify(user.id, "t", "b", "x", link=link)
     db_session.commit()
     assert _stored(user.id)[0].link == link
+
+
+# --- user setting (NOTIF-05) ---------------------------------------------------
+
+def test_disabled_user_gets_no_row_and_no_push(db_session, make_user):
+    user = make_user()
+    user.notification_settings = {"enable_notification": False}
+    db_session.add(user)
+    db_session.flush()
+
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        result = notification_service.notify(user.id, "t", "b", "x")
+    db_session.commit()
+
+    assert result is None
+    assert _stored(user.id) == []
+    manager.emit_to_user.assert_not_called()
+
+
+@pytest.mark.parametrize("settings", [None, {}, {"enable_notification": True}, {"enable_notification_sound": False}])
+def test_enabled_by_default(db_session, make_user, settings):
+    user = make_user()
+    user.notification_settings = settings
+    db_session.add(user)
+    db_session.flush()
+
+    with patch("services.websocket_messages.message_ws_manager"):
+        assert notification_service.notify(user.id, "t", "b", "x") is not None
+    db_session.commit()
+    assert len(_stored(user.id)) == 1

@@ -48,19 +48,22 @@ class TestGetNotificationsTypeFilter:
         titles = [n["title"] for n in resp.get_json()["data"]["notifications"]]
         assert titles == ["Unread one"]
 
-    def test_notifications_disabled_returns_empty(
+    def test_disabled_setting_does_not_hide_existing_history(
         self, client, db_session, make_user, make_notification, auth_headers
     ):
+        """The setting stops NEW notifications (see test_notification_funnel_rules);
+        what already exists stays visible and the unread count stays truthful."""
         user = make_user(status="approved")
         user.notification_settings = {"enable_notification": False}
         db_session.add(user)
         db_session.flush()
-        make_notification(user, title="Hidden")
+        make_notification(user, title="Earlier")
 
         resp = client.get("/student/profile/notifications/all", headers=auth_headers(user))
 
         data = resp.get_json()["data"]
-        assert data["notifications"] == []
+        assert [n["title"] for n in data["notifications"]] == ["Earlier"]
+        assert data["unread_count"] == 1
         assert data["enable_notification"] is False
 
 

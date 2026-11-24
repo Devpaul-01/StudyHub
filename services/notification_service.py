@@ -48,7 +48,7 @@ import logging
 import re
 
 from extensions import db
-from models import Notification, Badge
+from models import Notification, Badge, User
 from services import counter_cache_service
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,18 @@ def _safe_link(link: str | None) -> str | None:
         logger.warning("Dropping unsafe notification link: %r", link)
         return None
     return value
+
+
+def _notifications_enabled(user_id: int) -> bool:
+    """
+    False only when the recipient explicitly turned notifications off
+    (notification_settings["enable_notification"] is False). A missing user,
+    NULL settings or a missing key all mean "enabled" — the default.
+    """
+    settings = db.session.query(User.notification_settings).filter(User.id == user_id).scalar()
+    if not isinstance(settings, dict):
+        return True
+    return settings.get("enable_notification", True) is not False
 
 
 # ============================================================================
@@ -136,10 +148,15 @@ def notify(
     related_type: str | None = None,
     related_id: int | None = None,
     link: str | None = None,
-) -> Notification:
+) -> Notification | None:
     """
     Create (and best-effort broadcast) a notification. Does not commit —
     caller's transaction owns that, same as every other service function.
+
+    Returns None, creating nothing, when the recipient has switched
+    notifications off in their settings (audit NOTIF-05: the setting used to
+    be applied only when listing, so rows, counters and live pushes kept
+    happening for users who had opted out). No caller uses the return value.
 
     Use this directly for one-off notifications; use the named
     notify_*() functions below for the notification "templates" that are
@@ -162,6 +179,9 @@ def notify(
     in the codebase has been migrated to call notify() instead — see plan
     §5.3/§17.6 for the enumerated migration this depends on.
     """
+    if not _notifications_enabled(user_id):
+        return None
+
     notification = Notification(
         user_id=user_id,
         title=title,
