@@ -67,3 +67,49 @@ def test_enabled_by_default(db_session, make_user, settings):
         assert notification_service.notify(user.id, "t", "b", "x") is not None
     db_session.commit()
     assert len(_stored(user.id)) == 1
+
+
+# --- blocks (NOTIF-12) ---------------------------------------------------------
+
+def _block(make_connection, blocker, blocked, requester=None):
+    requester = requester or blocked
+    receiver = blocker if requester is blocked else blocked
+    return make_connection(requester, receiver, status="blocked", blocked_by_id=blocker.id)
+
+
+@pytest.mark.parametrize("blocked_is_requester", [True, False])
+def test_blocked_actor_cannot_notify_the_blocker(db_session, make_user, make_connection, blocked_is_requester):
+    blocker, abuser = make_user(), make_user()
+    _block(make_connection, blocker, abuser, requester=abuser if blocked_is_requester else blocker)
+
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        result = notification_service.notify(blocker.id, "t", "b", "like", actor_id=abuser.id)
+    db_session.commit()
+
+    assert result is None
+    assert _stored(blocker.id) == []
+    manager.emit_to_user.assert_not_called()
+
+
+def test_blocker_can_still_notify_the_person_they_blocked(db_session, make_user, make_connection):
+    """Only the person who blocked is protected, not the other way round."""
+    blocker, abuser = make_user(), make_user()
+    _block(make_connection, blocker, abuser)
+
+    with patch("services.websocket_messages.message_ws_manager"):
+        assert notification_service.notify(abuser.id, "t", "b", "x", actor_id=blocker.id) is not None
+
+
+def test_unblocked_connection_does_not_suppress(db_session, make_user, make_connection):
+    a, b = make_user(), make_user()
+    make_connection(a, b, status="accepted")
+    with patch("services.websocket_messages.message_ws_manager"):
+        assert notification_service.notify(a.id, "t", "b", "x", actor_id=b.id) is not None
+
+
+def test_connection_templates_respect_blocks(db_session, make_user, make_connection):
+    blocker, abuser = make_user(), make_user()
+    _block(make_connection, blocker, abuser)
+    with patch("services.websocket_messages.message_ws_manager"):
+        assert notification_service.notify_connection_request(blocker.id, abuser.name, abuser.id) is None
+    assert _stored(blocker.id) == []

@@ -47,8 +47,10 @@ from __future__ import annotations
 import logging
 import re
 
+from sqlalchemy import and_, or_
+
 from extensions import db
-from models import Notification, Badge, User
+from models import Notification, Badge, User, Connection, ConnectionStatus
 from services import counter_cache_service
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,24 @@ def _notifications_enabled(user_id: int) -> bool:
     if not isinstance(settings, dict):
         return True
     return settings.get("enable_notification", True) is not False
+
+
+def _recipient_blocked_actor(recipient_id: int, actor_id: int) -> bool:
+    """True if `recipient_id` has blocked `actor_id` (either direction of the
+    Connection row; blocked_by_id says who did the blocking)."""
+    return (
+        db.session.query(Connection.id)
+        .filter(
+            Connection.status == ConnectionStatus.BLOCKED.value,
+            Connection.blocked_by_id == recipient_id,
+            or_(
+                and_(Connection.requester_id == recipient_id, Connection.receiver_id == actor_id),
+                and_(Connection.requester_id == actor_id, Connection.receiver_id == recipient_id),
+            ),
+        )
+        .first()
+        is not None
+    )
 
 
 # ============================================================================
@@ -148,6 +168,7 @@ def notify(
     related_type: str | None = None,
     related_id: int | None = None,
     link: str | None = None,
+    actor_id: int | None = None,
 ) -> Notification | None:
     """
     Create (and best-effort broadcast) a notification. Does not commit —
@@ -157,6 +178,14 @@ def notify(
     notifications off in their settings (audit NOTIF-05: the setting used to
     be applied only when listing, so rows, counters and live pushes kept
     happening for users who had opted out). No caller uses the return value.
+
+    `actor_id` is the user whose action caused this notification, when there
+    is one. If the recipient has blocked that user, nothing is created
+    (audit NOTIF-12: blocking used to stop only connection requests, so a
+    blocked user could still comment, like and @mention the person who
+    blocked them and generate notifications for them). Pass it from every
+    producer that has a human actor; system notifications (badges, welcome,
+    level-ups) have none.
 
     Use this directly for one-off notifications; use the named
     notify_*() functions below for the notification "templates" that are
@@ -180,6 +209,8 @@ def notify(
     §5.3/§17.6 for the enumerated migration this depends on.
     """
     if not _notifications_enabled(user_id):
+        return None
+    if actor_id is not None and actor_id != user_id and _recipient_blocked_actor(user_id, actor_id):
         return None
 
     notification = Notification(
@@ -255,6 +286,7 @@ def notify_connection_request(user_id: int, requester_name: str, requester_id: i
         notification_type="connection_request",
         related_type="user",
         related_id=requester_id,
+        actor_id=requester_id,
     )
 
 
@@ -267,6 +299,7 @@ def notify_connection_accepted(user_id: int, accepter_name: str, accepter_id: in
         notification_type="connection_accepted",
         related_type="user",
         related_id=accepter_id,
+        actor_id=accepter_id,
     )
 
 
@@ -291,6 +324,7 @@ def notify_instant_connection(user_id: int, other_name: str, other_id: int, comp
         notification_type="instant_connection",
         related_type="user",
         related_id=other_id,
+        actor_id=other_id,
     )
 
 
