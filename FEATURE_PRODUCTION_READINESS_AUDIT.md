@@ -686,3 +686,48 @@ All run on a **scratch copy** of the repo (outside the repository) with the proj
 - Script execution in a real browser (F-01 was verified at the HTML-generation level).
 - Whether any external client (mobile app, `openapi.yml` consumers) depends on fields marked "potentially unused".
 - Frontend behaviour of the activity-feed cards (`static/js/activity/*`) beyond the `offer-help` call — adjacent code, only read where it called homework endpoints.
+
+---
+
+## Appendix C — Resolution status
+
+Branch `fix/homework-production-readiness`. Commit hashes refer to that branch. Q-decisions were taken as the recommended option unless noted.
+
+| ID | Status | Commits | Notes |
+|---|---|---|---|
+| F-01 | Fixed | da25432, dc04e96, 1c8aa50 | Escape-on-render everywhere; URL scheme allow-list; CSP shipped as **Report-Only** (Q-1) |
+| F-02 | Fixed | b68dc45 | Completion events only for shared assignments (Q-2) |
+| F-03 | Fixed | 4282795, 91c0eb8 | Soft cancel + detach on assignment delete; history kept (Q-5) |
+| F-04 | Fixed | 91c0eb8, 7e17fee | Idempotent baseline migration + constraints |
+| F-05 | Fixed | 91c0eb8, 7e17fee, 4282795 | Partial unique index on live offers; offers closed on unshare/complete/delete |
+| F-06 | Fixed | f922cf8, 0b77d9e | Explicit helpful signal (Q-9); every helpful completion counted |
+| F-07 | Fixed | b8ce79e | Validate before side effects |
+| F-08 | Fixed | b68dc45, 57d8461 | Identity-free activity events |
+| F-09 | Fixed | 5012f98, 1cd4ba6, b159ec7 | Shared validation module for create/update/solution/feedback |
+| F-10 | Fixed | 37bce29, 1cd4ba6 | UTC instants end to end; forward-only for old rows (Q-6) |
+| F-11 | Fixed | 029ba04, 4282795 | Declarative transition table |
+| F-12 | Fixed in code | 4282795, f922cf8 | Atomic conditional UPDATE and row lock on the streak. **Only exercised on SQLite** |
+| F-13 | Fixed | b13a613, 05fe223 | Key function verifies the JWT itself (it ran before `g.current_user_id` was set, so it always fell back to IP); error logged for `memory://` storage |
+| F-14 | Fixed | 9375d34, d11d5c7 | Attachments visible to connections (Q-10) |
+| F-15 | Fixed | 2e2479a, de45562, f8cd301, d52e2aa | Weekly champions job, Mon 00:35 UTC, idempotent (Q-7) |
+| F-16 | Mostly fixed | 128c032, b81e23b, c0e02a1, 06ba8a2 | Grouped counts, SQL stats/charts, capped feed. **Not changed:** synchronous activity fan-out (fine at current connection counts) |
+| F-17 | Resolved by docs | c1d5b67 | No reputation is awarded for homework (Q-3); docs corrected |
+| F-18 | Fixed | f922cf8 | Shared reaction keys; legacy `mind_blown` tolerated |
+| F-19 | Fixed | 1674fdd | Copies refreshed on assignment update |
+| F-20 | Fixed | ae98453, b81e23b, cc8fc56 | Keyset cursors with a legacy fallback; same filters on every page |
+| F-21 | Fixed | c7a35f7, a7bdd0e | Dead code and duplicate CSS removed (Q-12). Kept: `available_subjects` / `filters_applied` (documented in `openapi.yml`) |
+| F-22 | Fixed | b8ce79e | 500 for real faults; no `str(e)` leakage |
+| F-23 | Fixed | 128c032, f922cf8 | Stats over the unfiltered set; effective (decaying) streak; UTC day boundary |
+| F-24 | Fixed | 029ba04, 4282795 | Deep links; notifications sent after commit |
+| F-25 | Fixed | bdbbd03, ca25100 | Idempotency key on create (fails open without Redis), single-flight mutations, stale-response guard |
+| F-26 | Fixed | 91c0eb8, 7e17fee | FK rules, CHECKs, composite indexes |
+| F-27 | Partly fixed | 0000c2d | Docstring fixed; lifecycle/concurrency-style tests added. **Postgres CI job not added** (Q-14): the test config is hard-wired to SQLite and I could not validate a Postgres job here |
+| F-28 | Fixed | b68dc45 | Named window constants; docs reconciled |
+| F-29 | Fixed | ca25100 | Attachments kept per flow |
+
+### Not done / needs your call
+
+- **Postgres:** the PG-only migration branches (NOT VALID then VALIDATE checks, FK rules) and real concurrent-write behaviour were never run. Run the migrations against a staging copy of production first (Q-8: check for duplicate `(assignment_id, helper_id)` rows before the unique index).
+- **Due-date reminders (Q-11):** not built. `notify_assignment_due_soon` is still uncalled. That is new user-facing behaviour rather than a defect.
+- **`users.help_streak_frozen`:** still unused. Left in place because the column is on a shared table; drop it or build "streak freeze" once you confirm.
+- **CSP:** Report-Only. Review violation reports, then enforce.
