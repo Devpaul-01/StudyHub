@@ -342,8 +342,8 @@ campus address are not locked out of refreshing.
 
 A global default (`200/day`, `50/hour`) covers any route that doesn't opt into a specific tier.
 `/health`, `/ping`, and `/ready` are exempt from rate limiting entirely. Authenticated routes key
-by `user_or_ip_key()` — per-user once `g.current_user_id` is set by the auth decorator, falling
-back to IP otherwise — rather than IP alone. Straight IP limiting would incorrectly throttle
+by `user_or_ip_key()`, which verifies the access token itself (signature and expiry, no database access) and keys by user id, falling
+back to IP when there is no valid token, rather than IP alone. Straight IP limiting would incorrectly throttle
 unrelated students sharing the same campus network.
 
 **Fails open, on purpose.** If Redis errors, the limiter swallows it
