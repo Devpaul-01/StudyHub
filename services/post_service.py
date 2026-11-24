@@ -57,6 +57,7 @@ from extensions import db
 from services import badge_service
 from services import notification_service
 from services.cache_service import cached
+from services.time_utils import utc_today
 
 
 def extract_public_id(url):
@@ -183,7 +184,7 @@ def update_user_activity(user_id, activity_type):
     Update or create daily activity record for user
     Used for activity heatmap and streak tracking
     """
-    today = datetime.date.today()
+    today = utc_today()
 
     activity = UserActivity.query.filter_by(
         user_id=user_id,

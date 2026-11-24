@@ -48,6 +48,7 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key
 # serializable), so the cache boundary sits around the dict construction,
 # with jsonify(...) applied outside it on both the hit and miss paths.
 from services import cache_service
+from services.time_utils import utc_today
 
 analytics_bp = Blueprint("student_analytics", __name__)
 
@@ -154,7 +155,7 @@ def generate_insights(user_id):
     if recent_post:
         views_today = PostView.query.filter(
             PostView.post_id == recent_post.id,
-            func.date(PostView.viewed_at) == datetime.date.today()
+            func.date(PostView.viewed_at) == utc_today()
         ).count()
 
         if views_today >= 20:
@@ -361,7 +362,7 @@ def get_analytics_overview(current_user):
             func.sum(UserActivity.activity_score)
         ).filter(
             UserActivity.user_id == current_user.id,
-            UserActivity.activity_date >= datetime.date.today() - datetime.timedelta(days=7)
+            UserActivity.activity_date >= utc_today() - datetime.timedelta(days=7)
         ).scalar() or 0)
 
         activity_level = get_activity_level(week_activity)
@@ -423,7 +424,7 @@ def get_activity_heatmap(current_user):
         if data is not None:
             return jsonify({"status": "success", "data": data})
 
-        start_date = datetime.date.today() - datetime.timedelta(days=days)
+        start_date = utc_today() - datetime.timedelta(days=days)
 
         # Get all activity records
         activities = UserActivity.query.filter(
@@ -446,7 +447,7 @@ def get_activity_heatmap(current_user):
 
         # Fill in missing dates with zero activity
         current_date = start_date
-        while current_date <= datetime.date.today():
+        while current_date <= utc_today():
             date_str = current_date.isoformat()
             if date_str not in activity_map:
                 activity_map[date_str] = {
@@ -820,7 +821,7 @@ def get_post_analytics(current_user, post_id):
             return error_response("Can only view analytics for your own posts", 403)
 
         # View timeline (last 30 days)
-        thirty_days_ago = datetime.date.today() - datetime.timedelta(days=30)
+        thirty_days_ago = utc_today() - datetime.timedelta(days=30)
 
         views_by_day = db.session.query(
             func.date(PostView.viewed_at).label('view_date'),
@@ -982,7 +983,7 @@ def export_analytics(current_user):
 
         if export_type == "activity":
             # Export activity heatmap
-            ninety_days_ago = datetime.date.today() - datetime.timedelta(days=90)
+            ninety_days_ago = utc_today() - datetime.timedelta(days=90)
             activities = UserActivity.query.filter(
                 UserActivity.user_id == current_user.id,
                 UserActivity.activity_date >= ninety_days_ago

@@ -17,6 +17,7 @@ from flask_login import UserMixin
 from sqlalchemy.ext.mutable import MutableDict, MutableList 
 from sqlalchemy.dialects import postgresql
 from extensions import db
+from services.time_utils import utc_today
 
 # ============================================================================
 # JSONB MIGRATION
@@ -1516,7 +1517,7 @@ class UserActivity(db.Model):
     id            = db.Column(db.Integer, primary_key=True)
     # CASCADE — meaningless without the user.
     user_id       = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    activity_date = db.Column(db.Date, default=datetime.date.today, nullable=False, index=True)
+    activity_date = db.Column(db.Date, default=utc_today, nullable=False, index=True)
 
     posts_created   = db.Column(db.Integer, default=0)
     comments_created= db.Column(db.Integer, default=0)

@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 
 from models import User, StudentProfile, UserActivity
 from extensions import db
+from services.time_utils import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def _get_or_create_today_activity(user_id: int, today: datetime.date | None = No
     Does not commit — caller is responsible for committing the session.
     """
     if today is None:
-        today = datetime.datetime.utcnow().date()
+        today = utc_today()
     activity = UserActivity.query.filter_by(user_id=user_id, activity_date=today).first()
     if not activity:
         activity = UserActivity(
