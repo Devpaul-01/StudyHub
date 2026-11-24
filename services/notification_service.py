@@ -45,12 +45,42 @@ WebSocket broadcast integration:
 from __future__ import annotations
 
 import logging
+import re
 
 from extensions import db
 from models import Notification, Badge
 from services import counter_cache_service
 
 logger = logging.getLogger(__name__)
+
+# Whitespace, control characters and backslashes never belong in an app link.
+_UNSAFE_LINK_CHARS = re.compile(r"[\\\s\x00-\x1f\x7f]")
+_MAX_LINK_LENGTH = 200  # notifications.link is String(200)
+
+
+def _safe_link(link: str | None) -> str | None:
+    """
+    Return `link` only if it is a same-origin, app-relative path ("/x/y?z#w").
+
+    Notification links are rendered into the page and navigated to on click, so
+    anything else (absolute URLs, protocol-relative "//host", "javascript:",
+    backslash tricks, control characters) is dropped rather than stored
+    (audit NOTIF-01). static/js/notification/notification.utils.js applies the
+    same rules on the client.
+    """
+    if link is None:
+        return None
+    value = link.strip() if isinstance(link, str) else ""
+    if (
+        not value
+        or not value.startswith("/")
+        or value.startswith("//")
+        or len(value) > _MAX_LINK_LENGTH
+        or _UNSAFE_LINK_CHARS.search(value)
+    ):
+        logger.warning("Dropping unsafe notification link: %r", link)
+        return None
+    return value
 
 
 # ============================================================================
@@ -139,7 +169,7 @@ def notify(
         notification_type=notification_type,
         related_type=related_type,
         related_id=related_id,
-        link=link,
+        link=_safe_link(link),
     )
     db.session.add(notification)
     db.session.flush()  # populate notification.id/created_at for the broadcast payload
