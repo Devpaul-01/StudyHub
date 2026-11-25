@@ -109,3 +109,33 @@ def record_daily_activity(
     except Exception:
         logger.exception("record_daily_activity failed (%s, user %s)", activity_type, user_id)
         return None
+
+
+STREAK_LOOKBACK_DAYS = 366
+
+
+def current_streak(user_id: int, today: datetime.date | None = None) -> int:
+    """
+    Consecutive active days (UTC), derived from ``user_activity`` rows.
+
+    The streak is alive if the user was active today *or* yesterday (they
+    still have today to keep it going); otherwise it is 0. Computed on read
+    so a stored counter that is only updated at login can never show a stale
+    streak for someone who stopped coming back. Capped by STREAK_LOOKBACK_DAYS.
+    """
+    today = today or utc_today()
+    start = today - datetime.timedelta(days=STREAK_LOOKBACK_DAYS)
+    active = {
+        row[0]
+        for row in db.session.query(UserActivity.activity_date).filter(
+            UserActivity.user_id == user_id,
+            UserActivity.activity_date >= start,
+            UserActivity.activity_date <= today,
+        )
+    }
+    day = today if today in active else today - datetime.timedelta(days=1)
+    streak = 0
+    while day in active:
+        streak += 1
+        day -= datetime.timedelta(days=1)
+    return streak

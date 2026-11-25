@@ -345,14 +345,26 @@ class TestInsights:
         assert data["insights"] == []
         assert "generated_at" in data
 
-    def test_login_streak_consistency_insight(self, client, make_user, auth_headers):
-        user = make_user(login_streak=10)
+    def test_login_streak_consistency_insight(self, client, db_session, make_user, auth_headers):
+        user = make_user()
+        for offset in range(10):
+            _activity(db_session, user, activity_date=utc_today() - datetime.timedelta(days=offset))
 
         resp = client.get("/student/analytics/insights", headers=auth_headers(user))
 
         data = resp.get_json()["data"]
         types = [i["type"] for i in data["insights"]]
         assert "consistency" in types
+
+    def test_stale_stored_streak_does_not_trigger_consistency_insight(self, client, make_user, auth_headers):
+        # AN-10: login_streak is only updated at login; 10 days stored but no
+        # recent activity must not be shown as an active streak.
+        user = make_user(login_streak=10)
+
+        resp = client.get("/student/analytics/insights", headers=auth_headers(user))
+
+        types = [i["type"] for i in resp.get_json()["data"]["insights"]]
+        assert "consistency" not in types
 
     def test_best_posting_day_uses_dialect_safe_weekday(
         self, client, make_user, make_post, auth_headers
@@ -798,3 +810,40 @@ class TestNoPlaceholderMetrics:
 
         record = resp.get_json()["data"]["records"][0]
         assert set(record) == {"date", "posts_created", "comments_created", "activity_score"}
+
+
+# ============================================================================
+# AN-10: streak is computed from activity, not the stored login counter
+# ============================================================================
+
+class TestStreakComputedOnRead:
+    def _days(self, db_session, user, offsets):
+        for offset in offsets:
+            _activity(db_session, user, activity_date=utc_today() - datetime.timedelta(days=offset))
+        db_session.commit()
+
+    def test_streak_counts_consecutive_days_ending_today(self, client, db_session, make_user, auth_headers):
+        user = make_user(login_streak=99)
+        self._days(db_session, user, [0, 1, 2, 4])  # gap at day 3
+
+        resp = client.get("/student/analytics/activity-heatmap", headers=auth_headers(user))
+
+        assert resp.get_json()["data"]["summary"]["current_streak"] == 3
+
+    def test_streak_still_alive_when_last_active_yesterday(self, client, db_session, make_user, auth_headers):
+        user = make_user()
+        self._days(db_session, user, [1, 2])
+
+        resp = client.get("/student/analytics/overview", headers=auth_headers(user))
+
+        assert resp.get_json()["data"]["current_stats"]["login_streak"] == 2
+
+    def test_stale_stored_counter_shows_zero(self, client, db_session, make_user, auth_headers):
+        user = make_user(login_streak=10, last_active=datetime.datetime.utcnow() - datetime.timedelta(days=30))
+        self._days(db_session, user, [30, 31, 32])
+
+        heat = client.get("/student/analytics/activity-heatmap", headers=auth_headers(user)).get_json()["data"]
+        over = client.get("/student/analytics/overview", headers=auth_headers(user)).get_json()["data"]
+
+        assert heat["summary"]["current_streak"] == 0
+        assert over["current_stats"]["login_streak"] == 0

@@ -49,6 +49,7 @@ from services.rate_limit_service import limiter, RateLimitTier, ip_key
 # with jsonify(...) applied outside it on both the hit and miss paths.
 from services import cache_service
 from services.time_utils import utc_today
+from services.daily_activity_service import current_streak
 
 analytics_bp = Blueprint("student_analytics", __name__)
 
@@ -221,13 +222,14 @@ def generate_insights(user_id):
                     "actionable": "Your expertise is valued by the community"
                 })
 
-    # Insight 6: Consistency check
-    if getattr(user, 'login_streak', 0) and user.login_streak >= 7:
+    # Insight 6: Consistency check (streak computed from real activity rows)
+    streak = current_streak(user_id)
+    if streak >= 7:
         insights.append({
             "type": "consistency",
             "icon": "🔥",
             "title": "On Fire!",
-            "message": f"{user.login_streak} day streak! You're building a strong learning habit.",
+            "message": f"{streak} day streak! You're building a strong learning habit.",
             "actionable": "Don't break the streak - come back tomorrow!"
         })
 
@@ -372,7 +374,7 @@ def get_analytics_overview(current_user):
                 "total_posts": current_user.total_posts,
                 "total_reputation": current_user.reputation,
                 "reputation_level": current_user.reputation_level,
-                "login_streak": current_user.login_streak,
+                "login_streak": current_streak(current_user.id),
                 "total_helpful": current_user.total_helpful
             },
             "quick_facts": {
@@ -485,7 +487,7 @@ def get_activity_heatmap(current_user):
                 "total_score": total_score,
                 "avg_daily_score": avg_daily_score,
                 "best_day": best_day,
-                "current_streak": current_user.login_streak
+                "current_streak": current_streak(current_user.id)
             }
         }
 
@@ -1020,7 +1022,7 @@ def export_analytics(current_user):
                 "value": current_user.total_helpful
             }, {
                 "metric": "Login Streak",
-                "value": current_user.login_streak
+                "value": current_streak(current_user.id)
             }]
 
         return jsonify({
