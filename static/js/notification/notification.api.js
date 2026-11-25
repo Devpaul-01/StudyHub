@@ -60,13 +60,9 @@ export const notificationAPI = {
     return response;
   },
 
-  // Batch 1 fix (this file wasn't touched in that batch, but has the same
-  // bug as base.html's loadNotificationCounts did): /profile/notifications
-  // /unread-count is not a real route. This function was unused before
-  // Batch 2 (nothing called it), but it's wired up now, so it's fixed to
-  // call the real endpoint and read the count off its response instead.
+  // Count only (audit NOTIF-07): don't download the list to read one number.
   async getUnreadCount() {
-    const response = await api.get('/profile/notifications/all');
+    const response = await api.get('/profile/notifications/unread-count');
     return { count: response.data?.unread_count || 0 };
   }
 };

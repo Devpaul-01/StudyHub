@@ -275,20 +275,9 @@
         // ============================================
         async function loadNotificationCounts() {
             try {
-                // Batch 1 fix: '/notifications/unread-count' and
-                // '/messages/unread-count' are not real backend routes
-                // (there is no @notifications_bp / @messages_bp route
-                // registered for either path), so these two calls always
-                // 404'd and the badges never updated. There is no
-                // dedicated count-only endpoint on either side, so this
-                // reuses the real endpoints that already compute the
-                // count as part of a larger response. This function only
-                // runs once per page load (see the auth-check block above
-                // that calls it), not on a polling interval, so the extra
-                // payload size is a one-time cost rather than a recurring
-                // one — worth revisiting with a lightweight endpoint if
-                // this is ever turned into a poll.
-                const notifRes = await api.get('/profile/notifications/all');
+                // Lightweight count-only endpoint (audit NOTIF-07): this used to
+                // download up to 500 full notifications just to read one number.
+                const notifRes = await api.get('/profile/notifications/unread-count');
                 const notifCount = notifRes.data?.unread_count ?? 0;
                 if (notifCount > 0) {
                     document.getElementById('notif-count').textContent = notifCount;

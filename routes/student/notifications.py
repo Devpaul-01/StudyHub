@@ -113,6 +113,30 @@ def get_notifications(current_user):
 
        
 
+# ============================================================================
+# UNREAD COUNT (for badges)
+# ============================================================================
+@notifications_bp.route("/profile/notifications/unread-count", methods=["GET"])
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
+@token_required
+def get_unread_notification_count(current_user):
+    """
+    Just the number, for badges.
+
+    Pages used to download up to 500 full notifications from /all on every load
+    to read one integer (audit NOTIF-07). This is an indexed COUNT(*) that is
+    always consistent with the rows.
+    """
+    try:
+        unread_count = Notification.query.filter_by(
+            user_id=current_user.id, is_read=False
+        ).count()
+        return jsonify({"status": "success", "data": {"unread_count": unread_count}})
+    except Exception as e:
+        current_app.logger.error(f"Unread notification count error: {e}")
+        return error_response("Failed to load unread count", 500)
+
+
 def _build_type_filter(notif_type):
     """Helper function to build notification type filters"""
     if notif_type == "badges":

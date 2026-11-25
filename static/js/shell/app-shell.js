@@ -58,7 +58,7 @@ function redirectIfNeeded() {
 
 async function loadShellNotificationCounts() {
   try {
-    const notifRes = await api.get('/profile/notifications/all');
+    const notifRes = await api.get('/profile/notifications/unread-count');
     const notifCount = notifRes.data?.unread_count ?? 0;
     const notifBadge = $('shell-notif-count');
     if (notifBadge) {
