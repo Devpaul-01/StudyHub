@@ -103,7 +103,7 @@ class TestAnalyticsOverview:
 
         assert resp.status_code == 200
         data = resp.get_json()["data"]
-        assert data["hero_stats"]["monthly_views"] == 0
+        assert data["hero_stats"]["weekly_views"] == 0
         assert data["current_stats"]["total_posts"] == 0
         assert data["quick_facts"]["department"] is None
 
@@ -119,7 +119,7 @@ class TestAnalyticsOverview:
         resp = client.get("/student/analytics/overview", headers=auth_headers(user))
 
         data = resp.get_json()["data"]
-        assert data["hero_stats"]["monthly_views"] == 1
+        assert data["hero_stats"]["weekly_views"] == 1
         assert data["hero_stats"]["reputation_change"] == 15
 
     def test_department_rank_present_with_profile(

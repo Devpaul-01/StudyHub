@@ -132,7 +132,7 @@ def _post_bookmarks_actual():
 
 def _post_views_actual():
     rows = (
-        db.session.query(PostView.post_id, db.func.count(PostView.id))
+        db.session.query(PostView.post_id, db.func.count(db.distinct(PostView.user_id)))
         .group_by(PostView.post_id)
         .all()
     )

@@ -52,13 +52,14 @@ import re
 import datetime
 from collections import Counter
 
-from models import User, Post, Comment, Mention, UserActivity, PostReaction
+from models import User, Post, Comment, Mention, UserActivity, PostReaction, PostView
 from extensions import db
 from services import badge_service
 from services import notification_service
 from services.cache_service import cached
 from services.time_utils import utc_today
 from services.daily_activity_service import record_daily_activity
+from services.db_upsert import dialect_insert
 
 
 def extract_public_id(url):
@@ -178,6 +179,43 @@ def check_spam(user_id, content_type="post"):
             return True, "Too many comments in short time"
 
     return False, None
+
+
+def record_post_view(user_id, post_id):
+    """
+    Record that `user_id` viewed `post_id`, counting each viewer once.
+
+    Returns True if this was the viewer's first view (a row was inserted and
+    ``posts.views_count`` was incremented), False if they had already viewed
+    it. Safe under concurrency: the insert is ``ON CONFLICT DO NOTHING`` on
+    the (user_id, post_id) unique constraint and the counter is bumped with a
+    single ``UPDATE ... SET views_count = views_count + 1`` only when the
+    insert actually happened, so duplicate/parallel requests can neither
+    create extra rows nor lose or double count increments.
+
+    Does not commit.
+    """
+    insert = dialect_insert()
+    if insert is not None:
+        stmt = (
+            insert(PostView.__table__)
+            .values(user_id=user_id, post_id=post_id, viewed_at=datetime.datetime.utcnow())
+            .on_conflict_do_nothing(index_elements=["user_id", "post_id"])
+        )
+        inserted = db.session.execute(stmt).rowcount == 1
+    else:
+        inserted = PostView.query.filter_by(user_id=user_id, post_id=post_id).first() is None
+        if inserted:
+            db.session.add(PostView(user_id=user_id, post_id=post_id))
+            db.session.flush()
+
+    if inserted:
+        db.session.execute(
+            db.update(Post)
+            .where(Post.id == post_id)
+            .values(views_count=db.func.coalesce(Post.views_count, 0) + 1)
+        )
+    return inserted
 
 
 # Heatmap score weight per activity type (a post counts for more than a comment).

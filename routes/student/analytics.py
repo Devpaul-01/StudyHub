@@ -369,7 +369,7 @@ def get_analytics_overview(current_user):
 
         data = {
             "hero_stats": {
-                "monthly_views": this_week_views,
+                "weekly_views": this_week_views,
                 "helpful_count": this_week_helpful,
                 "department_rank": dept_rank,
                 "reputation_change": int(this_week_rep),

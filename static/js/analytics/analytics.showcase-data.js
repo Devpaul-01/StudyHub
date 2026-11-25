@@ -33,7 +33,7 @@
 
 export const SHOWCASE_OVERVIEW = {
   hero_stats: {
-    monthly_views: 187,          // this_week_views (route param name is legacy; actually 7-day window)
+    weekly_views: 187,           // this_week_views (7-day window)
     helpful_count: 0,            // forced 0 — see note above, this is not a display choice
     department_rank: 4,
     reputation_change: 71,       // this_week_rep, int() of a 7-day ReputationHistory sum

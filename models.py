@@ -636,7 +636,9 @@ class PostView(db.Model):
     viewed_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, index=True)
 
     __table_args__ = (
-        db.UniqueConstraint('user_id', 'post_id', 'viewed_at', name='unique_daily_view'),
+        # One row per viewer per post ("unique viewers"). Enforced by the
+        # database so concurrent view requests cannot create duplicates.
+        db.UniqueConstraint('user_id', 'post_id', name='uq_post_views_user_post'),
     )
 
 

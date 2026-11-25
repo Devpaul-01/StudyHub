@@ -23,10 +23,10 @@ import datetime
 import logging
 
 from sqlalchemy import func
-from sqlalchemy.dialects import postgresql, sqlite
 
 from extensions import db
 from models import UserActivity
+from services.db_upsert import dialect_insert
 from services.time_utils import utc_today
 
 logger = logging.getLogger(__name__)
@@ -48,14 +48,6 @@ _ALL_COUNTERS = (
 )
 
 
-def _dialect_insert(dialect_name: str):
-    if dialect_name == "postgresql":
-        return postgresql.insert
-    if dialect_name == "sqlite":
-        return sqlite.insert
-    return None
-
-
 def _increment_row(user_id: int, today: datetime.date, counter_field: str | None, score: int) -> None:
     table = UserActivity.__table__
     insert_values = {
@@ -71,7 +63,7 @@ def _increment_row(user_id: int, today: datetime.date, counter_field: str | None
         insert_values[counter_field] = 1
         update_values[counter_field] = func.coalesce(table.c[counter_field], 0) + 1
 
-    insert = _dialect_insert(db.session.get_bind().dialect.name)
+    insert = dialect_insert()
     if insert is None:
         # Unknown dialect: fall back to get-or-create + increment.
         row = UserActivity.query.filter_by(user_id=user_id, activity_date=today).first()

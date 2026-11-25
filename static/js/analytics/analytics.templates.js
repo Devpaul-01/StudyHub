@@ -59,7 +59,7 @@ export function buildHeroStats(data) {
     <!-- Views -->
     <div class="an-hero-card">
       <div class="an-hero-icon">👁️</div>
-      <div class="an-hero-value">${fmt(h.monthly_views)}</div>
+      <div class="an-hero-value">${fmt(h.weekly_views)}</div>
       <div class="an-hero-label">Views this week</div>
       <div class="an-hero-badge an-badge--neu">7d</div>
     </div>

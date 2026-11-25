@@ -46,6 +46,7 @@ from services.post_service import (
     detect_and_create_mentions,
     check_spam,
     update_user_activity,
+    record_post_view,
 )
 # Phase 5b (Document 4 §1): react_to_post -> BURST_OK; create/edit/delete/
 # report/upload -> WRITE_HEAVY; feed/by-type/by-status/my-posts (read-heavy,
@@ -920,16 +921,15 @@ def view_post(current_user, post_id):
         post = Post.query.get(post_id)
         if not post:
             return error_response("Post not found")
-        existing = PostView.query.filter_by(user_id=user.id, post_id=post_id).first()
-        if existing:
+        # Atomic, deduplicated: one row per viewer, counter bumped only when
+        # a new row was really inserted (see post_service.record_post_view).
+        if not record_post_view(user.id, post_id):
             return success_response("Already viewed")
-        post_view = PostView(user_id=user.id,post_id=post_id)
-        db.session.add(post_view)
-        post.views_count += 1  # Increment on Post model
         db.session.commit()
-        
+
         return success_response("Post viewed")
     except Exception as e:
+        db.session.rollback()
         current_app.logger.error(f"View post error: ", exc_info=True)
         return error_response("Failed to view posts")
         
