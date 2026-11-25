@@ -41,6 +41,8 @@ down is worse than no rate limiter. This is achieved by:
 from __future__ import annotations
 
 import logging
+
+import jwt
 from flask import request, current_app, g, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -82,6 +84,25 @@ def ip_key() -> str:
     return ip
 
 
+def _verified_token_user_id():
+    """user_id from a valid access JWT (Bearer header or cookie), else None.
+    Never raises: any problem means "treat as anonymous" (IP key)."""
+    try:
+        token = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+        if not token:
+            token = request.cookies.get("access_token")
+        if not token:
+            return None
+        payload = jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=["HS256"])
+        user_id = payload.get("user_id")
+        return user_id if isinstance(user_id, int) else None
+    except Exception:
+        return None
+
+
 def user_or_ip_key() -> str:
     """
     Per-user key for authenticated routes, falling back to IP for routes
@@ -95,7 +116,13 @@ def user_or_ip_key() -> str:
     students together), so this is used instead of ip_key() on every
     @token_required-protected route below.
     """
-    user_id = getattr(g, "current_user_id", None)
+    # Flask-Limiter evaluates keys in before_request, i.e. BEFORE
+    # token_required has run, so g.current_user_id is normally still unset
+    # here and every request used to fall back to the shared IP key. Read
+    # the id from the (signature- and expiry-verified) access token itself;
+    # the DB lookup stays in token_required. g.current_user_id remains the
+    # fallback for callers that run after authentication.
+    user_id = _verified_token_user_id() or getattr(g, "current_user_id", None)
     if user_id:
         key = f"user:{user_id}"
         logger.debug(f"[RATE_LIMIT] 🔑 user_or_ip_key() → {key} (authenticated user)")

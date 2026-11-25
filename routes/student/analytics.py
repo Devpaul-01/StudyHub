@@ -40,7 +40,7 @@ from services.analytics_service import calculate_engagement_rate, get_activity_l
 # this file is a computed stats/analytics read, several doing non-trivial
 # aggregation (overview, engagement, comparison) that's worth protecting
 # from being hammered.
-from services.rate_limit_service import limiter, RateLimitTier, ip_key
+from services.rate_limit_service import limiter, RateLimitTier, user_or_ip_key
 # Plan §4.4/§17.5: manual cache-aside (not the @cached decorator) around
 # each route's computed data dict — the decorator's JSON-serialization
 # contract requires a plain JSON-serializable return value, but every
@@ -300,7 +300,7 @@ def get_average_user_stats():
 # ============================================================================
 
 @analytics_bp.route("/analytics/overview", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_analytics_overview(current_user):
     """
@@ -396,7 +396,7 @@ def get_analytics_overview(current_user):
 
 
 @analytics_bp.route("/analytics/activity-heatmap", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_activity_heatmap(current_user):
     """
@@ -502,7 +502,7 @@ def get_activity_heatmap(current_user):
 
 
 @analytics_bp.route("/analytics/engagement", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_engagement_stats(current_user):
     """
@@ -596,7 +596,7 @@ def get_engagement_stats(current_user):
 
 
 @analytics_bp.route("/analytics/impact", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_impact_metrics(current_user):
     """
@@ -682,7 +682,7 @@ def get_impact_metrics(current_user):
 
 
 @analytics_bp.route("/analytics/insights", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_insights(current_user):
     """
@@ -719,7 +719,7 @@ def get_insights(current_user):
 
 
 @analytics_bp.route("/analytics/comparison", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_comparison_stats(current_user):
     """
@@ -793,7 +793,7 @@ def get_comparison_stats(current_user):
 
 
 @analytics_bp.route("/analytics/post/<int:post_id>", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_post_analytics(current_user, post_id):
     """
@@ -802,11 +802,10 @@ def get_post_analytics(current_user, post_id):
     try:
         post = Post.query.get(post_id)
 
-        if not post:
+        # Same 404 for "missing" and "not yours" so the endpoint cannot be
+        # used to probe which post ids exist.
+        if not post or post.student_id != current_user.id:
             return error_response("Post not found", 404)
-
-        if post.student_id != current_user.id:
-            return error_response("Can only view analytics for your own posts", 403)
 
         # View timeline (last 30 days)
         thirty_days_ago = utc_today() - datetime.timedelta(days=30)
@@ -872,7 +871,7 @@ def get_post_analytics(current_user, post_id):
 
 
 @analytics_bp.route("/analytics/weekly-summary", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def get_weekly_summary(current_user):
     """
@@ -945,7 +944,7 @@ def get_weekly_summary(current_user):
 
 
 @analytics_bp.route("/analytics/export", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
+@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=user_or_ip_key)
 @token_required
 def export_analytics(current_user):
     """

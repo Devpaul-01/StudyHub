@@ -458,14 +458,16 @@ class TestPostAnalytics:
 
         assert resp.status_code == 404
 
-    def test_other_users_post_is_forbidden(self, client, make_user, make_post, auth_headers):
+    def test_other_users_post_looks_identical_to_a_missing_one(self, client, make_user, make_post, auth_headers):
         author = make_user()
         post = make_post(author)
         other = make_user()
 
         resp = client.get(f"/student/analytics/post/{post.id}", headers=auth_headers(other))
+        missing = client.get("/student/analytics/post/999999", headers=auth_headers(other))
 
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert resp.get_json() == missing.get_json()
 
     def test_own_post_returns_metrics_and_timeline(
         self, client, db_session, make_user, make_post, auth_headers
@@ -847,3 +849,24 @@ class TestStreakComputedOnRead:
 
         assert heat["summary"]["current_streak"] == 0
         assert over["current_stats"]["login_streak"] == 0
+
+
+# ============================================================================
+# AN-15: rate limit is per user, not per shared IP
+# ============================================================================
+
+class TestPerUserRateLimit:
+    def test_one_users_burst_does_not_throttle_another_user_on_the_same_ip(
+        self, client, make_user, auth_headers
+    ):
+        heavy, light = make_user(), make_user()
+        heavy_headers, light_headers = auth_headers(heavy), auth_headers(light)
+
+        codes = [
+            client.get("/student/analytics/post/999999", headers=heavy_headers).status_code
+            for _ in range(302)
+        ]
+        assert codes[-1] == 429  # the heavy user hit the 300/min tier
+
+        resp = client.get("/student/analytics/post/999999", headers=light_headers)
+        assert resp.status_code == 404  # not 429: the light user has their own bucket
