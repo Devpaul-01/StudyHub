@@ -128,3 +128,69 @@ class TestEditAuthorization:
         with pytest.raises(tms.MessageNotFoundError):
             tms.edit_thread_message(user_id=u.id, message_id=msg.id, new_text="zombie")
         assert ThreadMessage.query.get(msg.id).text_content == "[deleted]"
+
+
+class TestMentionScoping:
+    """TH-06 / TH-22: mentions are member-only, leak-free and not re-sent."""
+
+    def test_non_member_mention_creates_no_notification(
+        self, db_session, make_user, make_thread, make_thread_member,
+    ):
+        from services import thread_message_service as tms
+        from models import Notification, Mention
+        u, outsider = make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, u)
+        tms.create_thread_message(
+            user_id=u.id, thread_id=t.id,
+            text_content=f"secret answers @{outsider.username}")
+        assert Notification.query.filter_by(user_id=outsider.id).count() == 0
+        assert Mention.query.filter_by(mentioned_user_id=outsider.id).count() == 0
+
+    def test_member_mention_notifies_without_message_text(
+        self, db_session, make_user, make_thread, make_thread_member,
+    ):
+        from services import thread_message_service as tms
+        from models import Notification
+        u, m = make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, u, member_count=2)
+        make_thread_member(t, m)
+        tms.create_thread_message(
+            user_id=u.id, thread_id=t.id,
+            text_content=f"private exam text @{m.username}")
+        notes = Notification.query.filter_by(user_id=m.id).all()
+        assert len(notes) == 1
+        assert notes[0].notification_type == "thread_mention"
+        assert "private exam text" not in (notes[0].body or "")
+
+    def test_editing_does_not_renotify_existing_mention(
+        self, db_session, make_user, make_thread, make_thread_member,
+    ):
+        from services import thread_message_service as tms
+        from models import Notification
+        u, m = make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, u, member_count=2)
+        make_thread_member(t, m)
+        res = tms.create_thread_message(
+            user_id=u.id, thread_id=t.id, text_content=f"hi @{m.username}")
+        for i in range(3):
+            tms.edit_thread_message(
+                user_id=u.id, message_id=res.message.id,
+                new_text=f"hi again {i} @{m.username}")
+        assert Notification.query.filter_by(user_id=m.id).count() == 1
+
+    def test_edit_that_adds_a_mention_notifies_only_the_new_one(
+        self, db_session, make_user, make_thread, make_thread_member,
+    ):
+        from services import thread_message_service as tms
+        from models import Notification
+        u, m1, m2 = make_user(), make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, u, member_count=3)
+        make_thread_member(t, m1)
+        make_thread_member(t, m2)
+        res = tms.create_thread_message(
+            user_id=u.id, thread_id=t.id, text_content=f"hi @{m1.username}")
+        tms.edit_thread_message(
+            user_id=u.id, message_id=res.message.id,
+            new_text=f"hi @{m1.username} and @{m2.username}")
+        assert Notification.query.filter_by(user_id=m1.id).count() == 1
+        assert Notification.query.filter_by(user_id=m2.id).count() == 1

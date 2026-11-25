@@ -77,7 +77,7 @@ from sqlalchemy import func as _sa_func
 from extensions import db
 from models import (
     Thread, ThreadMember, ThreadMessage, ThreadMessageAttachment,
-    Mention, Notification, User,
+    Mention, User,
 )
 from services import presence_service
 
@@ -187,43 +187,68 @@ def _is_moderator_or_creator(membership: "ThreadMember") -> bool:
     return membership.role in ("creator", "moderator")
 
 
-def _parse_mentions(text: str) -> list[int]:
+_MENTION_RE = r"@([\w\u00C0-\u00FF]+)"
+_MAX_MENTIONS_PER_MESSAGE = 20
+
+
+def _parse_mentions(text: str, thread_id: int, sender_id: int | None = None) -> list[int]:
     """
-    Identical logic to ThreadWebSocketManager._parse_mentions, minus the
-    verbose per-token MENTION_DEBUG logging that function has (that
-    logging was clearly added for interactively debugging the regex/
-    lookup during development — kept in the WS file since removing
-    logging isn't part of this batch's scope, but not worth replicating
-    here; this module logs only the final result, same as the WS
-    function's own final [MENTION_RESULT] line).
+    Resolve @mentions in ``text`` to user ids, restricted to MEMBERS of
+    ``thread_id`` (TH-06). Mentioning a non-member resolves to nothing, so
+    private thread content can never be pushed to people outside the thread.
+    One query for all names (no per-name lookups), capped at
+    _MAX_MENTIONS_PER_MESSAGE distinct names. The sender is never returned.
     """
     if not text:
         return []
 
-    pattern = r"@([\w\u00C0-\u00FF]+)"
-    raw_matches = _re.findall(pattern, text)
-    mentioned_names = set(raw_matches)
+    names = {n.lower() for n in _re.findall(_MENTION_RE, text)}
+    names.discard("learnora")
+    if not names:
+        return []
+    names = set(sorted(names)[:_MAX_MENTIONS_PER_MESSAGE])
 
-    found_ids = []
-    for username in mentioned_names:
-        if username == "learnora":
-            continue
-        user = User.query.filter(
-            _sa_func.lower(User.username) == username.lower()
-        ).first()
-        if user:
-            found_ids.append(user.id)
-        if len(found_ids) >= 20:
-            current_app.logger.warning(
-                f"[MENTION_CAPPED] text={text[:100]!r} found={len(found_ids)}"
-            )
-            break
-
-    if found_ids:
-        current_app.logger.info(
-            f"[MENTION_RESULT] text={text[:100]!r} found_mentions={found_ids}"
+    query = (
+        db.session.query(User.id)
+        .join(ThreadMember, ThreadMember.student_id == User.id)
+        .filter(
+            ThreadMember.thread_id == thread_id,
+            _sa_func.lower(User.username).in_(names),
         )
-    return found_ids
+    )
+    if sender_id is not None:
+        query = query.filter(User.id != sender_id)
+    return [row[0] for row in query.all()]
+
+
+def _notify_mentions(thread: "Thread", sender: "User | None", mentioned_ids: list[int]) -> None:
+    """
+    Create mention notifications through notification_service.notify (so the
+    Redis unread counter stays correct). The body deliberately contains no
+    message text - only who mentioned the user and where (TH-06). Runs after
+    the message commit; a failure here never fails the message itself.
+    """
+    if not mentioned_ids:
+        return
+    from services import notification_service
+
+    sender_name = (sender.name if sender and sender.name else "Someone")
+    try:
+        for mid in mentioned_ids:
+            notification_service.notify(
+                user_id=mid,
+                title="You were mentioned in a thread",
+                body=f"{sender_name} mentioned you in \"{thread.title}\"",
+                notification_type="thread_mention",
+                related_type="thread",
+                related_id=thread.id,
+            )
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001 - notification is best effort
+        db.session.rollback()
+        current_app.logger.warning(
+            f"[THREAD_MENTION_NOTIFY_FAILED] thread_id={thread.id} error={exc!r}"
+        )
 
 
 def _build_message_payload(msg: "ThreadMessage", sender: "User") -> dict:
@@ -498,28 +523,19 @@ def create_thread_message(
         synchronize_session=False,
     )
 
-    mentioned_ids = _parse_mentions(text_content)
+    mentioned_ids = _parse_mentions(text_content, thread_id, user_id)
     for mid in mentioned_ids:
-        if mid == user_id:
-            continue
         db.session.add(Mention(
             mentioned_in_type    = "thread_message",
             mentioned_in_id      = msg.id,
             mentioned_user_id    = mid,
             mentioned_by_user_id = user_id,
         ))
-        db.session.add(Notification(
-            user_id           = mid,
-            title             = "You were mentioned in a thread",
-            body              = f"{text_content[:80]}...",
-            notification_type = "thread_mention",
-            related_type      = "thread",
-            related_id        = thread_id,
-        ))
 
     db.session.commit()
 
     sender = User.query.get(user_id)
+    _notify_mentions(thread, sender, mentioned_ids)
     payload = _build_message_payload(msg, sender)
 
     return CreateMessageResult(
@@ -596,7 +612,50 @@ def edit_thread_message(*, user_id: int, message_id: int, new_text: str) -> Edit
     db.session.commit()
     db.session.refresh(msg)
 
+    _reconcile_mentions_on_edit(msg, user_id)
+
     return EditMessageResult(message=msg, thread_id=msg.thread_id)
+
+
+def _reconcile_mentions_on_edit(msg: "ThreadMessage", editor_id: int) -> None:
+    """
+    TH-22: diff the mention set instead of deleting and re-creating it. Only
+    members that are newly mentioned by the edit are notified; people who were
+    already mentioned are not notified again. Runs for REST and WebSocket
+    edits alike (it lives in the shared service) and is best effort: the edit
+    itself is already committed, so a failure here is logged, not raised.
+    """
+    try:
+        existing = {
+            m.mentioned_user_id: m
+            for m in Mention.query.filter_by(
+                mentioned_in_type="thread_message", mentioned_in_id=msg.id
+            ).all()
+        }
+        wanted = set(_parse_mentions(msg.text_content, msg.thread_id, editor_id))
+
+        for uid, row in existing.items():
+            if uid not in wanted:
+                db.session.delete(row)
+        added = [uid for uid in wanted if uid not in existing]
+        for uid in added:
+            db.session.add(Mention(
+                mentioned_in_type="thread_message",
+                mentioned_in_id=msg.id,
+                mentioned_user_id=uid,
+                mentioned_by_user_id=editor_id,
+            ))
+        db.session.commit()
+
+        if added:
+            thread = Thread.query.get(msg.thread_id)
+            if thread:
+                _notify_mentions(thread, User.query.get(editor_id), added)
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        current_app.logger.warning(
+            f"[THREAD_EDIT_MENTION_RECONCILE_FAILED] message_id={msg.id} error={exc!r}"
+        )
 
 
 # ============================================================================
