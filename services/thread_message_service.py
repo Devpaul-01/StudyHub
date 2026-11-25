@@ -251,7 +251,8 @@ def _build_message_payload(msg: "ThreadMessage", sender: "User") -> dict:
     reply_preview = None
     if msg.reply_to_id:
         parent = ThreadMessage.query.get(msg.reply_to_id)
-        if parent:
+        # TH-01: never expose a message from another thread as a reply preview.
+        if parent and parent.thread_id == msg.thread_id:
             parent_sender = User.query.get(parent.sender_id)
             reply_preview = {
                 "id":        parent.id,

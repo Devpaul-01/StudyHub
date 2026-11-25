@@ -2045,7 +2045,10 @@ class ThreadWebSocketManager:
                 self._emit_error("Not a member")
                 return
 
-            target_msg = ThreadMessage.query.filter_by(id=message_id, is_deleted=False).first()
+            # TH-01: the target must live in the thread the caller is a member of.
+            target_msg = ThreadMessage.query.filter_by(
+                id=message_id, thread_id=thread_id, is_deleted=False
+            ).first()
             if not target_msg:
                 self._emit_error("Message not found")
                 return
@@ -2273,7 +2276,10 @@ def _call_learnora_action(app, thread_id, message_id, action, target_lang, trigg
             if not bot_user_id:
                 return
 
-            target_msg = ThreadMessage.query.get(message_id)
+            # TH-01: defense in depth - never read a message outside this thread.
+            target_msg = ThreadMessage.query.filter_by(
+                id=message_id, thread_id=thread_id, is_deleted=False
+            ).first()
             thread = Thread.query.get(thread_id)
             if not target_msg or not thread:
                 return

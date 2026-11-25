@@ -157,8 +157,10 @@ def get_thread_messages(current_user, thread_id):
         sender_ids     = {m.sender_id for m in raw_messages}
         senders        = {u.id: u for u in User.query.filter(User.id.in_(sender_ids)).all()}
         reply_ids      = {m.reply_to_id for m in raw_messages if m.reply_to_id}
+        # TH-01: reply previews may only resolve to messages of this thread.
         parents        = {p.id: p for p in ThreadMessage.query.filter(
-            ThreadMessage.id.in_(reply_ids)
+            ThreadMessage.id.in_(reply_ids),
+            ThreadMessage.thread_id == thread_id,
         ).all()} if reply_ids else {}
         parent_sender_ids = {p.sender_id for p in parents.values()}
         parent_senders    = {u.id: u for u in User.query.filter(
