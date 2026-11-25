@@ -363,7 +363,11 @@ def validate_onboarding_payload(data):
                 schedule = {}
                 break
             if slots:
-                schedule[day] = list(dict.fromkeys(slots))
+                # Stored as "Monday": the casing connection_service's schedule
+                # scoring compares against. A client that sends "monday" would
+                # otherwise never overlap with anyone.
+                merged = schedule.setdefault(day.capitalize(), [])
+                merged.extend(s for s in dict.fromkeys(slots) if s not in merged)
 
     prefs = _clean_string_list(
         data.get("study_preferences"), "study_preferences", errors,
