@@ -403,7 +403,7 @@ def get_activity_heatmap(current_user):
     """
     try:
         days = request.args.get("days", 90, type=int)
-        days = min(days, 365)  # Max 1 year
+        days = max(1, min(days, 365))  # 1 day .. 1 year; also rejects 0/negative
 
         # Plan §4.4/§17.5: cache-aside, TTL 300s, TTL fallback only (no
         # natural per-mutation hook — heatmap changes are daily-granular,
@@ -417,7 +417,8 @@ def get_activity_heatmap(current_user):
         if data is not None:
             return jsonify({"status": "success", "data": data})
 
-        start_date = utc_today() - datetime.timedelta(days=days)
+        # `days` cells ending today (inclusive): today and the days-1 before it.
+        start_date = utc_today() - datetime.timedelta(days=days - 1)
 
         # Get all activity records
         activities = UserActivity.query.filter(
@@ -471,7 +472,7 @@ def get_activity_heatmap(current_user):
         # Calculate summary stats
         total_active_days = sum(1 for day in heatmap_data if day["score"] > 0)
         total_score = sum(day["score"] for day in heatmap_data)
-        avg_daily_score = round(total_score / days, 1) if days > 0 else 0
+        avg_daily_score = round(total_score / days, 1)
 
         # Find best day
         best_day = max(heatmap_data, key=lambda x: x["score"]) if heatmap_data else None

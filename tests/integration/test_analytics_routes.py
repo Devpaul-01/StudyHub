@@ -157,7 +157,7 @@ class TestActivityHeatmap:
         assert resp.status_code == 200
         data = resp.get_json()["data"]
         assert data["summary"]["total_days"] == 90
-        assert len(data["heatmap"]) == 91  # inclusive of today
+        assert len(data["heatmap"]) == 90  # exactly `days` cells, ending today
         assert data["summary"]["active_days"] == 0
 
     def test_days_param_is_capped_at_365(self, client, make_user, auth_headers):
@@ -169,6 +169,20 @@ class TestActivityHeatmap:
 
         data = resp.get_json()["data"]
         assert data["summary"]["total_days"] == 365
+
+    @pytest.mark.parametrize("raw,expected", [("0", 1), ("-5", 1), ("1", 1), ("abc", 90), ("365", 365)])
+    def test_days_param_is_clamped_and_window_matches(self, client, make_user, auth_headers, raw, expected):
+        user = make_user()
+
+        resp = client.get(
+            f"/student/analytics/activity-heatmap?days={raw}", headers=auth_headers(user)
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["summary"]["total_days"] == expected
+        assert len(data["heatmap"]) == expected
+        assert data["heatmap"][-1]["date"] == utc_today().isoformat()
 
     def test_includes_recorded_activity_and_intensity_level(
         self, client, db_session, make_user, auth_headers
@@ -182,7 +196,7 @@ class TestActivityHeatmap:
 
         data = resp.get_json()["data"]
         today_entry = next(
-            d for d in data["heatmap"] if d["date"] == datetime.date.today().isoformat()
+            d for d in data["heatmap"] if d["date"] == utc_today().isoformat()
         )
         assert today_entry["score"] == 20
         assert today_entry["level"] == 3
