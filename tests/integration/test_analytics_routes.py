@@ -19,6 +19,8 @@ import datetime
 
 import pytest
 
+from services.time_utils import utc_today
+
 pytestmark = pytest.mark.integration
 
 
@@ -27,7 +29,7 @@ def _activity(db_session, user, **overrides):
 
     defaults = dict(
         user_id=user.id,
-        activity_date=datetime.date.today(),
+        activity_date=utc_today(),
         posts_created=0,
         comments_created=0,
         threads_joined=0,
@@ -719,3 +721,66 @@ class TestSoftDeletedComments:
         # questions_answered / questions_solved each count only the live comment
         assert impact["impact"]["questions_answered"] == 1
         assert impact["impact"]["questions_solved"] == 1
+
+
+# ============================================================================
+# AN-07: no placeholder metrics or unsupported claims
+# ============================================================================
+
+class TestNoPlaceholderMetrics:
+    def test_hero_helpful_card_shows_real_lifetime_total(self, client, make_user, auth_headers):
+        user = make_user(total_helpful=7)
+
+        resp = client.get("/student/analytics/overview", headers=auth_headers(user))
+
+        assert resp.get_json()["data"]["hero_stats"]["helpful_count"] == 7
+
+    def test_quick_responder_makes_no_percentile_claim(
+        self, client, make_user, make_post, make_comment, auth_headers
+    ):
+        user = make_user(login_streak=0)
+        author = make_user()
+        now = datetime.datetime.utcnow().replace(microsecond=0)
+        post = make_post(author, posted_at=now - datetime.timedelta(hours=1))
+        make_comment(post, user, posted_at=now)
+
+        resp = client.get("/student/analytics/insights", headers=auth_headers(user))
+
+        quick = [i for i in resp.get_json()["data"]["insights"] if i["title"] == "Quick Responder"][0]
+        assert "%" not in quick["message"] and "faster than" not in quick["message"]
+
+    def test_heatmap_cells_have_only_real_fields(self, client, db_session, make_user, auth_headers):
+        user = make_user()
+        _activity(db_session, user, posts_created=1, activity_score=5)
+        db_session.commit()
+
+        resp = client.get("/student/analytics/activity-heatmap", headers=auth_headers(user))
+
+        for cell in resp.get_json()["data"]["heatmap"]:
+            assert set(cell) == {"date", "score", "posts", "comments", "level"}
+
+    def test_impact_has_no_study_buddies_placeholder(self, client, make_user, auth_headers):
+        user = make_user()
+
+        resp = client.get("/student/analytics/impact", headers=auth_headers(user))
+
+        assert "study_buddies_helped" not in resp.get_json()["data"]["impact"]
+
+    def test_weekly_summary_has_no_fake_people_helped(self, client, make_user, auth_headers):
+        user = make_user()
+
+        resp = client.get("/student/analytics/weekly-summary", headers=auth_headers(user))
+
+        body = resp.get_json()["data"]
+        assert "people_helped" not in body["summary"]
+        assert "helped" not in body["message"]
+
+    def test_export_activity_has_no_always_zero_columns(self, client, db_session, make_user, auth_headers):
+        user = make_user()
+        _activity(db_session, user, posts_created=1, activity_score=5)
+        db_session.commit()
+
+        resp = client.get("/student/analytics/export?type=activity", headers=auth_headers(user))
+
+        record = resp.get_json()["data"]["records"][0]
+        assert set(record) == {"date", "posts_created", "comments_created", "activity_score"}

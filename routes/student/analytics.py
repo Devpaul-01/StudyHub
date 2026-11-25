@@ -143,7 +143,7 @@ def generate_insights(user_id):
             "type": "engagement",
             "icon": "⚡",
             "title": "Quick Responder",
-            "message": f"You respond to posts in {avg_response_time:.1f} hours on average - faster than 75% of users!",
+            "message": f"You respond to posts in {avg_response_time:.1f} hours on average",
             "actionable": "Your quick responses help build reputation"
         })
 
@@ -329,15 +329,8 @@ def get_analytics_overview(current_user):
             PostView.viewed_at >= week_ago
         ).scalar() or 0
 
-        # AUDIT §4.2 FIX: this used to query PostReaction.reaction_type ==
-        # "helpful", but no live code path ever creates a PostReaction with
-        # that reaction_type — react_to_post hardcodes reaction_type="like"
-        # (the multi-reaction system was intentionally replaced by a single
-        # like-toggle; see that route's own docstring). This query always
-        # evaluated to 0; replaced with the literal value to stop running a
-        # real query against an always-empty filter. Response shape
-        # (hero_stats.helpful_count) is unchanged — still honestly 0.
-        this_week_helpful = 0
+        # Helpful marks are a lifetime counter (User.total_helpful); there is
+        # no per-week event source for them, so the hero card shows the total.
 
         this_week_rep = int(db.session.query(
             func.sum(ReputationHistory.points_change)
@@ -370,7 +363,7 @@ def get_analytics_overview(current_user):
         data = {
             "hero_stats": {
                 "weekly_views": this_week_views,
-                "helpful_count": this_week_helpful,
+                "helpful_count": current_user.total_helpful or 0,
                 "department_rank": dept_rank,
                 "reputation_change": int(this_week_rep),
                 "activity_level": activity_level
@@ -440,8 +433,6 @@ def get_activity_heatmap(current_user):
                 "score": activity.activity_score,
                 "posts": activity.posts_created,
                 "comments": activity.comments_created,
-                "messages": activity.messages_sent,
-                "helpful": activity.helpful_count,
                 "level": 0  # Will calculate based on score
             }
 
@@ -455,8 +446,6 @@ def get_activity_heatmap(current_user):
                     "score": 0,
                     "posts": 0,
                     "comments": 0,
-                    "messages": 0,
-                    "helpful": 0,
                     "level": 0
                 }
             else:
@@ -661,9 +650,6 @@ def get_impact_metrics(current_user):
             Connection.status == "accepted"
         ).count()
 
-        # Study buddies helped (future feature - placeholder)
-        study_buddies = 0
-
         data = {
             "impact": {
                 "people_reached": people_reached,
@@ -672,7 +658,6 @@ def get_impact_metrics(current_user):
                 "resources_shared": resources_shared,
                 "times_bookmarked": times_bookmarked,
                 "active_connections": connections_count,
-                "study_buddies_helped": study_buddies,
                 "total_helpful": current_user.total_helpful
             },
             "impact_score": (
@@ -921,13 +906,6 @@ def get_weekly_summary(current_user):
             Post.posted_at >= week_ago
         ).count()
 
-        # AUDIT §4.2 FIX: same always-empty reaction_type="helpful" filter
-        # as get_analytics_overview's this_week_helpful above — see that
-        # site's comment for the full explanation. Replaced with the
-        # literal 0 it always evaluated to; response shape
-        # (summary.people_helped) is unchanged.
-        helpful_this_week = 0
-
         # New connections
         new_connections = Connection.query.filter(
             or_(
@@ -948,10 +926,9 @@ def get_weekly_summary(current_user):
                 "reputation_earned": rep_change_int,
                 "badges_earned": new_badges,
                 "posts_created": posts_created,
-                "people_helped": helpful_this_week,
                 "new_connections": new_connections
             },
-            "message": f"Great week! You earned {rep_change_int} reputation and helped {helpful_this_week} people! 🎉"
+            "message": f"Great week! You earned {rep_change_int} reputation this week! 🎉"
         }
 
         cache_service.set(cache_key, data, ttl_seconds=3600)
@@ -993,8 +970,6 @@ def export_analytics(current_user):
                 "date": a.activity_date.isoformat(),
                 "posts_created": a.posts_created,
                 "comments_created": a.comments_created,
-                "messages_sent": a.messages_sent,
-                "helpful_count": a.helpful_count,
                 "activity_score": a.activity_score
             } for a in activities]
 

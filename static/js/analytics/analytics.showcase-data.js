@@ -21,11 +21,8 @@
  */
 
 // ── Overview (hero stats) ────────────────────────────────────────────────────
-// Matches get_analytics_overview(). Two fields are backend-forced constants:
-//   - hero_stats.helpful_count is ALWAYS 0 (this_week_helpful is hardcoded 0
-//     in the route due to a known reaction_type mismatch bug — see the
-//     route's own AUDIT §4.2 comment). Showing anything else is not
-//     something this backend can produce.
+// Matches get_analytics_overview(). Notes on two fields:
+//   - hero_stats.helpful_count is the lifetime User.total_helpful counter.
 //   - department_rank = (# dept users with strictly greater reputation) + 1.
 //     Kept at #4 — this number is reused verbatim by the Top Contributor
 //     insight gate below, so it isn't free to change without touching that
@@ -34,7 +31,7 @@
 export const SHOWCASE_OVERVIEW = {
   hero_stats: {
     weekly_views: 187,           // this_week_views (7-day window)
-    helpful_count: 0,            // forced 0 — see note above, this is not a display choice
+    helpful_count: 118,          // lifetime User.total_helpful
     department_rank: 4,
     reputation_change: 71,       // this_week_rep, int() of a 7-day ReputationHistory sum
     activity_level: {
@@ -231,8 +228,6 @@ export const SHOWCASE_ENGAGEMENT = {
 // = 3920 + 610 + 590 + 81 = 5201 (recomputed below, not chosen by feel).
 // questions_solved (61) intentionally matches comments.marked_solution above
 // — same underlying query (Comment.is_solution == True) via two routes.
-// study_buddies_helped is hardcoded 0 in the route (explicit "future
-// feature" placeholder) — shown as 0 here for the same reason, not omitted.
 
 export const SHOWCASE_IMPACT = {
   impact: {
@@ -242,7 +237,6 @@ export const SHOWCASE_IMPACT = {
     resources_shared: 27,
     times_bookmarked: 74,
     active_connections: 46,
-    study_buddies_helped: 0,   // real backend placeholder, always 0 — not a data gap
     total_helpful: 118,
   },
   impact_score: 5201,          // 3920*1 + 61*10 + 118*5 + 27*3 = 3920+610+590+81
@@ -288,7 +282,7 @@ export const SHOWCASE_INSIGHTS = {
       type: 'engagement',
       icon: '⚡',
       title: 'Quick Responder',
-      message: 'You respond to posts in 1.8 hours on average - faster than 75% of users!',
+      message: 'You respond to posts in 1.8 hours on average',
       actionable: 'Your quick responses help build reputation',
     },
     {
