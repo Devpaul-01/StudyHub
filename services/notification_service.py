@@ -47,7 +47,8 @@ from __future__ import annotations
 import logging
 import re
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, event, or_
+from sqlalchemy.orm import Session
 
 from extensions import db
 from models import Notification, Badge, User, Connection, ConnectionStatus
@@ -118,9 +119,12 @@ def _recipient_blocked_actor(recipient_id: int, actor_id: int) -> bool:
 # WEBSOCKET BROADCAST (best-effort — never blocks or fails the caller)
 # ============================================================================
 
-def _broadcast(user_id: int, notification: Notification) -> None:
+_PENDING_PUSHES_KEY = "notification_service.pending_pushes"
+
+
+def _emit(user_id: int, payload: dict) -> None:
     """
-    Best-effort real-time push of a newly created notification.
+    Best-effort real-time push of a committed notification.
 
     Uses services.websocket_messages.message_ws_manager — see the
     "AUDIT BUG-4 FIX" note in this module's docstring for why this no
@@ -128,30 +132,70 @@ def _broadcast(user_id: int, notification: Notification) -> None:
     manager is never initialized anywhere in the app, so every call
     through it was a silent no-op). Failures are swallowed and logged —
     a notification that fails to push in real time still exists as a row
-    and will show up next time the client polls/fetches
-    /profile/notifications/all, so this must never raise and break the
-    caller's actual (already-committed-elsewhere) business operation.
+    and shows up the next time the client fetches the list, so this must
+    never raise into the caller.
     """
     try:
         from services.websocket_messages import message_ws_manager
 
-        payload = {
-            "id": notification.id,
-            "title": notification.title,
-            "body": notification.body,
-            "type": notification.notification_type,
-            "link": notification.link,
-            "related_type": notification.related_type,
-            "related_id": notification.related_id,
-            "created_at": (
-                notification.created_at.isoformat() if notification.created_at else None
-            ),
-        }
-
         message_ws_manager.emit_to_user(user_id, "new_notification", payload)
-
     except Exception as exc:
         logger.warning(f"Notification broadcast failed (non-critical): {exc}")
+
+
+def _queue_push(user_id: int, notification: Notification) -> None:
+    """
+    Remember a push to send once the surrounding transaction COMMITS.
+
+    Pushing straight from notify() announced notifications to clients before the
+    caller's transaction had committed. If it then rolled back, the client was
+    left with a card for a row that never existed (audit NOTIF-16). Each queued
+    push remembers the (sub)transaction it was created in so a rolled-back
+    SAVEPOINT drops only its own pushes.
+    """
+    payload = {
+        "id": notification.id,
+        "title": notification.title,
+        "body": notification.body,
+        "type": notification.notification_type,
+        "link": notification.link,
+        "related_type": notification.related_type,
+        "related_id": notification.related_id,
+        "created_at": notification.created_at.isoformat() if notification.created_at else None,
+    }
+    session = db.session()
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    session.info.setdefault(_PENDING_PUSHES_KEY, []).append((transaction, user_id, payload))
+
+
+@event.listens_for(Session, "after_commit")
+def _send_queued_pushes(session) -> None:
+    # SQLAlchemy also fires after_commit when a SAVEPOINT is released; that is
+    # not a real commit yet - the outer transaction can still roll back.
+    if session.in_nested_transaction():
+        return
+    for _transaction, user_id, payload in session.info.pop(_PENDING_PUSHES_KEY, ()):
+        _emit(user_id, payload)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _drop_rolled_back_pushes(session, previous_transaction) -> None:
+    pending = session.info.get(_PENDING_PUSHES_KEY)
+    if not pending:
+        return
+
+    def rolled_back(transaction) -> bool:
+        while transaction is not None:
+            if transaction is previous_transaction:
+                return True
+            transaction = transaction.parent
+        return False
+
+    remaining = [item for item in pending if not rolled_back(item[0])]
+    if remaining:
+        session.info[_PENDING_PUSHES_KEY] = remaining
+    else:
+        session.info.pop(_PENDING_PUSHES_KEY, None)
 
 
 # ============================================================================
@@ -170,8 +214,10 @@ def notify(
     actor_id: int | None = None,
 ) -> Notification | None:
     """
-    Create (and best-effort broadcast) a notification. Does not commit —
-    caller's transaction owns that, same as every other service function.
+    Create a notification and queue its live push. Does not commit —
+    caller's transaction owns that, same as every other service function. The
+    WebSocket push is sent only after that transaction commits and is dropped
+    if it rolls back (audit NOTIF-16).
 
     Returns None, creating nothing, when the recipient has switched
     notifications off in their settings (audit NOTIF-05: the setting used to
@@ -210,10 +256,9 @@ def notify(
         link=_safe_link(link),
     )
     db.session.add(notification)
-    db.session.flush()  # populate notification.id/created_at for the broadcast payload
+    db.session.flush()  # populate notification.id/created_at for the push payload
 
-
-    _broadcast(user_id, notification)
+    _queue_push(user_id, notification)  # sent after the caller's commit
 
     return notification
 

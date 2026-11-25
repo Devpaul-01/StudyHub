@@ -45,6 +45,7 @@ def test_notify_calls_message_ws_manager_emit_to_user(db_session, make_user):
             body="Test body",
             notification_type="test_type",
         )
+        db_session.commit()  # the push is sent after the caller's commit (audit NOTIF-16)
 
     mock_manager.emit_to_user.assert_called_once()
     args, kwargs = mock_manager.emit_to_user.call_args
@@ -96,6 +97,7 @@ def test_notify_badge_earned_broadcasts_via_message_ws_manager(db_session, make_
 
     with patch("services.websocket_messages.message_ws_manager") as mock_manager:
         notification_service.notify_badge_earned(user.id, badge)
+        db_session.commit()  # the push is sent after the caller's commit (audit NOTIF-16)
 
     mock_manager.emit_to_user.assert_called_once()
     args, _ = mock_manager.emit_to_user.call_args

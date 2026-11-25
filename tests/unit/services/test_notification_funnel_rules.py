@@ -113,3 +113,76 @@ def test_connection_templates_respect_blocks(db_session, make_user, make_connect
     with patch("services.websocket_messages.message_ws_manager"):
         assert notification_service.notify_connection_request(blocker.id, abuser.name, abuser.id) is None
     assert _stored(blocker.id) == []
+
+
+# --- live push happens only for committed notifications (NOTIF-16) -------------
+
+def _emitted_ids(manager):
+    return [call.args[2]["id"] for call in manager.emit_to_user.call_args_list]
+
+
+def test_no_push_before_commit_one_push_after(db_session, make_user):
+    user = make_user()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        note = notification_service.notify(user.id, "t", "b", "x")
+        manager.emit_to_user.assert_not_called()
+        db_session.commit()
+    assert _emitted_ids(manager) == [note.id]
+
+
+def test_rollback_drops_the_push_and_the_row(db_session, make_user):
+    """A rolled-back request must not leave the client holding a card for a row
+    that never existed (this was reproduced as V3 in the audit)."""
+    user = make_user()
+    db_session.commit()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        note = notification_service.notify(user.id, "t", "b", "x")
+        note_id = note.id
+        db_session.rollback()
+        db_session.commit()
+    manager.emit_to_user.assert_not_called()
+    assert db_session.get(Notification, note_id) is None
+
+
+def test_rolled_back_savepoint_drops_only_its_own_pushes(db_session, make_user):
+    keep, drop = make_user(), make_user()
+    db_session.commit()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        kept = notification_service.notify(keep.id, "t", "b", "x")
+        savepoint = db_session.begin_nested()
+        notification_service.notify(drop.id, "t", "b", "x")
+        savepoint.rollback()
+        db_session.commit()
+    assert _emitted_ids(manager) == [kept.id]
+    assert [n.user_id for n in Notification.query.all()] == [keep.id]
+
+
+def test_released_savepoint_is_pushed_when_the_outer_transaction_commits(db_session, make_user):
+    user = make_user()
+    db_session.commit()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        with db_session.begin_nested():
+            note = notification_service.notify(user.id, "t", "b", "x")
+        manager.emit_to_user.assert_not_called()
+        db_session.commit()
+    assert _emitted_ids(manager) == [note.id]
+
+
+def test_savepoint_released_then_outer_rollback_pushes_nothing(db_session, make_user):
+    user = make_user()
+    db_session.commit()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        with db_session.begin_nested():
+            notification_service.notify(user.id, "t", "b", "x")
+        db_session.rollback()
+        db_session.commit()
+    manager.emit_to_user.assert_not_called()
+
+
+def test_push_failure_after_commit_never_raises(db_session, make_user):
+    user = make_user()
+    with patch("services.websocket_messages.message_ws_manager") as manager:
+        manager.emit_to_user.side_effect = RuntimeError("socket layer down")
+        notification_service.notify(user.id, "t", "b", "x")
+        db_session.commit()  # must not raise
+    assert len(_stored(user.id)) == 1
