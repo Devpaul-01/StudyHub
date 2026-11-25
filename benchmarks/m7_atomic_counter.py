@@ -3,12 +3,12 @@
 benchmarks/m7_atomic_counter.py
 
 Experiment M7 (METRICS_AUDIT.md / MEASUREMENT_PLAN.md): does
-services.counter_cache_service.increment_unread_notification_count()
+services.counter_cache_service.increment_unread_message_count()
 (backed by Redis INCRBY) preserve exact counts under concurrent
 increments, where a naive read-modify-write implementation would lose
 updates?
 
-Exercises the REAL increment_unread_notification_count(), unmodified,
+Exercises the REAL increment_unread_message_count(), unmodified,
 against a REAL local redis-server (genuine network round trips, not
 fakeredis). The naive baseline (GET, add 1 in Python, SET) is a
 standalone function defined only in this file — never imported into or
@@ -41,13 +41,13 @@ from benchmarks._meta import build_run_metadata, redis_server_info, write_result
 
 
 def _real_increment_worker(user_id: str, barrier):
-    """Imports and calls the REAL increment_unread_notification_count,
+    """Imports and calls the REAL increment_unread_message_count,
     unmodified."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from services.counter_cache_service import increment_unread_notification_count
+    from services.counter_cache_service import increment_unread_message_count
 
     barrier.wait()
-    increment_unread_notification_count(user_id)
+    increment_unread_message_count(user_id)
 
 
 def _naive_increment_worker(redis_url: str, key: str, barrier):
@@ -111,7 +111,7 @@ def run_experiment(n_values: list[int], trials: int) -> dict:
 
         for trial_idx in range(trials):
             user_id = f"benchmark-m7-real-{n}-{trial_idx}-{random.randint(0, 1_000_000)}"
-            key = f"sh:1:notif:unread:{user_id}"
+            key = f"sh:1:msg:unread:{user_id}"
             probe_client.delete(key)  # ensure clean start
 
             elapsed = _run_concurrent_increments(

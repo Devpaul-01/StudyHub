@@ -1,7 +1,13 @@
 """
 services/counter_cache_service.py
 
-Redis-backed atomic counters for unread notification/message counts.
+Redis-backed atomic counters for unread message counts.
+
+(Unread *notification* counts used to live here too. They were removed: nothing
+ever read them, a missing key made INCR/DECR create a wrong value that readers
+trusted, every write refreshed the TTL so drift never healed for active users,
+and they were bumped before the owning transaction committed. The unread
+notification count is an indexed COUNT(*) now - see routes/student/notifications.py.)
 See studyhub-redis-caching-implementation-plan.md §4.7, §5.6, §17.1.
 
 Separated from cache_service.py rather than folded into it because
@@ -34,13 +40,11 @@ operation catches its own exceptions. A Redis outage degrades this module
 to "always recompute from the source-of-truth query function," never to a
 raised error.
 
-NOTE ON DESIGN: get_unread_notification_count / get_unread_message_count
-take the source-of-truth query as an explicit callable (`recompute_fn`)
+NOTE ON DESIGN: get_unread_message_count
+takes the source-of-truth query as an explicit callable (`recompute_fn`)
 rather than importing models.py directly. This keeps this module free of
-any dependency on the actual Notification/Message model shape — the
-caller (routes/student/notifications.py, routes/student/messages.py)
-already knows how to run `Notification.query.filter_by(user_id=user_id,
-is_read=False).count()`; this module's job is only the cache/counter
+any dependency on the actual Message model shape — the caller
+(routes/student/messages.py) already knows how to run its own unread query; this module's job is only the cache/counter
 mechanics around that query, matching cache_service.py's existing
 "no Flask, no ORM coupling" layering discipline.
 """
@@ -51,12 +55,7 @@ from extensions import redis_client
 
 logger = logging.getLogger(__name__)
 
-_UNREAD_NOTIF_TTL_SECONDS = 3600
 _UNREAD_MSG_TTL_SECONDS = 3600
-
-
-def _notif_key(user_id):
-    return f"sh:1:notif:unread:{user_id}"
 
 
 def _msg_key(user_id):
@@ -128,32 +127,6 @@ def _decrement(key, ttl_seconds, by=1):
         pipe.execute()
     except Exception:
         logger.warning("Redis DECRBY failed for key=%r — counter not updated", key, exc_info=True)
-
-
-# ============================================================================
-# Notifications
-# ============================================================================
-
-def get_unread_notification_count(user_id, recompute_fn):
-    """
-    Return the cached unread-notification count for user_id, reseeding from
-    recompute_fn() on a miss. See _get_counter / plan §5.6.
-    """
-    return _get_counter(_notif_key(user_id), _UNREAD_NOTIF_TTL_SECONDS, recompute_fn)
-
-
-def increment_unread_notification_count(user_id, by=1):
-    """Call at the notification-creation funnel point —
-    services/notification_service.py::notify(), per plan §17.6."""
-    _increment(_notif_key(user_id), _UNREAD_NOTIF_TTL_SECONDS, by)
-
-
-def decrement_unread_notification_count(user_id, by=1):
-    """Call at every mark-read/delete site for unread notifications —
-    routes/student/notifications.py, per plan §17.6. `by` should be the
-    exact row count the caller's own UPDATE/DELETE already returned
-    (bulk operations), or 1 for a single-notification action."""
-    _decrement(_notif_key(user_id), _UNREAD_NOTIF_TTL_SECONDS, by)
 
 
 # ============================================================================

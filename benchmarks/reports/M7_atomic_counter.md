@@ -8,11 +8,11 @@
 
 ## Objective
 
-Does `services.counter_cache_service.increment_unread_notification_count()` (backed by Redis `INCRBY`) preserve exact counts under concurrent increments, where a naive read-then-write implementation would lose updates?
+Does `services.counter_cache_service.increment_unread_message_count()` (backed by Redis `INCRBY`) preserve exact counts under concurrent increments, where a naive read-then-write implementation would lose updates?
 
 ## Implementation under test
 
-`services/counter_cache_service.py::increment_unread_notification_count()` → `_increment()`, unmodified — a Redis pipeline executing `INCRBY` then `EXPIRE` in one round trip.
+`services/counter_cache_service.py::increment_unread_message_count()` → `_increment()`, unmodified — a Redis pipeline executing `INCRBY` then `EXPIRE` in one round trip.
 
 ## Environment
 
