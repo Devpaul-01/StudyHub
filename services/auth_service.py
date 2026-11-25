@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from models import User, StudentProfile, UserActivity
 from extensions import db
 from services.time_utils import utc_today
+from services.daily_activity_service import record_daily_activity
 
 logger = logging.getLogger(__name__)
 
@@ -43,44 +44,6 @@ PENDING_PIN = "PENDING_VERIFICATION"
 # DAILY ACTIVITY RECORDING
 # ============================================================================
 
-# Maps an activity_type to the specific counter column it should bump, in
-# addition to the generic activity_score used by the heatmap.
-_ACTIVITY_COUNTER_FIELDS = {
-    "post": "posts_created",
-    "comment": "comments_created",
-    "message": "messages_sent",
-    "helpful": "helpful_count",
-}
-
-
-def _get_or_create_today_activity(user_id: int, today: datetime.date | None = None) -> UserActivity:
-    """
-    Get (or create) the UserActivity row for `user_id` for today's date.
-
-    `today` should be a date derived from UTC — never
-    datetime.date.today(), which uses the server's *local* clock and will
-    disagree with `last_active` (stored in UTC), causing streaks/activity
-    rows to fall on the wrong day near midnight.
-
-    Does not commit — caller is responsible for committing the session.
-    """
-    if today is None:
-        today = utc_today()
-    activity = UserActivity.query.filter_by(user_id=user_id, activity_date=today).first()
-    if not activity:
-        activity = UserActivity(
-            user_id=user_id,
-            activity_date=today,
-            activity_score=0,
-            posts_created=0,
-            comments_created=0,
-            messages_sent=0,
-            helpful_count=0,
-        )
-        db.session.add(activity)
-    return activity
-
-
 def record_activity(user_id: int, activity_type: str, score: int = 1, today: datetime.date | None = None):
     """
     Record one unit of activity for the analytics/heatmap system.
@@ -93,21 +56,15 @@ def record_activity(user_id: int, activity_type: str, score: int = 1, today: dat
     this request, so the activity row and the streak never disagree about
     which calendar day "today" is.
 
+    The write is an atomic upsert inside a savepoint (see
+    services/daily_activity_service.py), so concurrent requests cannot
+    collide on the unique constraint or lose increments, and a failure
+    here never poisons the caller's transaction (returns None).
+
     Does not commit — caller should commit alongside any other changes in
     the same request.
     """
-    try:
-        activity = _get_or_create_today_activity(user_id, today=today)
-        activity.activity_score += score
-
-        counter_field = _ACTIVITY_COUNTER_FIELDS.get(activity_type)
-        if counter_field:
-            setattr(activity, counter_field, getattr(activity, counter_field) + 1)
-
-        return activity
-    except Exception as e:
-        logger.error(f"record_activity error ({activity_type}, user {user_id}): {str(e)}")
-        return None
+    return record_daily_activity(user_id, activity_type, score=score, today=today)
 
 
 def update_login_streak(user: User, now: datetime.datetime | None = None) -> None:

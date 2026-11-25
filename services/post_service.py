@@ -58,6 +58,7 @@ from services import badge_service
 from services import notification_service
 from services.cache_service import cached
 from services.time_utils import utc_today
+from services.daily_activity_service import record_daily_activity
 
 
 def extract_public_id(url):
@@ -179,40 +180,25 @@ def check_spam(user_id, content_type="post"):
     return False, None
 
 
+# Heatmap score weight per activity type (a post counts for more than a comment).
+_ACTIVITY_SCORES = {"post": 5, "comment": 2}
+
+
 def update_user_activity(user_id, activity_type):
     """
-    Update or create daily activity record for user
-    Used for activity heatmap and streak tracking
+    Add one unit of activity to today's (UTC) row for the user.
+    Used for the activity heatmap and streak tracking.
+
+    Atomic upsert in a savepoint (services/daily_activity_service.py): safe
+    under concurrent requests and can never fail the post/comment it is
+    attached to. Does not commit. Returns the row, or None on failure.
     """
-    today = utc_today()
-
-    activity = UserActivity.query.filter_by(
-        user_id=user_id,
-        activity_date=today
-    ).first()
-
-    if not activity:
-        activity = UserActivity(
-            user_id=user_id,
-            activity_date=today,
-            posts_created=0,
-            comments_created=0,
-            threads_joined=0,
-            messages_sent=0,
-            helpful_count=0,
-            activity_score=0
-        )
-        db.session.add(activity)
-
-    # Increment counters (now safe because we initialized them)
-    if activity_type == "post":
-        activity.posts_created = (activity.posts_created or 0) + 1
-        activity.activity_score = (activity.activity_score or 0) + 5
-    elif activity_type == "comment":
-        activity.comments_created = (activity.comments_created or 0) + 1
-        activity.activity_score = (activity.activity_score or 0) + 2
-
-    return activity
+    return record_daily_activity(
+        user_id,
+        activity_type,
+        score=_ACTIVITY_SCORES.get(activity_type, 0),
+        today=utc_today(),
+    )
 
 
 def check_helpful_milestones(user_id):

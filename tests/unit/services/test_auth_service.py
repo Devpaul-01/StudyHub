@@ -15,7 +15,7 @@ import pytest
 from freezegun import freeze_time
 from werkzeug.security import check_password_hash
 
-from services import auth_service
+from services import auth_service, daily_activity_service
 from errors import ValidationError
 from models import UserActivity, RefreshToken
 
@@ -92,7 +92,7 @@ def test_record_activity_swallows_exceptions_returns_none(db_session, make_user,
     def _boom(*a, **kw):
         raise RuntimeError("simulated failure")
 
-    monkeypatch.setattr(auth_service, "_get_or_create_today_activity", _boom)
+    monkeypatch.setattr(daily_activity_service, "_increment_row", _boom)
     result = auth_service.record_activity(user.id, "post")
     assert result is None
 
