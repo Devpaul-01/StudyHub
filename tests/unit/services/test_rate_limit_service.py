@@ -18,11 +18,14 @@ def test_ip_key_returns_remote_address(app):
         assert rate_limit_service.ip_key() == "203.0.113.5"
 
 
-def test_user_or_ip_key_uses_user_id_when_set(app):
-    with app.test_request_context("/"):
+def test_user_or_ip_key_ignores_an_unverified_g_current_user_id(app):
+    """The per-user key comes from the verified token, not from g: g.current_user_id
+    is only set by token_required, which runs *after* the limiter (audit NOTIF-09).
+    Token-based behaviour is covered in tests/integration/test_rate_limit_user_key.py."""
+    with app.test_request_context("/", environ_overrides={"REMOTE_ADDR": "198.51.100.9"}):
         from flask import g
         g.current_user_id = 482
-        assert rate_limit_service.user_or_ip_key() == "user:482"
+        assert rate_limit_service.user_or_ip_key() == "198.51.100.9"
 
 
 def test_user_or_ip_key_falls_back_to_ip_when_no_user(app):
