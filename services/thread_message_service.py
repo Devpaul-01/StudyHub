@@ -570,16 +570,31 @@ def edit_thread_message(*, user_id: int, message_id: int, new_text: str) -> Edit
     if msg.is_ai_response:
         raise PermissionDeniedError("AI messages cannot be edited")
 
+    # TH-10: editing requires current membership (same rule as delete). A user
+    # who left or was removed can no longer rewrite their old messages, and the
+    # edit window can no longer be skipped by having no membership row.
     membership = _is_member(msg.thread_id, user_id)
-    if membership and not _is_moderator_or_creator(membership):
+    if not membership:
+        raise PermissionDeniedError("You are no longer a member of this thread")
+    if not _is_moderator_or_creator(membership):
         seconds_old = (datetime.datetime.utcnow() - msg.sent_at).total_seconds()
         if seconds_old > EDIT_WINDOW_SECONDS:
             raise EditWindowExpiredError("Edit window expired (15 minutes)")
 
-    msg.text_content = _sanitize(new_text)
-    msg.is_edited    = True
-    msg.edited_at    = datetime.datetime.utcnow()
+    # Guarded UPDATE: if a concurrent delete soft-deleted the row after the
+    # read above, we must not resurrect its text over the "[deleted]" marker.
+    updated = ThreadMessage.query.filter_by(
+        id=msg.id, sender_id=user_id, is_deleted=False
+    ).update({
+        "text_content": _sanitize(new_text),
+        "is_edited": True,
+        "edited_at": datetime.datetime.utcnow(),
+    }, synchronize_session="fetch")
+    if not updated:
+        db.session.rollback()
+        raise MessageNotFoundError("Message not found or already deleted")
     db.session.commit()
+    db.session.refresh(msg)
 
     return EditMessageResult(message=msg, thread_id=msg.thread_id)
 
