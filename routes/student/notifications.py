@@ -360,88 +360,58 @@ def delete_all_notifications(current_user):
 # NOTIFICATION SETTINGS
 # ============================================================================
 
-@notifications_bp.route("/profile/notifications/settings", methods=["GET"])
-@limiter.limit(RateLimitTier.PUBLIC_READ, key_func=ip_key)
-@token_required
-def get_notification_settings(current_user):
-    """Get user's notification settings"""
-    try:
-        user = User.query.get(current_user.id)
-        if not user:
-            return error_response("User not found", 404)
-        
-        notification_settings = user.notification_settings or {}
-        
-        # Default settings if not set
-        settings = {
-            "enable_notification": notification_settings.get("enable_notification", True),
-            "notification_category": notification_settings.get("notification_category", [
-                "engagements", "badges", "connections", "threads", 
-                "messages", "mentions"
-            ]),
-            "send_email_notification": notification_settings.get("send_email_notification", False),
-            "enable_notification_sound": notification_settings.get("enable_notification_sound", True),
-            "email_frequency": notification_settings.get("email_frequency", "instant")
-        }
-        
-        return jsonify({
-            "status": "success",
-            "data": settings
-        })
-    
-    except Exception as e:
-        current_app.logger.error(f"Get notification settings error: {str(e)}")
-        return error_response("Error loading notification settings", 500)
-
-
-
 @notifications_bp.route("/profile/notifications/settings", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
 def update_notification_settings(current_user):
     """
-    Toggle user's notification settings
-    
+    Change one of the user's notification settings.
+
     Body params:
-    - setting: String - name of setting to toggle ('enable_notification' or 'enable_notification_sound')
-    
-    The endpoint will toggle the current value of the specified setting
+    - setting: 'enable_notification' or 'enable_notification_sound'
+    - value:   boolean, the state to set (idempotent). If omitted the setting
+               is flipped, which keeps older clients working.
+
+    Sending the desired value matters: a retry after a timeout, a double click
+    or a second tab used to flip the setting back (audit NOTIF-19). The row is
+    locked so concurrent updates of different keys cannot overwrite each other.
+
+    (GET /profile/notifications/settings was removed: nothing called it, and it
+    advertised category/email settings that were never implemented - audit
+    NOTIF-20. GET /all still returns the two live settings.)
     """
     try:
-        user = User.query.get(current_user.id)
-        if not user:
-            return error_response("User not found", 404)
-        
         data = request.get_json(silent=True) or {}
         if not data:
             return error_response("No settings provided")
-        
+
         setting_name = data.get("setting")
         if not setting_name:
             return error_response("Setting name is required")
-        
-        # Validate setting name
+
         valid_settings = ["enable_notification", "enable_notification_sound"]
         if setting_name not in valid_settings:
             return error_response(f"Invalid setting name. Must be one of: {', '.join(valid_settings)}")
-        
-        # Get current settings or initialize
-        notification_settings = user.notification_settings or {}
-        
-        # Get current value (default to True if not set)
+
+        if "value" in data and not isinstance(data["value"], bool):
+            return error_response("value must be true or false")
+
+        user = User.query.filter_by(id=current_user.id).with_for_update().first()
+        if not user:
+            return error_response("User not found", 404)
+
+        notification_settings = dict(user.notification_settings or {})
         current_value = notification_settings.get(setting_name, True)
-        
-        # Toggle the value
-        new_value = not current_value
+        new_value = data["value"] if "value" in data else not current_value
         notification_settings[setting_name] = new_value
-        
-        # Save settings
+
+        # Assign a new dict so the JSON column is always seen as changed.
         user.notification_settings = notification_settings
         db.session.commit()
-        
+
         return jsonify({
             "status": "success",
-            "message": f"{setting_name} toggled successfully",
+            "message": f"{setting_name} updated successfully",
             "data": {
                 "setting": setting_name,
                 "previous_value": current_value,
@@ -449,9 +419,8 @@ def update_notification_settings(current_user):
                 "all_settings": notification_settings
             }
         })
-    
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Update notification settings error: {str(e)}")
         return error_response("Error updating notification settings", 500)
-

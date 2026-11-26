@@ -9,6 +9,16 @@ class NotificationState {
     // reads this to scope its request, and "Mark all as read" sends it too,
     // so marking read while a filter is active only marks that category.
     this.activeType = '';
+    // Mirrors the server's enable_notification_sound setting (set on load/toggle).
+    this.soundEnabled = true;
+  }
+
+  setSoundEnabled(value) {
+    this.soundEnabled = value !== false;
+  }
+
+  isSoundEnabled() {
+    return this.soundEnabled;
   }
 
   setActiveType(type) {

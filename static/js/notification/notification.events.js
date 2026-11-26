@@ -71,6 +71,7 @@ export async function loadNotifications() {
     if (enableSoundToggle) {
       enableSoundToggle.checked = data.enable_notification_sound !== false;
     }
+    notificationState.setSoundEnabled(data.enable_notification_sound !== false);
 
     // Update badge count
     updateBadgeCount(data.unread_count || 0);
@@ -139,63 +140,50 @@ export function toggleNotificationSettings() {
   }
 }
 
-// Handle enable/disable notifications
-export async function handleToggleNotification(value) {
-  const element = document.getElementById("toggle-notification");
-  
-  const data = {
-    setting: 'enable_notification'
-  };
+// Shared by both settings toggles. The desired state is sent explicitly, so a
+// retry, a double click or a second tab cannot flip the setting back
+// (audit NOTIF-19), and the checkbox is set from the server's answer.
+async function saveToggle(elementId, setting, value, send, successMessage) {
+  const element = document.getElementById(elementId);
 
   try {
-    const response = await notificationAPI.toggleEnableNotification(data);
-    
+    const response = await send({ setting, value: Boolean(value) });
+
     if (response.status !== 'success') {
       showToast(response.message || 'Failed to update settings', 'error');
-      if (element) {
-        element.checked = response.data.new_value;
-      }
-      return;
+      if (element) element.checked = !value;
+      return null;
     }
-    showToast(response.message, 'info');
 
-    showToast('Notification settings updated', 'success');
+    const saved = response.data?.new_value;
+    if (element && typeof saved === 'boolean') element.checked = saved;
+    showToast(successMessage, 'success');
+    return typeof saved === 'boolean' ? saved : Boolean(value);
   } catch (error) {
-    console.error('Toggle notification error:', error);
+    console.error(`Toggle ${setting} error:`, error);
     showToast('Failed to update settings', 'error');
-    if (element) {
-      element.checked = !value;
-    }
+    if (element) element.checked = !value;
+    return null;
   }
+}
+
+// Handle enable/disable notifications
+export async function handleToggleNotification(value) {
+  await saveToggle(
+    'toggle-notification', 'enable_notification', value,
+    (data) => notificationAPI.toggleEnableNotification(data),
+    'Notification settings updated',
+  );
 }
 
 // Handle enable/disable notification sound
 export async function handleToggleNotificationSound(value) {
-  const element = document.getElementById("toggle-notification-sound");
-  
-  const data = {
-    setting: 'enable_notification_sound'
-  };
-
-  try {
-    const response = await notificationAPI.toggleEnableNotificationSound(data);
-    
-    if (response.status !== 'success') {
-      showToast(response.message || 'Failed to update settings', 'error');
-      if (element) {
-        element.checked = response.data.new_value;
-      }
-      return;
-    }
-
-    showToast('Sound settings updated', 'success');
-  } catch (error) {
-    console.error('Toggle notification sound error:', error);
-    showToast('Failed to update settings', 'error');
-    if (element) {
-      element.checked = !value;
-    }
-  }
+  const saved = await saveToggle(
+    'toggle-notification-sound', 'enable_notification_sound', value,
+    (data) => notificationAPI.toggleEnableNotificationSound(data),
+    'Sound settings updated',
+  );
+  if (saved !== null) notificationState.setSoundEnabled(saved);
 }
 
 // No longer needed - removed infinite scroll functionality

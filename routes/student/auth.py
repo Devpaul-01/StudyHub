@@ -70,9 +70,7 @@ google_bp = make_google_blueprint(
 # ============================================================================
 notification_settings = {
     "enable_notification_sound": True,
-    "notification_category": [],
     "enable_notification": True,
-    "send_email_notification": False,
 }
 
 connection_settings = {

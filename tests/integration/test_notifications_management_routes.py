@@ -251,17 +251,20 @@ class TestDeleteAllNotifications:
 # ============================================================================
 
 class TestNotificationSettings:
-    def test_get_returns_defaults_when_unset(self, client, make_user, auth_headers):
+    def test_get_settings_endpoint_was_removed(self, client, make_user, auth_headers):
+        """Nothing called it and it advertised unimplemented options (NOTIF-20).
+        The two live settings come back from GET /all."""
         user = make_user(status="approved")
+        resp = client.get("/student/profile/notifications/settings", headers=auth_headers(user))
+        assert resp.status_code == 405
 
-        resp = client.get(
-            "/student/profile/notifications/settings", headers=auth_headers(user)
-        )
-
-        assert resp.status_code == 200
-        data = resp.get_json()["data"]
+    def test_all_returns_the_two_live_settings(self, client, make_user, auth_headers):
+        user = make_user(status="approved")
+        data = client.get("/student/profile/notifications/all", headers=auth_headers(user)).get_json()["data"]
         assert data["enable_notification"] is True
-        assert data["email_frequency"] == "instant"
+        assert data["enable_notification_sound"] is True
+        for dead in ("notification_category", "send_email_notification", "email_frequency"):
+            assert dead not in data
 
     def test_post_toggles_setting(
         self, client, db_session, make_user, auth_headers, csrf_headers
@@ -324,3 +327,47 @@ class TestNotificationSettings:
         )
 
         assert resp.get_json()["status"] == "error"
+
+
+class TestExplicitSettingValue:
+    """Audit NOTIF-19: the client states the value it wants, so retries and
+    double submits are idempotent instead of flipping the setting back."""
+
+    URL = "/student/profile/notifications/settings"
+
+    def test_explicit_value_is_idempotent(self, client, db_session, make_user, auth_headers, csrf_headers):
+        user = make_user(status="approved")
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        results = [
+            client.post(self.URL, json={"setting": "enable_notification_sound", "value": False}, headers=headers)
+            .get_json()["data"]["new_value"]
+            for _ in range(3)
+        ]
+        assert results == [False, False, False]
+        db_session.refresh(user)
+        assert user.notification_settings["enable_notification_sound"] is False
+
+    def test_explicit_true_after_false(self, client, make_user, auth_headers, csrf_headers):
+        user = make_user(status="approved")
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        client.post(self.URL, json={"setting": "enable_notification", "value": False}, headers=headers)
+        resp = client.post(self.URL, json={"setting": "enable_notification", "value": True}, headers=headers)
+        assert resp.get_json()["data"]["new_value"] is True
+
+    @pytest.mark.parametrize("bad", ["false", 0, 1, None, [], {}])
+    def test_non_boolean_value_rejected(self, client, make_user, auth_headers, csrf_headers, bad):
+        user = make_user(status="approved")
+        resp = client.post(
+            self.URL, json={"setting": "enable_notification", "value": bad},
+            headers={**auth_headers(user), **csrf_headers(client)},
+        )
+        assert resp.status_code == 400
+
+    def test_changing_one_key_keeps_the_other(self, client, db_session, make_user, auth_headers, csrf_headers):
+        user = make_user(status="approved")
+        headers = {**auth_headers(user), **csrf_headers(client)}
+        client.post(self.URL, json={"setting": "enable_notification", "value": False}, headers=headers)
+        client.post(self.URL, json={"setting": "enable_notification_sound", "value": False}, headers=headers)
+        db_session.refresh(user)
+        assert user.notification_settings["enable_notification"] is False
+        assert user.notification_settings["enable_notification_sound"] is False
