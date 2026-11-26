@@ -1,7 +1,7 @@
 import { notificationState } from './notification.state.js';
 import { notificationAPI } from './notification.api.js';
 import { createNotificationCard } from './notification.templates.js';
-import { updateBadgeCount, adjustBadgeCount, showEmptyNotifications, getLoadingSkeletonState } from './notification.utils.js';
+import { updateBadgeCount, adjustBadgeCount, showEmptyNotifications, getLoadingSkeletonState, createLatestGuard } from './notification.utils.js';
 import { NOTIFICATION_TYPES } from './notification.constants.js';
 
 // Delete a single notification
@@ -41,26 +41,27 @@ export async function handleDeleteNotification(id, event) {
 /**
  * Load all notifications at once (no cursor/pagination)
  */
-export async function loadNotifications() {
-  // Prevent duplicate calls
-  if (notificationState.isLoading()) {
-    console.log('⏸️ Skipping load - already loading');
-    return;
-  }
+const loadGuard = createLatestGuard();
 
+export async function loadNotifications() {
   const container = document.getElementById("notifications-list-container");
+  if (!container) return;
+
+  // Latest call wins: a call made while another is in flight supersedes it
+  // instead of being dropped (audit NOTIF-15).
+  const ticket = loadGuard.next();
 
   console.log('🔄 Loading all notifications...');
 
   try {
-    // Set loading state IMMEDIATELY to prevent duplicate calls
     notificationState.setLoading(true);
 
     // Show loading skeleton
     container.innerHTML = getLoadingSkeletonState();
 
     const response = await notificationAPI.getNotifications(notificationState.getActiveType());
-    
+    if (!loadGuard.isLatest(ticket)) return;  // a newer load owns the list now
+
     const data = response.data;
     const notifications = data.notifications || [];
     
@@ -105,6 +106,7 @@ export async function loadNotifications() {
     container.appendChild(fragment);
 
   } catch (error) {
+    if (!loadGuard.isLatest(ticket)) return;
     console.error('❌ Load notifications error:', error);
 
     container.innerHTML = `
@@ -114,7 +116,7 @@ export async function loadNotifications() {
     `;
 
   } finally {
-    notificationState.setLoading(false);
+    if (loadGuard.isLatest(ticket)) notificationState.setLoading(false);
   }
 }
 

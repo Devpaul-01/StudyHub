@@ -35,6 +35,28 @@ export function formatHudTime(isoDate) {
   });
 }
 
+/**
+ * "Latest request wins" guard. Each load takes a ticket with next(); when its
+ * response arrives it applies the result only if isLatest(ticket) is still true.
+ *
+ * loadNotifications() used to ignore any call made while another was in flight,
+ * so a filter-chip tap during the initial load (or a refresh) was silently
+ * dropped: the chip said one thing, the list another, and "Mark all as read"
+ * acted on a filter the user could not see (audit NOTIF-15).
+ */
+export function createLatestGuard() {
+  let latest = 0;
+  return {
+    next() {
+      latest += 1;
+      return latest;
+    },
+    isLatest(ticket) {
+      return ticket === latest;
+    },
+  };
+}
+
 // Every unread badge is marked with data-notification-badge. The SPA nav item
 // had no badge element at all and the code looked for one hard-coded id that
 // existed only in an unused template, so the badge never showed (audit
