@@ -870,3 +870,51 @@ class TestPerUserRateLimit:
 
         resp = client.get("/student/analytics/post/999999", headers=light_headers)
         assert resp.status_code == 404  # not 429: the light user has their own bucket
+
+
+# ============================================================================
+# AN-12: overview cache is invalidated after the commit, not before
+# ============================================================================
+
+class TestOverviewCacheInvalidationTiming:
+    def test_reader_between_award_and_commit_cannot_cache_stale_data_forever(
+        self, client, db_session, make_user, auth_headers, cache_redis
+    ):
+        from services.reputation_service import award_reputation
+
+        user = make_user(reputation=0)
+        db_session.commit()
+        headers = auth_headers(user)
+        key = f"sh:1:an:overview:{user.id}"
+
+        client.get("/student/analytics/overview", headers=headers)  # warm the cache
+        assert cache_redis.get(key) is not None
+
+        award_reputation(user.id, "comment_marked_solution")
+        db_session.flush()
+        # The old (pre-commit) code deleted the key right here, letting a
+        # concurrent reader re-cache stale numbers. The key must survive...
+        assert cache_redis.get(key) is not None
+
+        db_session.commit()
+        # ...and be dropped as soon as the commit succeeds.
+        assert cache_redis.get(key) is None
+
+        fresh = client.get("/student/analytics/overview", headers=headers).get_json()["data"]
+        assert fresh["hero_stats"]["reputation_change"] > 0
+
+    def test_rolled_back_award_leaves_cache_untouched(
+        self, client, db_session, make_user, auth_headers, cache_redis
+    ):
+        from services.reputation_service import award_reputation
+
+        user = make_user(reputation=0)
+        db_session.commit()
+        client.get("/student/analytics/overview", headers=auth_headers(user))
+        key = f"sh:1:an:overview:{user.id}"
+
+        award_reputation(user.id, "comment_marked_solution")
+        db_session.rollback()
+        db_session.commit()
+
+        assert cache_redis.get(key) is not None

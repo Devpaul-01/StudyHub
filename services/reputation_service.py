@@ -156,10 +156,14 @@ def award_reputation(user_id, action_key, related_type=None, related_id=None, cu
     # user's own point total is always fresh via the invalidation below;
     # leaderboard *position* pages (their own and everyone else's) can lag
     # by up to 60 seconds. Do not "fix" this into fan-out invalidation.
-    cache_service.delete(f"sh:1:rep:me:{user_id}")
-    cache_service.delete_pattern(f"sh:1:lb:rank:{user_id}:*")
-    cache_service.delete_pattern(f"sh:1:lb:breakdown:{user_id}:*")
-    cache_service.delete(f"sh:1:an:overview:{user_id}")
+    #
+    # Deferred until AFTER the transaction commits (AN-12): deleting before
+    # the commit let a concurrent reader re-cache the pre-change numbers for
+    # the whole TTL. A rolled-back award invalidates nothing.
+    cache_service.invalidate_after_commit(
+        keys=(f"sh:1:rep:me:{user_id}", f"sh:1:an:overview:{user_id}"),
+        patterns=(f"sh:1:lb:rank:{user_id}:*", f"sh:1:lb:breakdown:{user_id}:*"),
+    )
 
     old_level = get_reputation_level(reputation_before)
     new_level = get_reputation_level(user.reputation)

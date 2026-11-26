@@ -121,19 +121,41 @@ def test_award_reputation_downward_crossing_notifies(db_session, make_user):
     assert mock_notify.call_args[0][1]["name"] == "Newbie"
 
 
-def test_award_reputation_invalidates_expected_cache_keys(db_session, make_user):
+def test_award_reputation_invalidates_expected_cache_keys_only_after_commit(db_session, make_user):
     user = make_user(reputation=10)
+    db_session.commit()
     with patch("services.reputation_service.notification_service.notify_level_up"), \
          patch("services.reputation_service.cache_service.delete") as mock_delete, \
          patch("services.reputation_service.cache_service.delete_pattern") as mock_delete_pattern:
         reputation_service.award_reputation(user.id, "post_10_likes")
 
+        # AN-12: nothing is invalidated while the transaction is still open...
+        mock_delete.assert_not_called()
+        mock_delete_pattern.assert_not_called()
+
+        db_session.commit()
+
+    # ...only once it has committed.
     delete_keys = {c.args[0] for c in mock_delete.call_args_list}
     assert f"sh:1:rep:me:{user.id}" in delete_keys
     assert f"sh:1:an:overview:{user.id}" in delete_keys
     pattern_keys = {c.args[0] for c in mock_delete_pattern.call_args_list}
     assert f"sh:1:lb:rank:{user.id}:*" in pattern_keys
     assert f"sh:1:lb:breakdown:{user.id}:*" in pattern_keys
+
+
+def test_award_reputation_rollback_invalidates_nothing(db_session, make_user):
+    user = make_user(reputation=10)
+    db_session.commit()
+    with patch("services.reputation_service.notification_service.notify_level_up"), \
+         patch("services.reputation_service.cache_service.delete") as mock_delete, \
+         patch("services.reputation_service.cache_service.delete_pattern") as mock_delete_pattern:
+        reputation_service.award_reputation(user.id, "post_10_likes")
+        db_session.rollback()
+        db_session.commit()
+
+    mock_delete.assert_not_called()
+    mock_delete_pattern.assert_not_called()
 
 
 # ============================================================================

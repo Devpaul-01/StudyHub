@@ -29,7 +29,10 @@ import json
 import logging
 import os
 
-from extensions import redis_client
+from sqlalchemy import event
+from sqlalchemy.orm import Session
+
+from extensions import db, redis_client
 
 # ── Logger: uses Flask's app logger via current_app when available ──────
 # This module-level logger is a fallback; the preferred logger is
@@ -225,6 +228,51 @@ def delete_pattern(prefix):
             f"[CACHE] Redis pattern delete failed for prefix={prefix!r}. Error: {e}",
             exc_info=True
         )
+
+
+# ---------------------------------------------------------------------------
+# Commit-aware invalidation
+#
+# Deleting a cache key *before* the transaction that changes the data has
+# committed leaves a window in which a concurrent reader misses the cache,
+# reads the OLD committed rows, and re-caches them for a full TTL (the key is
+# gone, the new data is not yet visible). invalidate_after_commit() instead
+# remembers the keys on the session and deletes them only once the commit
+# has succeeded; a rollback discards them, since nothing changed.
+# ---------------------------------------------------------------------------
+
+_PENDING_INFO_KEY = "sh_cache_invalidations"
+
+
+def invalidate_after_commit(keys=(), patterns=()):
+    """
+    Delete `keys` (exact) and `patterns` (glob prefixes) after the current
+    DB transaction commits. Never commits itself. If the transaction rolls
+    back the invalidation is dropped. Like delete()/delete_pattern(), Redis
+    failures only degrade to "stale until TTL".
+    """
+    pending = db.session().info.setdefault(
+        _PENDING_INFO_KEY, {"keys": [], "patterns": []}
+    )
+    # NB: this module defines its own set(); don't use the builtin here.
+    pending["keys"].extend(keys)
+    pending["patterns"].extend(patterns)
+
+
+@event.listens_for(Session, "after_commit")
+def _run_pending_invalidations(session):
+    pending = session.info.pop(_PENDING_INFO_KEY, None)
+    if not pending:
+        return
+    for key in dict.fromkeys(pending["keys"]):
+        delete(key)
+    for pattern in dict.fromkeys(pending["patterns"]):
+        delete_pattern(pattern)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_pending_invalidations(session):
+    session.info.pop(_PENDING_INFO_KEY, None)
 
 
 def clear():
