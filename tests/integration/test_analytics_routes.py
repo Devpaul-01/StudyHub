@@ -918,3 +918,67 @@ class TestOverviewCacheInvalidationTiming:
         db_session.commit()
 
         assert cache_redis.get(key) is not None
+
+
+# ============================================================================
+# AN-19: one population for department standing, NULL-safe ordering, query cost
+# ============================================================================
+
+class TestInsightFiltersAndCost:
+    def test_department_rank_and_insight_ignore_unapproved_users(
+        self, client, db_session, make_user, make_student_profile, auth_headers
+    ):
+        me = make_user(reputation=10)
+        make_student_profile(me, department="Physics")
+        # 9 lower-ranked approved classmates -> I'm rank 1 of 10 (top 10%).
+        for _ in range(9):
+            make_student_profile(make_user(reputation=1), department="Physics")
+        # A pending user with more reputation must not push me down in either place
+        # (it would make me rank 2 of 11 = top 18%, i.e. no Top Contributor).
+        ghost = make_user(reputation=500, status="pending")
+        make_student_profile(ghost, department="Physics")
+        db_session.commit()
+
+        overview = client.get("/student/analytics/overview", headers=auth_headers(me)).get_json()["data"]
+        insights = client.get("/student/analytics/insights", headers=auth_headers(me)).get_json()["data"]["insights"]
+
+        assert overview["hero_stats"]["department_rank"] == 1
+        assert any(i["title"] == "Top Contributor" for i in insights)
+
+    def test_best_post_ignores_null_counters(self, client, db_session, make_user, make_post, auth_headers):
+        user = make_user()
+        make_post(user, title="real winner", positive_reactions_count=4, comments_count=2)
+        null_post = make_post(user, title="null counters")
+        null_post.positive_reactions_count = None
+        null_post.comments_count = None
+        db_session.commit()
+
+        resp = client.get("/student/analytics/engagement", headers=auth_headers(user))
+
+        assert resp.get_json()["data"]["posts"]["best_post"]["title"] == "real winner"
+
+    def test_insights_query_count_does_not_explode_with_badges(
+        self, app, client, db_session, make_user, make_badge, auth_headers
+    ):
+        from sqlalchemy import event
+        from extensions import db
+
+        user = make_user()
+        for i in range(15):
+            make_badge(name=f"Badge {i}", criteria={"posts_count": 100 + i})
+        db_session.commit()
+
+        statements = []
+
+        def count(conn, cursor, statement, *a):
+            statements.append(statement)
+
+        event.listen(db.engine, "before_cursor_execute", count)
+        try:
+            resp = client.get("/student/analytics/insights", headers=auth_headers(user))
+        finally:
+            event.remove(db.engine, "before_cursor_execute", count)
+
+        assert resp.status_code == 200
+        # Budget: auth + insight queries + at most ~1 query per unearned badge.
+        assert len(statements) <= 25 + 2 * 15, f"{len(statements)} queries"

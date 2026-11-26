@@ -91,6 +91,22 @@ _VALID_EXPORT_TYPES = {"activity", "reputation", "posts", "overview"}
 
 
 
+def _department_standing(user, department):
+    """
+    (rank, total) of `user` among APPROVED users of `department`, ranked by
+    reputation (rank 1 = best). One definition shared by the overview's
+    "department rank" and the Top Contributor insight, so the two can never
+    disagree about who is in the population.
+    """
+    approved_in_dept = db.session.query(User.id).join(StudentProfile).filter(
+        StudentProfile.department == department,
+        User.status == "approved",
+    )
+    total = approved_in_dept.count()
+    ahead = approved_in_dept.filter(User.reputation > user.reputation).count()
+    return ahead + 1, total
+
+
 def generate_insights(user_id):
     insights = []
     user = User.query.get(user_id)
@@ -200,19 +216,10 @@ def generate_insights(user_id):
     # Resolve profile once and guard against None
     student_profile = StudentProfile.query.filter_by(user_id=user_id).first()
     if student_profile and student_profile.department:
-        dept_filter = StudentProfile.department == student_profile.department
-
-        dept_rank = db.session.query(func.count(User.id)).join(StudentProfile).filter(
-            dept_filter,
-            User.reputation > user.reputation
-        ).scalar() or 0
-
-        total_dept_users = db.session.query(func.count(User.id)).join(StudentProfile).filter(
-            dept_filter
-        ).scalar() or 0
+        dept_rank, total_dept_users = _department_standing(user, student_profile.department)
 
         if total_dept_users > 0:
-            percentile = round((1 - ((dept_rank + 1) / total_dept_users)) * 100)
+            percentile = round((1 - (dept_rank / total_dept_users)) * 100)
             if percentile >= 90:
                 insights.append({
                     "type": "achievement",
@@ -344,11 +351,7 @@ def get_analytics_overview(current_user):
         # FIX: guard against missing profile — previously crashed with
         # AttributeError when a user had no StudentProfile row.
         if profile and profile.department:
-            dept_rank = db.session.query(func.count(User.id)).join(StudentProfile).filter(
-                StudentProfile.department == profile.department,
-                User.reputation > current_user.reputation,
-                User.status == "approved"
-            ).scalar() + 1
+            dept_rank, _ = _department_standing(current_user, profile.department)
         else:
             dept_rank = None
 
@@ -527,7 +530,11 @@ def get_engagement_stats(current_user):
 
         # Best performing post
         best_post = Post.query.filter_by(student_id=current_user.id).order_by(
-            (Post.positive_reactions_count + Post.comments_count).desc()
+            # COALESCE: NULL counters sort first on PostgreSQL DESC (last on
+            # SQLite), which would make an un-engaged post the "best" one.
+            (func.coalesce(Post.positive_reactions_count, 0)
+             + func.coalesce(Post.comments_count, 0)).desc(),
+            Post.id.desc(),
         ).first()
 
         # Comment engagement
