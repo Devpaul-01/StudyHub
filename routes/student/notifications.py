@@ -38,7 +38,7 @@ def get_notifications(current_user):
     try:
         user = User.query.get(current_user.id)
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
         
         # Get user notification settings
         notification_settings = user.notification_settings or {}
@@ -106,7 +106,7 @@ def get_notifications(current_user):
     
     except Exception as e:
         current_app.logger.error(f"Get notifications error: {str(e)}")
-        return error_response("Failed to load notifications")
+        return error_response("Failed to load notifications", 500)
 
 
 
@@ -188,7 +188,7 @@ def mark_all_notifications_read(current_user):
     try:
         user = User.query.get(current_user.id)
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
         
         data = request.get_json(silent=True) or {}
         notif_type = data.get("type")
@@ -236,7 +236,7 @@ def mark_all_notifications_read(current_user):
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Mark all read error: {str(e)}")
-        return error_response("Error marking notifications as read")
+        return error_response("Error marking notifications as read", 500)
 
 
 # ============================================================================
@@ -249,27 +249,32 @@ def mark_all_notifications_read(current_user):
 def mark_notification_read(current_user, notification_id):
     """Mark a single notification as read"""
     try:
-        notification = Notification.query.filter_by(
-            id=notification_id,
-            user_id=current_user.id
+        owned = Notification.query.filter_by(
+            id=notification_id, user_id=current_user.id
         ).first()
-        
-        if not notification:
-            return error_response("Notification not found")
-        
-        if notification.is_read:
-            return success_response("Notification already marked as read")
-        
-        notification.is_read = True
-        notification.read_at = datetime.utcnow()
+        if not owned:
+            return error_response("Notification not found", 404)
+
+        # One conditional UPDATE instead of read-then-write: marking an
+        # already-read notification (double click, retry, second tab) is a
+        # harmless no-op rather than a race (audit NOTIF-08/NOTIF-19).
+        updated = Notification.query.filter_by(
+            id=notification_id, user_id=current_user.id, is_read=False
+        ).update(
+            {"is_read": True, "read_at": datetime.utcnow()},
+            synchronize_session=False,
+        )
         db.session.commit()
+
+        if not updated:
+            return success_response("Notification already marked as read")
 
         return success_response("Notification marked as read")
     
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Mark notification read error: {str(e)}")
-        return error_response("Error marking notification as read")
+        return error_response("Error marking notification as read", 500)
 
 
 # ============================================================================
@@ -282,23 +287,23 @@ def mark_notification_read(current_user, notification_id):
 def delete_notification(current_user, notification_id):
     """Delete a single notification"""
     try:
-        notification = Notification.query.filter_by(
-            id=notification_id,
-            user_id=current_user.id
-        ).first()
-        
-        if not notification:
-            return error_response("Notification not found")
-
-        db.session.delete(notification)
+        # Single DELETE with a row count: two concurrent deletes of the same
+        # notification yield one success and one clean 404, never a
+        # StaleDataError 500 (audit NOTIF-08).
+        deleted = Notification.query.filter_by(
+            id=notification_id, user_id=current_user.id
+        ).delete(synchronize_session=False)
         db.session.commit()
+
+        if not deleted:
+            return error_response("Notification not found", 404)
 
         return success_response("Notification deleted successfully")
     
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Delete notification error: {str(e)}")
-        return error_response("Error deleting notification")
+        return error_response("Error deleting notification", 500)
 
 
 # ============================================================================
@@ -348,7 +353,7 @@ def delete_all_notifications(current_user):
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Delete all notifications error: {str(e)}")
-        return error_response("Error deleting notifications")
+        return error_response("Error deleting notifications", 500)
 
 
 # ============================================================================
@@ -363,7 +368,7 @@ def get_notification_settings(current_user):
     try:
         user = User.query.get(current_user.id)
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
         
         notification_settings = user.notification_settings or {}
         
@@ -386,7 +391,7 @@ def get_notification_settings(current_user):
     
     except Exception as e:
         current_app.logger.error(f"Get notification settings error: {str(e)}")
-        return error_response("Error loading notification settings")
+        return error_response("Error loading notification settings", 500)
 
 
 
@@ -405,7 +410,7 @@ def update_notification_settings(current_user):
     try:
         user = User.query.get(current_user.id)
         if not user:
-            return error_response("User not found")
+            return error_response("User not found", 404)
         
         data = request.get_json(silent=True) or {}
         if not data:
@@ -448,5 +453,5 @@ def update_notification_settings(current_user):
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Update notification settings error: {str(e)}")
-        return error_response("Error updating notification settings")
+        return error_response("Error updating notification settings", 500)
 
