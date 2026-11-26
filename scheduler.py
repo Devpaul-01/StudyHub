@@ -299,6 +299,20 @@ def _job_auth_cleanup(app):
     _run_locked("auth_cleanup", _work)
 
 
+def _job_user_activity_prune(app):
+    """Enqueue the daily pruning of user_activity rows past retention."""
+    def _work():
+        logger.info("[Scheduler] ▶ Enqueueing user activity prune job")
+        with app.app_context():
+            from services.job_queue import maintenance_queue
+            from services.jobs.maintenance_jobs import prune_old_user_activity_job
+            from services.jobs.job_specs import USER_ACTIVITY_PRUNE_RETRY
+            job = maintenance_queue.enqueue(prune_old_user_activity_job, retry=USER_ACTIVITY_PRUNE_RETRY)
+            logger.info("[SCHED_JOB_ENQUEUED] job_id=%s queue=%s", job.id, maintenance_queue.name)
+
+    _run_locked("user_activity_prune", _work)
+
+
 def _job_stale_conversation_alert(app):
     """See _job_activity_feed_cleanup's docstring — identical shape."""
     def _work():
@@ -429,6 +443,15 @@ def init_scheduler(app) -> None:
         trigger=CronTrigger(hour=3, minute=30, timezone="UTC"),
         id="auth_cleanup",
         name="Auth Cleanup (abandoned sign-ups, expired tokens)",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        func=_job_user_activity_prune,
+        args=[app],
+        trigger=CronTrigger(hour=4, minute=0, timezone="UTC"),
+        id="user_activity_prune",
+        name="User Activity Retention Prune",
         replace_existing=True,
     )
 

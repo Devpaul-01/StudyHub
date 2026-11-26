@@ -120,6 +120,55 @@ def cleanup_expired_activity_feed_job() -> dict:
     return {"rows_deleted": total_deleted, "batches_run": batches_run}
 
 
+# Retention for analytics activity rows (analytics audit AN-20).
+# The dashboard reads at most 365 days of heatmap and a 366-day streak
+# lookback, so a few weeks of slack beyond that is all anyone can ever see.
+# Deliberately NOT pruned: post_views (the unique (user, post) row is what
+# stops a returning viewer being counted again, and reconciliation derives
+# posts.views_count from it) and reputation_history (a user-visible ledger).
+USER_ACTIVITY_RETENTION_DAYS = 400
+USER_ACTIVITY_PRUNE_BATCH_SIZE = 5000
+USER_ACTIVITY_PRUNE_MAX_BATCHES = 200
+
+
+def prune_old_user_activity_job() -> dict:
+    """
+    Delete user_activity rows older than USER_ACTIVITY_RETENTION_DAYS, in
+    bounded batches (one commit each, same pattern as the activity-feed
+    cleanup). Idempotent: a retry or duplicate enqueue finds nothing left.
+    """
+    from services.time_utils import utc_today
+
+    cutoff = utc_today() - datetime.timedelta(days=USER_ACTIVITY_RETENTION_DAYS)
+    total_deleted = 0
+    batches_run = 0
+
+    while batches_run < USER_ACTIVITY_PRUNE_MAX_BATCHES:
+        ids = [
+            row.id for row in
+            UserActivity.query
+            .filter(UserActivity.activity_date < cutoff)
+            .with_entities(UserActivity.id)
+            .order_by(UserActivity.id)
+            .limit(USER_ACTIVITY_PRUNE_BATCH_SIZE)
+            .all()
+        ]
+        if not ids:
+            break
+        UserActivity.query.filter(UserActivity.id.in_(ids)).delete(synchronize_session=False)
+        db.session.commit()
+        total_deleted += len(ids)
+        batches_run += 1
+    else:
+        logger.warning(
+            "[USER_ACTIVITY_PRUNE_BATCH_LIMIT] stopped after %s batches (%s rows) — "
+            "resuming next scheduled run", batches_run, total_deleted,
+        )
+
+    logger.info("[USER_ACTIVITY_PRUNE_DONE] rows_deleted=%s batches_run=%s", total_deleted, batches_run)
+    return {"rows_deleted": total_deleted, "batches_run": batches_run}
+
+
 # Retention for authentication leftovers (audit AUD-06 / AUD-20).
 # A sign-up whose email was never verified is deleted after this many days, which
 # also releases the address for its real owner. Spent or expired one-time tokens and
