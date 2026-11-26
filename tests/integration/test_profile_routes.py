@@ -62,22 +62,23 @@ class TestAcademicInfo:
         refreshed = OnboardingDetails.query.filter_by(user_id=user.id).first()
         assert refreshed.subjects == ["Chemistry", "Biology"]
 
-    def test_put_truncates_subjects_to_15(
+    def test_put_accepts_up_to_the_questionnaire_limit_and_rejects_more(
         self, client, make_user, make_onboarding_details, auth_headers, csrf_headers
     ):
+        """Same cap as onboarding (30). More is an error, never a silent cut."""
         user = make_user()
         make_onboarding_details(user)
         headers = {**auth_headers(user), **csrf_headers(client)}
+        url = "/student/profile/academic-info"
 
-        resp = client.put(
-            "/student/profile/academic-info",
-            json={"subjects": [f"Subject{i}" for i in range(20)]},
-            headers=headers,
-        )
+        ok = client.put(url, json={"subjects": [f"Subject{i}" for i in range(30)]}, headers=headers)
+        too_many = client.put(url, json={"subjects": [f"Subject{i}" for i in range(31)]}, headers=headers)
 
         from models import OnboardingDetails
-        refreshed = OnboardingDetails.query.filter_by(user_id=user.id).first()
-        assert len(refreshed.subjects) == 15
+        stored = OnboardingDetails.query.filter_by(user_id=user.id).first().subjects
+        assert ok.status_code == 200
+        assert too_many.status_code == 400
+        assert len(stored) == 30
 
     def test_put_without_onboarding_row_returns_error(self, client, make_user, auth_headers, csrf_headers):
         user = make_user()
@@ -828,7 +829,7 @@ class TestUpdateProfileValidation:
         assert resp.get_json()["message"] == "Name must be text"
 
     def test_name_longer_than_the_column_is_rejected(self, client, auth_headers, csrf_headers, user):
-        resp = self._patch(client, auth_headers, csrf_headers, user, {"name": "x" * 81})
+        resp = self._patch(client, auth_headers, csrf_headers, user, {"name": "x" * 101})
 
         assert resp.status_code == 400
 
@@ -856,7 +857,7 @@ class TestUpdateProfileValidation:
         assert good.get_json()["data"]["user"]["class_level"] == "300 Level"
 
     def test_department_is_length_limited_plain_text(self, client, auth_headers, csrf_headers, user):
-        assert self._patch(client, auth_headers, csrf_headers, user, {"department": "d" * 51}).status_code == 400
+        assert self._patch(client, auth_headers, csrf_headers, user, {"department": "d" * 101}).status_code == 400
         assert self._patch(client, auth_headers, csrf_headers, user, {"department": "<b>CS</b>"}).status_code == 400
 
     def test_department_and_class_are_mirrored_to_onboarding(
@@ -901,7 +902,7 @@ class TestAcademicInfoValidation:
         return client.put(self.URL, json=payload, headers={**auth_headers(user), **csrf_headers(client)})
 
     @pytest.mark.parametrize("field", ["subjects", "strong_subjects", "help_subjects", "study_preferences"])
-    @pytest.mark.parametrize("bad", [[{"a": 1}], [["nested"]], [5], [None], ["<img src=x onerror=1>"], ["x" * 51]])
+    @pytest.mark.parametrize("bad", [[{"a": 1}], [["nested"]], [5], [None], ["<img src=x onerror=1>"], ["x" * 101]])
     def test_bad_list_items_are_rejected(self, client, auth_headers, csrf_headers, user, field, bad):
         """Regression: a dict stored here broke other users' suggestion code."""
         resp = self._put(client, auth_headers, csrf_headers, user, {field: bad})
@@ -931,11 +932,23 @@ class TestAcademicInfoValidation:
         stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
         assert stored["learning_style"] is None
 
-    def test_learning_style_is_plain_text(self, client, auth_headers, csrf_headers, user):
+    def test_learning_style_must_be_a_questionnaire_value(self, client, auth_headers, csrf_headers, user):
         assert self._put(client, auth_headers, csrf_headers, user,
                          {"learning_style": "<b>visual</b>"}).status_code == 400
         assert self._put(client, auth_headers, csrf_headers, user,
-                         {"learning_style": "x" * 301}).status_code == 400
+                         {"learning_style": "tactile"}).status_code == 400
+        assert self._put(client, auth_headers, csrf_headers, user,
+                         {"learning_style": "Auditory"}).status_code == 200
+        stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
+        assert stored["learning_style"] == "auditory"
+
+    def test_study_preferences_must_be_questionnaire_values(self, client, auth_headers, csrf_headers, user):
+        assert self._put(client, auth_headers, csrf_headers, user,
+                         {"study_preferences": ["whatever I like"]}).status_code == 400
+        assert self._put(client, auth_headers, csrf_headers, user,
+                         {"study_preferences": ["group-study", "Group-Study", "practical-projects"]}).status_code == 200
+        stored = client.get(self.URL, headers=auth_headers(user)).get_json()["data"]
+        assert stored["study_preferences"] == ["group-study", "practical-projects"]
 
     def test_nothing_changed_leaves_last_updated_alone(
         self, client, db_session, auth_headers, csrf_headers, user

@@ -19,30 +19,24 @@ import re
 
 __all__ = [
     "ProfileValidationError",
-    "CLASS_LEVELS",
     "STUDY_DAYS",
     "STUDY_SLOTS",
     "clean_plain_text",
     "clean_bio",
     "clean_text_list",
     "clean_class_level",
+    "clean_choice",
     "clean_study_schedule",
     "strip_markup_chars",
     "RESERVED_USERNAMES",
     "is_reserved_username",
 ]
 
-# Matches the class levels offered during onboarding plus the legacy
-# labels understood by the mentor-matching hierarchy.
-CLASS_LEVELS = (
-    "100 Level", "200 Level", "300 Level", "400 Level", "500 Level",
-    "Freshman", "Sophomore", "Junior", "Senior",
-)
-
 STUDY_DAYS = (
     "monday", "tuesday", "wednesday", "thursday",
     "friday", "saturday", "sunday",
 )
+
 # Matches onboarding and ``connection_service.calculate_schedule_overlap``:
 # stored day keys are capitalised ("Monday") and slots are these three values.
 STUDY_SLOTS = ("morning", "afternoon", "evening")
@@ -123,14 +117,26 @@ def clean_text_list(value, field, *, max_items, max_item_len):
     return result
 
 
-def clean_class_level(value):
-    """Validate a class level against the canonical onboarding set."""
+def clean_class_level(value, allowed):
+    """Validate a class level against ``allowed`` (the onboarding set).
+
+    Matching is case-insensitive; the canonical spelling is returned.
+    """
     text = clean_plain_text(value, "Class level", max_len=20)
-    for level in CLASS_LEVELS:
+    for level in allowed:
         if text.lower() == level.lower():
             return level
-    raise ProfileValidationError(
-        "Class level must be one of: " + ", ".join(CLASS_LEVELS))
+    raise ProfileValidationError("Class level must be one of: " + ", ".join(allowed))
+
+
+def clean_choice(value, field, allowed):
+    """Validate a value against a fixed vocabulary (case-insensitive)."""
+    if not isinstance(value, str):
+        raise ProfileValidationError(f"{field} must be text")
+    for option in allowed:
+        if value.strip().lower() == option.lower():
+            return option
+    raise ProfileValidationError(f"{field} must be one of: " + ", ".join(allowed))
 
 
 def clean_study_schedule(value):

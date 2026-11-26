@@ -496,11 +496,13 @@ Your onboarding academic details. **Auth:** required.
   "study_preferences": ["Evening sessions"]
 }
 ```
-Only the keys you send are changed. Each list must be a list of plain-text strings (at most 50
-characters each, no `<` or `>`); items are trimmed and de-duplicated case-insensitively. Lists longer
-than the cap are cut to it: 15 subjects, 10 strong/help subjects each, 10 preferences. Anything
-that is not a list of strings returns `400`. `learning_style` is plain text up to 300 characters;
-send `""` or `null` to clear it.
+Only the keys you send are changed, and the rules are the onboarding questionnaire's. `subjects`,
+`strong_subjects` and `help_subjects` are lists of plain-text strings (at most 30 items of 100
+characters each, no `<` or `>`; items are trimmed and de-duplicated case-insensitively).
+`study_preferences` items must be `group-study`, `morning-study`, `explaining-concepts` or
+`practical-projects`. `learning_style` must be `visual`, `auditory`, `kinesthetic` or `reading` (send
+`""` or `null` to clear it). A list over the limit or any other value returns `400`; nothing is
+silently cut.
 
 ### `POST /student/profile/avatar/upload`
 `multipart/form-data`, field `avatar`. Image is decoded and re-encoded server-side before upload
@@ -557,10 +559,10 @@ the other (the response is identical so a block is not revealed).
 ```json
 { "name": "Jane A. Doe", "bio": "CS junior, TA for Data Structures", "department": "Computer Science", "class_level": "Junior" }
 ```
-Only the keys you send are changed. `name` is 3-80 characters, `department` at most 50, `bio` at
+Only the keys you send are changed. `name` is 3-100 characters, `department` at most 100, `bio` at
 most 500. `name` and `department` are plain text and cannot contain `<` or `>`; `bio` cannot contain
-anything that looks like an HTML tag. `class_level` must be one of `100 Level`..`500 Level`,
-`Freshman`, `Sophomore`, `Junior`, `Senior` (case-insensitive). Department and class level are also
+anything that looks like an HTML tag. `class_level` must be one of `100 Level`..`500 Level`
+(case-insensitive), as in onboarding. Department and class level are also
 written to the onboarding record so `GET /profile/academic-info` agrees. Returns "No changes made"
 if nothing differed from the stored values.
 

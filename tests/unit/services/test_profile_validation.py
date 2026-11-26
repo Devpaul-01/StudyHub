@@ -4,6 +4,7 @@ import pytest
 from services.profile_validation import (
     ProfileValidationError,
     clean_bio,
+    clean_choice,
     clean_class_level,
     clean_plain_text,
     clean_study_schedule,
@@ -80,14 +81,35 @@ class TestCleanTextList:
             clean_text_list([str(i) for i in range(6)], "Skills", max_items=5, max_item_len=20)
 
 
+LEVELS = ("100 Level", "200 Level", "300 Level")
+
+
 class TestClassLevel:
     def test_canonicalises_case(self):
-        assert clean_class_level("200 level") == "200 Level"
-        assert clean_class_level("junior") == "Junior"
+        assert clean_class_level("200 level", LEVELS) == "200 Level"
 
-    def test_rejects_unknown(self):
+    def test_rejects_unknown_and_non_text(self):
+        for bad in ("Year 3", "Junior", 200, None):
+            with pytest.raises(ProfileValidationError):
+                clean_class_level(bad, LEVELS)
+
+
+class TestCleanChoice:
+    def test_matches_case_insensitively_and_returns_canonical(self):
+        assert clean_choice(" Visual ", "learning_style", ("visual", "auditory")) == "visual"
+
+    @pytest.mark.parametrize("bad", ["tactile", "", 5, None, ["visual"]])
+    def test_rejects_anything_else(self, bad):
         with pytest.raises(ProfileValidationError):
-            clean_class_level("Year 3")
+            clean_choice(bad, "learning_style", ("visual", "auditory"))
+
+
+def test_vocabulary_matches_the_onboarding_questionnaire():
+    """The profile editor and the questionnaire must accept the same days/slots."""
+    from services import onboarding_service
+    from services.profile_validation import STUDY_DAYS, STUDY_SLOTS
+    assert STUDY_DAYS == onboarding_service.WEEKDAYS
+    assert STUDY_SLOTS == onboarding_service.TIME_SLOTS
 
 
 class TestStudySchedule:

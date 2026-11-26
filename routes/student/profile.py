@@ -15,9 +15,13 @@ from models import (
 from extensions import db
 from errors import ValidationError
 from services import cache_service
+from services.onboarding_service import (
+    CLASS_LEVELS, LEARNING_STYLES, MAX_DEPARTMENT_LENGTH, MAX_NAME_LENGTH,
+    MAX_SUBJECT_LENGTH, MAX_SUBJECTS, STUDY_PREFERENCES,
+)
 from services.profile_validation import (
-    ProfileValidationError, STUDY_DAYS, STUDY_SLOTS, clean_bio, clean_class_level,
-    clean_plain_text, clean_study_schedule, clean_text_list,
+    ProfileValidationError, STUDY_DAYS, STUDY_SLOTS, clean_bio, clean_choice,
+    clean_class_level, clean_plain_text, clean_study_schedule, clean_text_list,
 )
 from routes.student.helpers import token_required, success_response, error_response
 # Phase 5b (Document 4 §1): PUBLIC_READ on profile/stats reads (own and
@@ -366,14 +370,11 @@ def get_academic_info(current_user):
         return _server_error("Get academic info error", "Failed to load academic info")
 
 
-# (field, max items kept, max characters per item). Lists longer than the
-# cap are cut to the cap, as the API has always documented.
-_ACADEMIC_LISTS = (
-    ("subjects",          15, 50),
-    ("strong_subjects",   10, 50),
-    ("help_subjects",     10, 50),
-    ("study_preferences", 10, 50),
-)
+# Same vocabulary and limits as the onboarding questionnaire
+# (services/onboarding_service.py), so a profile can be edited with exactly
+# the values it could be created with and nothing a questionnaire user chose
+# is rejected or cut when they edit it later.
+_SUBJECT_LISTS = ("subjects", "strong_subjects", "help_subjects")
 
 
 @profile_bp.route("/profile/academic-info", methods=["PUT"])
@@ -382,9 +383,10 @@ _ACADEMIC_LISTS = (
 def update_academic_info(current_user):
     """Update academic / onboarding details.
 
-    Every list item must be a short plain-text string: these values are
-    read by other users' discovery and matching code, so one malformed
-    entry must never be storable.
+    Every list item must be a short plain-text string and fixed-vocabulary
+    fields (learning style, study preferences) must use the questionnaire's
+    values: these are read by other users' discovery and matching code, so
+    one malformed entry must never be storable.
     """
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not data:
@@ -392,20 +394,24 @@ def update_academic_info(current_user):
 
     try:
         updates = {}
-        for field, cap, item_len in _ACADEMIC_LISTS:
+        for field in _SUBJECT_LISTS:
             if field in data:
-                value = data[field]
-                if not isinstance(value, list):
-                    raise ProfileValidationError(f"{field} must be a list")
                 updates[field] = clean_text_list(
-                    value[:cap], field, max_items=cap, max_item_len=item_len)
+                    data[field], field, max_items=MAX_SUBJECTS, max_item_len=MAX_SUBJECT_LENGTH)
+
+        if "study_preferences" in data:
+            prefs = clean_text_list(
+                data["study_preferences"], "study_preferences",
+                max_items=len(STUDY_PREFERENCES), max_item_len=MAX_SUBJECT_LENGTH)
+            updates["study_preferences"] = [
+                clean_choice(p, "study_preferences", STUDY_PREFERENCES) for p in prefs]
 
         if "learning_style" in data:
             style = data["learning_style"]
             # An empty value (or null) clears the learning style.
             updates["learning_style"] = (
                 None if style in (None, "")
-                else clean_plain_text(style, "Learning style", max_len=300)
+                else clean_choice(style, "learning_style", LEARNING_STYLES)
             )
     except ProfileValidationError as e:
         return error_response(str(e))
@@ -950,13 +956,13 @@ def update_profile(current_user):
         try:
             new_name = new_bio = new_dept = new_class = None
             if "name" in data:
-                new_name = clean_plain_text(data["name"], "Name", min_len=3, max_len=80)
+                new_name = clean_plain_text(data["name"], "Name", min_len=3, max_len=MAX_NAME_LENGTH)
             if "bio" in data:
                 new_bio = clean_bio(data["bio"], max_len=500)
             if "department" in data:
-                new_dept = clean_plain_text(data["department"], "Department", max_len=50)
+                new_dept = clean_plain_text(data["department"], "Department", max_len=MAX_DEPARTMENT_LENGTH)
             if "class_level" in data:
-                new_class = clean_class_level(data["class_level"])
+                new_class = clean_class_level(data["class_level"], CLASS_LEVELS)
         except ProfileValidationError as e:
             return error_response(str(e))
 
