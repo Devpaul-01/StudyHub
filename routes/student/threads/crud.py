@@ -335,7 +335,14 @@ def thread_details(current_user, resource_id):
             return error_response("Thread not found")
 
         members_data  = []
-        thread_members = ThreadMember.query.filter_by(thread_id=thread.id).all()
+        # TH-11: only members see the roster (same rule as GET /threads/<id>).
+        # Everyone else gets the public summary and the member count only.
+        is_member = ThreadMember.query.filter_by(
+            thread_id=thread.id, student_id=user.id
+        ).first() is not None
+        thread_members = (
+            ThreadMember.query.filter_by(thread_id=thread.id).all() if is_member else []
+        )
 
         # N+1 fix (Document 4 §4, extended to thread_details while already
         # in this file): batch-load member authors, their onboarding rows,
@@ -396,7 +403,8 @@ def thread_details(current_user, resource_id):
             "requires_approval":thread.requires_approval,
             "created_at":       thread.created_at.isoformat(),
             "last_activity":    thread.last_activity.isoformat(),
-            "total_users":      len(members_data),
+            "total_users":      len(members_data) if is_member else thread.member_count,
+            "is_member":        is_member,
             "members_data":     members_data,
             "creator": {
                 "id": creator.id, "username": creator.username,
@@ -408,7 +416,9 @@ def thread_details(current_user, resource_id):
         return jsonify({"status": "success", "data": {"thread": thread_data}})
 
     except Exception as e:
-        return error_response(str(e))
+        db.session.rollback()
+        current_app.logger.error(f"thread_details error: {e}", exc_info=True)
+        return error_response("Failed to load thread details")
 
 
 # ============================================================================

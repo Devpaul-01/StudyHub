@@ -194,3 +194,35 @@ class TestMentionScoping:
             new_text=f"hi @{m1.username} and @{m2.username}")
         assert Notification.query.filter_by(user_id=m1.id).count() == 1
         assert Notification.query.filter_by(user_id=m2.id).count() == 1
+
+
+class TestThreadDetailsVisibility:
+    """TH-11: the roster is for members only; errors do not leak internals."""
+
+    def test_non_member_gets_no_roster(
+        self, client, db_session, make_user, make_thread, make_thread_member,
+        auth_headers, csrf_headers,
+    ):
+        creator, member, outsider = make_user(), make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, creator, member_count=2)
+        make_thread_member(t, member)
+        resp = client.post(f"{B}/{t.id}/details", json={},
+                           headers=_hdr(client, auth_headers, csrf_headers, outsider))
+        assert resp.status_code == 200
+        thread = resp.get_json()["data"]["thread"]
+        assert thread["members_data"] == []
+        assert thread["total_users"] == 2
+        assert thread["is_member"] is False
+
+    def test_member_still_gets_roster(
+        self, client, db_session, make_user, make_thread, make_thread_member,
+        auth_headers, csrf_headers,
+    ):
+        creator, member = make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, creator, member_count=2)
+        make_thread_member(t, member)
+        resp = client.post(f"{B}/{t.id}/details", json={},
+                           headers=_hdr(client, auth_headers, csrf_headers, member))
+        thread = resp.get_json()["data"]["thread"]
+        assert {m["id"] for m in thread["members_data"]} == {creator.id, member.id}
+        assert thread["is_member"] is True
