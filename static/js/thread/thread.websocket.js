@@ -517,6 +517,39 @@ function _registerThreadHandlers(socket, threadId, token) {
   };
   socket.on(THREAD_WS.THREAD_DELETED, _threadHandlers[THREAD_WS.THREAD_DELETED]);
 
+  // TH-02: a member left - update the roster message for the others.
+  _threadHandlers[THREAD_WS.MEMBER_LEFT] = (data) => {
+    if (data.thread_id !== threadId) return;
+    if (data.user_id === threadState.currentUser?.id) return;
+    import('./thread.render.js').then(({ showSystemMessage }) => {
+      showSystemMessage('A member left the thread');
+    });
+  };
+  socket.on(THREAD_WS.MEMBER_LEFT, _threadHandlers[THREAD_WS.MEMBER_LEFT]);
+
+  // TH-02: the server revoked THIS user's access (removed / left / deleted).
+  // Close the thread view; the server has already evicted the socket.
+  _threadHandlers[THREAD_WS.ACCESS_REVOKED] = (data) => {
+    if (data.thread_id !== threadId) return;
+    if (data.reason === 'removed' && typeof window.showToast === 'function') {
+      window.showToast('You no longer have access to this thread', 'error');
+    }
+    import('./thread.events.js').then(({ handleBackToList }) => handleBackToList());
+  };
+  socket.on(THREAD_WS.ACCESS_REVOKED, _threadHandlers[THREAD_WS.ACCESS_REVOKED]);
+
+  // TH-02: the server closed the live room to evict someone. Remaining
+  // members re-join (membership is re-validated server side) and then
+  // catch up on anything sent in the gap.
+  _threadHandlers[THREAD_WS.ROOM_RESYNC] = (data) => {
+    if (data.thread_id !== threadId) return;
+    socket.emit(THREAD_WS.JOIN_ROOM, { token: api.getToken(), thread_id: threadId });
+    import('./thread.events.js')
+      .then((m) => m.handleCatchUpMessages?.(threadId))
+      .catch(() => {});
+  };
+  socket.on(THREAD_WS.ROOM_RESYNC, _threadHandlers[THREAD_WS.ROOM_RESYNC]);
+
   // Updated: passes personality name to showLearnoraBotTyping
   _threadHandlers[THREAD_WS.LEARNORA_THINKING] = (data) => {
     import('./thread.render.js').then(({ showLearnoraBotTyping }) => {

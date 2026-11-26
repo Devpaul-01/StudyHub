@@ -226,3 +226,74 @@ class TestThreadDetailsVisibility:
         thread = resp.get_json()["data"]["thread"]
         assert {m["id"] for m in thread["members_data"]} == {creator.id, member.id}
         assert thread["is_member"] is True
+
+
+class _FakeSocketIO:
+    """Captures emits and room closes made through ThreadWebSocketManager."""
+
+    def __init__(self):
+        self.emits, self.closed = [], []
+        outer = self
+
+        class _Server:
+            def close_room(self, room, namespace=None):
+                outer.closed.append(room)
+
+        self.server = _Server()
+
+    def emit(self, event, data, room=None, **kw):
+        self.emits.append((event, room, data))
+
+
+class TestRoomEviction:
+    """TH-02: removed/left members and deleted threads lose the live room."""
+
+    def _manager(self, monkeypatch):
+        from services.websocket_threads import thread_ws_manager as mgr
+        fake = _FakeSocketIO()
+        monkeypatch.setattr(mgr, "socketio", fake)
+        return fake
+
+    def test_remove_member_closes_room_and_resyncs_the_rest(
+        self, client, db_session, make_user, make_thread, make_thread_member,
+        auth_headers, csrf_headers, monkeypatch,
+    ):
+        fake = self._manager(monkeypatch)
+        creator, victim, other = make_user(), make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, creator, member_count=3)
+        make_thread_member(t, victim)
+        make_thread_member(t, other)
+        resp = client.delete(f"{B}/{t.id}/remove/{victim.id}",
+                             headers=_hdr(client, auth_headers, csrf_headers, creator))
+        assert resp.status_code == 200
+        assert f"thread_{t.id}" in fake.closed
+        events = {(e, r) for e, r, _ in fake.emits}
+        assert ("thread_access_revoked", f"user_{victim.id}") in events
+        assert ("thread_room_resync", f"user_{other.id}") in events
+        assert ("thread_room_resync", f"user_{victim.id}") not in events
+
+    def test_leave_closes_room(
+        self, client, db_session, make_user, make_thread, make_thread_member,
+        auth_headers, csrf_headers, monkeypatch,
+    ):
+        fake = self._manager(monkeypatch)
+        creator, member = make_user(), make_user()
+        t = _thread(make_thread, make_thread_member, creator, member_count=2)
+        make_thread_member(t, member)
+        resp = client.post(f"{B}/{t.id}/leave",
+                           headers=_hdr(client, auth_headers, csrf_headers, member))
+        assert resp.status_code == 200
+        assert f"thread_{t.id}" in fake.closed
+        assert any(e == "thread_member_left" for e, _r, _d in fake.emits)
+
+    def test_delete_thread_closes_room(
+        self, client, db_session, make_user, make_thread, make_thread_member,
+        auth_headers, csrf_headers, monkeypatch,
+    ):
+        fake = self._manager(monkeypatch)
+        creator = make_user()
+        t = _thread(make_thread, make_thread_member, creator)
+        resp = client.delete(f"{B}/{t.id}",
+                             headers=_hdr(client, auth_headers, csrf_headers, creator))
+        assert resp.status_code == 200
+        assert f"thread_{t.id}" in fake.closed

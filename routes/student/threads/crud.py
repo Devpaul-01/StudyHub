@@ -590,6 +590,13 @@ def delete_thread(current_user, thread_id):
 
         db.session.delete(thread)
         db.session.commit()
+
+        # TH-02: the room outlives the thread unless it is closed explicitly.
+        try:
+            from services.websocket_threads import thread_ws_manager
+            thread_ws_manager.revoke_thread_access(thread_id, None, reason="deleted")
+        except Exception:  # noqa: BLE001 - realtime is best effort after commit
+            pass
         return success_response("Thread deleted successfully")
 
     except Exception as e:

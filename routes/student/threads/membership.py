@@ -55,6 +55,31 @@ import re as _re
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 threads_membership_bp = Blueprint("threads_membership", __name__)
+def _revoke_live_access(thread_id: int, user_id: int, reason: str, event: str) -> None:
+    """
+    Broadcast a roster change and evict `user_id` from the thread's live room
+    (TH-02). Best effort: the database change is already committed, so a
+    realtime failure must never turn the API response into an error.
+    """
+    try:
+        from services.websocket_threads import thread_ws_manager
+        thread_ws_manager.broadcast_to_thread(thread_id, event, {
+            "thread_id": thread_id,
+            "user_id":   user_id,
+        })
+        remaining = [
+            row[0] for row in db.session.query(ThreadMember.student_id)
+            .filter(ThreadMember.thread_id == thread_id).all()
+        ]
+        thread_ws_manager.revoke_thread_access(
+            thread_id, user_id, remaining_member_ids=remaining, reason=reason
+        )
+    except Exception as exc:  # noqa: BLE001
+        current_app.logger.warning(
+            f"[THREAD_REVOKE_HELPER_FAILED] thread_id={thread_id} user_id={user_id} error={exc!r}"
+        )
+
+
 @threads_membership_bp.route("/threads/<int:thread_id>/leave", methods=["POST"])
 @limiter.limit(RateLimitTier.WRITE_HEAVY, key_func=user_or_ip_key)
 @token_required
@@ -95,6 +120,11 @@ def leave_thread(current_user, thread_id):
             related_id=thread_id,
         )
         db.session.commit()
+
+        # TH-02: stop live delivery to the sockets of the member who left and
+        # tell the others the roster changed.
+        _revoke_live_access(thread_id, current_user.id, reason="left",
+                            event="thread_member_left")
 
         record_live_activity(
             current_user.id,
@@ -154,14 +184,10 @@ def remove_member(current_user, thread_id, user_id):
         db.session.commit()
 
         # FIX: notify the removed user and all thread members in real-time
-        try:
-            from services.websocket_threads import thread_ws_manager
-            thread_ws_manager.broadcast_to_thread(thread_id, "thread_member_removed", {
-                "thread_id": thread_id,
-                "user_id":   user_id,
-            })
-        except Exception:
-            pass
+        # TH-02: broadcast first (the removed socket is still in the room, so
+        # it also learns it was removed), then evict it from the live room.
+        _revoke_live_access(thread_id, user_id, reason="removed",
+                            event="thread_member_removed")
 
         return success_response("Member removed from thread")
 

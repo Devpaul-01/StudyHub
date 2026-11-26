@@ -471,6 +471,51 @@ class ThreadWebSocketManager:
             )
             self.socketio.emit(event, data, room=f"thread_{thread_id}")
 
+    def revoke_thread_access(
+        self,
+        thread_id: int,
+        user_id: int | None = None,
+        remaining_member_ids: list[int] | None = None,
+        reason: str = "removed",
+    ) -> None:
+        """
+        TH-02: take a user (or everyone, when the thread is deleted) out of the
+        live thread room.
+
+        Room membership is only checked when a socket joins, so removal,
+        leaving and deletion must evict explicitly or the old sockets keep
+        receiving new_thread_message / edits / reactions.
+
+        Works across instances without knowing the sid: python-socketio's
+        close_room is propagated over the Redis message queue, so every
+        instance drops the whole room. The remaining members are then told
+        (thread_room_resync, via their personal rooms) to re-emit
+        join_thread_room, which re-validates membership server side. The
+        revoked user gets thread_access_revoked and is simply not told to
+        rejoin. Messages sent during the short resync window are recovered by
+        the client's reconnect catch-up (afterId fetch).
+        """
+        if not self.socketio:
+            return
+        try:
+            if user_id is not None:
+                self.notify_user(user_id, "thread_access_revoked", {
+                    "thread_id": thread_id,
+                    "reason":    reason,
+                })
+                try:
+                    presence_service.clear_active_thread(user_id, expected_thread_id=thread_id)
+                except Exception:  # noqa: BLE001 - presence is best effort
+                    pass
+            self.socketio.server.close_room(f"thread_{thread_id}", namespace="/")
+            for mid in (remaining_member_ids or []):
+                if mid != user_id:
+                    self.notify_user(mid, "thread_room_resync", {"thread_id": thread_id})
+        except Exception as exc:  # noqa: BLE001
+            current_app.logger.warning(
+                f"[THREAD_REVOKE_FAILED] thread_id={thread_id} user_id={user_id} error={exc!r}"
+            )
+
     def notify_user(self, user_id: int, event: str, data: dict) -> None:
         """
         Emit a targeted event to a single user's personal room.
