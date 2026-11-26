@@ -35,12 +35,28 @@ export function formatHudTime(isoDate) {
   });
 }
 
+// Every unread badge is marked with data-notification-badge. The SPA nav item
+// had no badge element at all and the code looked for one hard-coded id that
+// existed only in an unused template, so the badge never showed (audit
+// NOTIF-03). The current count is held here so +1 / -1 never has to be parsed
+// back out of the DOM.
+let badgeCount = 0;
+
+export function getBadgeCount() {
+  return badgeCount;
+}
+
 export function updateBadgeCount(count) {
-  const badge = document.getElementById("notification-badge");
-  if (badge) {
-    badge.textContent = count > 0 ? count : '';
-    badge.style.display = count > 0 ? 'flex' : 'none';
-  }
+  badgeCount = Math.max(0, Number(count) || 0);
+  if (typeof document === 'undefined') return;
+  document.querySelectorAll('[data-notification-badge]').forEach((badge) => {
+    badge.textContent = badgeCount > 0 ? String(badgeCount) : '';
+    badge.style.display = badgeCount > 0 ? 'flex' : 'none';
+  });
+}
+
+export function adjustBadgeCount(delta) {
+  updateBadgeCount(badgeCount + delta);
 }
 
 export function showEmptyNotifications() {

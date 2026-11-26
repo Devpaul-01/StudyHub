@@ -532,6 +532,25 @@ section#notifications.active #notifications-modal {
   display: none;
 }
 
+/* Unread badge inside the sidebar "Notifications" nav item (audit NOTIF-03) */
+.nav-notif-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-notif-badge:empty {
+  display: none !important;
+}
+
 @keyframes badgePulse {
   0%, 100% {
     transform: scale(1);

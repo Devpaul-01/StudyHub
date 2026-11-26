@@ -11,7 +11,8 @@ import {
 } from './notification.events.js';
 import { notificationState } from './notification.state.js';
 import { createNotificationCard } from './notification.templates.js';
-import { updateBadgeCount } from './notification.utils.js';
+import { updateBadgeCount, adjustBadgeCount } from './notification.utils.js';
+import { notificationAPI } from './notification.api.js';
 import { socket } from '../core/socket.js';
 
 // Pull-to-refresh variables
@@ -282,14 +283,31 @@ export { initializeNotifications };
 // initializeNotifications(), which only runs once the #notifications
 // section becomes active), since the badge in the nav bar needs to update
 // live no matter which section the user is currently looking at.
+// The list module only loads when the Notifications section is opened, so the
+// badge has to be fetched here, eagerly (audit NOTIF-03). Count-only endpoint.
+export async function refreshUnreadBadge() {
+  try {
+    const { count } = await notificationAPI.getUnreadCount();
+    updateBadgeCount(count);
+  } catch (error) {
+    console.warn('Could not refresh the notification badge:', error);
+  }
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshUnreadBadge, { once: true });
+  } else {
+    refreshUnreadBadge();
+  }
+}
+
 socket.on('new_notification', (payload) => {
   if (!payload || !payload.id) return;
 
   // Bump the badge immediately — this is the one piece that matters even
   // if the user never opens the notifications section this session.
-  const badge = document.getElementById('notification-badge');
-  const currentCount = badge ? (parseInt(badge.textContent, 10) || 0) : 0;
-  updateBadgeCount(currentCount + 1);
+  adjustBadgeCount(1);
 
   // If the notifications list is already open, prepend the new card live
   // rather than waiting for the next reload — but respect whatever filter

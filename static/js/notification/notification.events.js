@@ -1,7 +1,7 @@
 import { notificationState } from './notification.state.js';
 import { notificationAPI } from './notification.api.js';
 import { createNotificationCard } from './notification.templates.js';
-import { updateBadgeCount, showEmptyNotifications, getLoadingSkeletonState } from './notification.utils.js';
+import { updateBadgeCount, adjustBadgeCount, showEmptyNotifications, getLoadingSkeletonState } from './notification.utils.js';
 import { NOTIFICATION_TYPES } from './notification.constants.js';
 
 // Delete a single notification
@@ -17,6 +17,11 @@ export async function handleDeleteNotification(id, event) {
       const section = document.querySelector("section#notifications");
       const element = section.querySelector(`[data-notification-id="${id}"]`);
       
+      // Deleting an unread card must lower the badge too (audit NOTIF-18).
+      if (element && !element.classList.contains('read')) {
+        adjustBadgeCount(-1);
+      }
+
       if (element) {
         element.style.opacity = '0';
         element.style.transition = 'opacity 0.3s ease';

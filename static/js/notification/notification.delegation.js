@@ -10,7 +10,7 @@ import {
   handleMarkAllRead, handleClearReadNotifications, handleFilterNotifications,
 } from './notification.events.js';
 import { notificationAPI } from './notification.api.js';
-import { updateBadgeCount, safeNotificationLink } from './notification.utils.js';
+import { adjustBadgeCount, safeNotificationLink } from './notification.utils.js';
 
 /**
  * All notification click handlers
@@ -34,18 +34,7 @@ export const NotificationHandlers = {
           // Update UI to show as read
           target.classList.add('read');
           
-          // Update badge count (decrease by 1)
-          const badgeElement = document.querySelector('[data-action="navigate-to"][data-target="notifications"] .notification-badge');
-          if (badgeElement) {
-            const currentCount = parseInt(badgeElement.textContent) || 0;
-            const newCount = Math.max(0, currentCount - 1);
-            if (newCount > 0) {
-              badgeElement.textContent = newCount;
-              badgeElement.style.display = 'flex';
-            } else {
-              badgeElement.style.display = 'none';
-            }
-          }
+          adjustBadgeCount(-1);
         }
       } catch (error) {
         console.error('Error marking notification as read:', error);
