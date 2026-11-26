@@ -138,7 +138,7 @@ sequenceDiagram
 
 Three details matter more than the diagram alone shows:
 
-**Services never commit.** By convention (and consistently followed — see the deliberate exceptions noted below), a service function mutates `db.session` but does not call `.commit()`. The calling route owns the transaction boundary, so several service calls inside one route can succeed or fail together as a single atomic unit. The two documented exceptions are `award_reputation()`'s dependents needing the commit split correctly across two known call sites when the commit was removed from the service (see §7), and `auth_service.record_login_and_commit()`, which commits internally because its own IntegrityError-retry logic needs to observe a real commit failure to detect the race it's guarding against.
+**Services never commit.** By convention (and consistently followed — see the deliberate exceptions noted below), a service function mutates `db.session` but does not call `.commit()`. The calling route owns the transaction boundary, so several service calls inside one route can succeed or fail together as a single atomic unit. The documented exceptions are `badge_service.seed_badges()` (a setup/CLI function, not part of the request path) and `auth_service.record_login_and_commit()`, which commits internally because its own IntegrityError-retry logic needs to observe a real commit failure to detect the race it's guarding against.
 
 **Authorization happens once, in one decorator, reused everywhere.** `role_required(*allowed_roles)` decodes the JWT, loads the user, and checks role membership. `token_required` (used by roughly 250 routes) is a plain alias for `role_required("student")`, defined this way specifically so every existing call site kept working unchanged when the role check was generalized — the fix went into how the decorator is *defined*, not into rewriting every route. `admin_required = role_required("admin", "system")` is the parameterized form used by the handful of admin-only routes. The same call also sets `g.current_user_id`, which the rate limiter's `user_or_ip_key()` reads without decoding the token a second time.
 
@@ -287,7 +287,7 @@ erDiagram
     }
 ```
 
-`ReputationHistory` is an append-only ledger, not a mutable log alongside a counter. `User.reputation` is the current total, but every change to it is required to go through `award_reputation()` (§7), which writes a `ReputationHistory` row in the same call — meaning the total is always independently reconstructable by summing history rows, not trusted as a bare mutable field that could silently drift from its own audit trail.
+`ReputationHistory` is an append-only ledger, not a mutable log alongside a counter. `User.reputation` is the current total, but every change to it is required to go through `award_reputation()` (§7), which writes a `ReputationHistory` row in the same call — meaning the total is reconstructable by summing history rows (`points_change` stores the effective delta, so this holds even when the zero floor clamps a deduction; accounts that pre-date the ledger can differ and are reported — never silently rewritten — by `reconciliation_service`).
 
 `WeeklyChampion` is marked read-only above because, unlike `LeaderboardSnapshot`, it has no write path anywhere in this codebase — no scheduled job, no route, no other service populates it, even though a real UI (`homework_system.get_current_champions`) reads from it and displays a "This Week's Champions" panel. See §5.6 for this alongside the codebase's other honestly-flagged gap.
 
@@ -378,24 +378,24 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph Callers
-        A[Post liked/marked helpful]
-        B[Comment marked solution]
-        C[Badge criteria met]
-        D[Login streak]
-        E[Thread milestone]
+    subgraph Callers["Callers (the only three that award today)"]
+        A["Post reaches 10/50/100 likes<br/>(check_and_award_milestone, once per post)"]
+        B["Comment marked solution<br/>(reversed on unmark/switch)"]
+        C["Comment marked helpful<br/>(once per marker per comment)"]
     end
-    A & B & C & D & E --> AWARD["award_reputation()<br/>services/reputation_service.py"]
+    A & B & C --> AWARD["award_reputation()<br/>services/reputation_service.py"]
+    AWARD --> LOCK["Lock user row (FOR UPDATE)"]
+    AWARD --> IDEM["Idempotency key -> UNIQUE index<br/>repeat = no-op"]
     AWARD --> FLOOR[Floor reputation at 0]
     AWARD --> TIER["get_reputation_level()<br/>ONE shared lookup table"]
-    AWARD --> HIST[Write ReputationHistory row<br/>before/after values]
-    AWARD --> INVAL["Invalidate this user's<br/>rank/breakdown/analytics cache"]
+    AWARD --> HIST["Write ReputationHistory row<br/>effective delta + before/after"]
+    AWARD -.->|after commit| INVAL["Bump per-user cache version +<br/>invalidate rep/analytics/badge-progress keys"]
     TIER --> LEVELUP{Level changed?}
-    LEVELUP -->|yes| NOTIFY[notify_level_up]
+    LEVELUP -->|yes| NOTIFY["notify_level_up +<br/>schedule badge check (job)"]
     LEVELUP -->|no| DONE[Return, caller commits]
 ```
 
-`award_reputation()` is the only function in the codebase that mutates `User.reputation`. It floors the result at zero, recomputes the user's tier from a single shared lookup table (`services/reputation_levels.py`), and writes an auditable `ReputationHistory` row with the before/after values — all in the same call, so a reputation change and its audit trail can never exist independently of each other.
+`award_reputation()` is the only function in the codebase that mutates `User.reputation`. It locks the user's row, floors the result at zero, recomputes the user's tier from a single shared lookup table (`services/reputation_levels.py`), and writes an auditable `ReputationHistory` row with the before/after values and the *effective* (post-floor) delta — all in the same call, so a reputation change and its audit trail can never exist independently of each other. One-shot awards carry an `idempotency_key` backed by a UNIQUE index, so a retried, replayed or double-clicked request cannot pay twice; taking an award back (`reverse_reputation()`) appends a compensating row rather than editing history. Cache invalidation and badge-check scheduling run through `services/after_commit.py`, i.e. only after the surrounding transaction commits.
 
 The reputation-tier lookup used to exist in up to four separate places across the codebase — and they disagreed at boundary values. `User.update_reputation_level()`'s own docstring documents the specific bug this caused: one implementation used strict `<` comparisons for tier boundaries while the shared table used an inclusive min/max range, and the two disagreed at exactly `reputation == 1000`. Consolidating to one table, read by every module that needs it (badges, leaderboard, the reputation service itself), removes the class of bug entirely rather than fixing the one instance that happened to be caught.
 
@@ -404,6 +404,8 @@ The screenshot below shows the ledger in the actual profile UI — the +189 / -0
 ![Annotated reputation history screenshot showing the immutable ledger the displayed totals are computed from](assets/architecture/annotated-reputation-ledger.png)
 
 **Cache invalidation is deliberately partial, not total.** `award_reputation()` hard-invalidates the acting user's own point-total, rank, breakdown, and analytics caches immediately — those must never serve stale data for the user whose reputation just changed. It does **not** invalidate the global leaderboard page cache, even though one user's reputation change can, in principle, shift every other user's relative rank. Hard-invalidating a global leaderboard page cache on every single reputation-changing write across the whole platform would defeat the purpose of caching it at all; the 60-second TTL on that cache is the accepted trade-off (§13), and the code contains an explicit comment warning against "fixing" this into fan-out invalidation.
+
+**Badges.** Badge definitions (`BADGE_DEFINITIONS`) are data, seeded idempotently on startup and by `flask seed-badges` (opt out of the startup run with `SEED_BADGES_ON_STARTUP=false`). Badges are evaluated by `check_badges_job` on a dedicated RQ queue (`sh:1:rq:badges`); `services/badge_triggers.schedule_badge_check()` enqueues it after the transaction commits for the events that change badge inputs — post created, login, connection accepted, thread created/joined, helpful mark, reputation level change. `POST /badges/check-all` remains a manual fallback. Awards are race-safe (the insert runs in a SAVEPOINT against `UNIQUE(user_id, badge_id)`, `Badge.awarded_count` is an atomic increment), badges are permanent (never revoked when numbers later fall), and "Early Adopter" is measured against `PLATFORM_LAUNCH_DATE` when set (otherwise the earliest `joined_at`). Reputation-threshold badges use the same tier boundaries as `reputation_levels` ("Reputation Master" = 1001+, the start of the Master tier).
 
 ---
 
@@ -431,6 +433,8 @@ High-compatibility connection requests (`compatibility_score >= 70`, computed by
 ---
 
 ## 10. Notification architecture
+
+> `notify()` inserts the row inside the caller's transaction; the Redis unread-counter INCR and the WebSocket push are deferred through `services/after_commit.py` and only run once that transaction commits, so a rollback can never leave a push or an unread count for a notification that does not exist.
 
 ![Notification fan-out — single funnel point, three synchronized writes, self-healing unread counter](assets/architecture/notification-fanout.png)
 
