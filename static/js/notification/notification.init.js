@@ -11,7 +11,7 @@ import {
 } from './notification.events.js';
 import { notificationState } from './notification.state.js';
 import { createNotificationCard } from './notification.templates.js';
-import { updateBadgeCount, adjustBadgeCount } from './notification.utils.js';
+import { updateBadgeCount, adjustBadgeCount, createSeenTracker, playNotificationSound } from './notification.utils.js';
 import { notificationAPI } from './notification.api.js';
 import { socket } from '../core/socket.js';
 
@@ -287,8 +287,9 @@ export { initializeNotifications };
 // badge has to be fetched here, eagerly (audit NOTIF-03). Count-only endpoint.
 export async function refreshUnreadBadge() {
   try {
-    const { count } = await notificationAPI.getUnreadCount();
+    const { count, soundEnabled } = await notificationAPI.getUnreadCount();
     updateBadgeCount(count);
+    notificationState.setSoundEnabled(soundEnabled);
   } catch (error) {
     console.warn('Could not refresh the notification badge:', error);
   }
@@ -302,8 +303,25 @@ if (typeof document !== 'undefined') {
   }
 }
 
+// Resync on every (re)connect. Socket.IO events are fire-and-forget and the
+// client gives up reconnecting after a short outage, so anything pushed while
+// the socket was down would otherwise stay invisible until a full reload
+// (audit NOTIF-16). The database stays the source of truth; the socket is a hint.
+socket.on('connect', () => {
+  refreshUnreadBadge();
+  const section = document.getElementById('notifications');
+  if (section && section.classList.contains('active')) loadNotifications();
+});
+
+const handledLiveIds = createSeenTracker();
+
 socket.on('new_notification', (payload) => {
   if (!payload || !payload.id) return;
+
+  // A duplicate delivery must not add a second card or bump the badge twice.
+  if (!handledLiveIds.markIfNew(payload.id)) return;
+
+  if (notificationState.isSoundEnabled()) playNotificationSound();
 
   // Bump the badge immediately — this is the one piece that matters even
   // if the user never opens the notifications section this session.

@@ -63,6 +63,9 @@ export const notificationAPI = {
   // Count only (audit NOTIF-07): don't download the list to read one number.
   async getUnreadCount() {
     const response = await api.get('/profile/notifications/unread-count');
-    return { count: response.data?.unread_count || 0 };
+    return {
+      count: response.data?.unread_count || 0,
+      soundEnabled: response.data?.enable_notification_sound !== false,
+    };
   }
 };

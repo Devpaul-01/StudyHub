@@ -16,7 +16,7 @@ def test_counts_only_the_callers_unread_rows(client, make_user, make_notificatio
     resp = client.get(URL, headers=auth_headers(me))
 
     assert resp.status_code == 200
-    assert resp.get_json()["data"] == {"unread_count": 3}
+    assert resp.get_json()["data"]["unread_count"] == 3
 
 
 def test_count_is_not_capped_by_the_list_limit(client, make_user, make_notification, auth_headers):
@@ -36,3 +36,16 @@ def test_payload_is_tiny(client, make_user, make_notification, auth_headers):
 
 def test_requires_authentication(client):
     assert client.get(URL).status_code in (401, 403)
+
+
+@pytest.mark.parametrize("settings, expected", [
+    (None, True), ({}, True), ({"enable_notification_sound": True}, True), ({"enable_notification_sound": False}, False),
+])
+def test_reports_the_sound_preference(client, db_session, make_user, auth_headers, settings, expected):
+    """The client needs this at startup to decide whether to chime for live pushes."""
+    me = make_user(status="approved")
+    me.notification_settings = settings
+    db_session.add(me)
+    db_session.flush()
+    data = client.get(URL, headers=auth_headers(me)).get_json()["data"]
+    assert data["enable_notification_sound"] is expected

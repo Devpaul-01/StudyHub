@@ -131,7 +131,16 @@ def get_unread_notification_count(current_user):
         unread_count = Notification.query.filter_by(
             user_id=current_user.id, is_read=False
         ).count()
-        return jsonify({"status": "success", "data": {"unread_count": unread_count}})
+        settings = current_user.notification_settings or {}
+        return jsonify({
+            "status": "success",
+            "data": {
+                "unread_count": unread_count,
+                # Lets the client know whether to play a sound for live
+                # notifications before the list has ever been opened.
+                "enable_notification_sound": settings.get("enable_notification_sound", True) is not False,
+            },
+        })
     except Exception as e:
         current_app.logger.error(f"Unread notification count error: {e}")
         return error_response("Failed to load unread count", 500)

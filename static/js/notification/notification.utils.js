@@ -57,6 +57,51 @@ export function createLatestGuard() {
   };
 }
 
+/**
+ * Remembers which live notification ids were already handled, so a duplicate
+ * delivery (reconnect, double emit) cannot add a second card or bump the badge
+ * twice (audit NOTIF-16). Bounded so it cannot grow forever.
+ */
+export function createSeenTracker(limit = 200) {
+  const seen = new Set();
+  return {
+    markIfNew(id) {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      if (seen.size > limit) seen.delete(seen.values().next().value);
+      return true;
+    },
+  };
+}
+
+let audioContext = null;
+
+/** Short two-tone chime via Web Audio (no audio asset needed). Never throws. */
+export function playNotificationSound() {
+  try {
+    const AudioCtx = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (!AudioCtx) return;
+    audioContext = audioContext || new AudioCtx();
+    if (audioContext.state === 'suspended') audioContext.resume();
+
+    const now = audioContext.currentTime;
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, now);
+    oscillator.frequency.setValueAtTime(660, now + 0.12);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.3);
+  } catch (error) {
+    // Autoplay policies or a missing audio device: a missing chime is harmless.
+  }
+}
+
 // Every unread badge is marked with data-notification-badge. The SPA nav item
 // had no badge element at all and the code looked for one hard-coded id that
 // existed only in an unused template, so the badge never showed (audit
