@@ -6,6 +6,8 @@
  * ============================================================================
  */
 
+import { escapeHtml } from '../core/escape.js';
+
 /**
  * Format a numeric score for compact display (e.g. 1200 → "1.2k").
  */
@@ -93,17 +95,10 @@ export function getLevelColor(levelName) {
 /**
  * Escape HTML special chars in any user-generated string.
  */
-export function escapeHtml(text) {
-  if (text === null || text === undefined || text === '') return '';
-  // String-based on purpose: a textContent -> innerHTML round trip does NOT
-  // escape quotes, which makes the result unsafe inside quoted attributes.
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// One shared implementation (also used by the profile modules); re-exported so
+// existing leaderboard imports keep working. It escapes quotes, which matters
+// because these values are interpolated into quoted attributes.
+export { escapeHtml };
 
 /**
  * Truncate text to max characters, adding ellipsis.
