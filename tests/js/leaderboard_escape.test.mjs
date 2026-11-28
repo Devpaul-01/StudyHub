@@ -1,4 +1,4 @@
-// Run with: node --test tests/frontend/
+// Run with: node --test tests/js/
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, getAvatarHTML } from '../../static/js/leaderboard/leaderboard.utils.js';

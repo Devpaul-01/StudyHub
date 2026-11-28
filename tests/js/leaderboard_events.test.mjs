@@ -1,5 +1,5 @@
 // Drives the real leaderboard.events.js against a fake `api` under jsdom.
-// Needs jsdom (npm install --prefix tests/frontend); skipped without it.
+// Needs jsdom (npm install --prefix tests/js); skipped without it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 

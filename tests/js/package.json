@@ -1,0 +1,7 @@
+{
+  "name": "studyhub-frontend-tests",
+  "private": true,
+  "type": "module",
+  "description": "Run: npm install --prefix tests/js && node --test tests/js/*.test.mjs The escape tests need nothing installed; the events tests need jsdom and are skipped without it.",
+  "devDependencies": { "jsdom": "^25.0.0" }
+}
