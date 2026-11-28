@@ -28,3 +28,7 @@ lupa==2.8
 # isn't already there, since this is a genuine runtime dependency of
 # thread_message_service.py, not test-only.
 bleach==6.4.0
+
+# tests/integration/test_profile_openapi_parity.py parses openapi.yml with PyYAML;
+# without it the whole suite stops at collection.
+PyYAML>=6,<7
